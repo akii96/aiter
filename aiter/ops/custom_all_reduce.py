@@ -32,6 +32,7 @@ def all_reduce(
     open_fp8_quant: bool,
     reg_inp_ptr: int,
     reg_inp_bytes: int,
+    one_stage_mode: int = -1,
 ) -> None: ...
 
 

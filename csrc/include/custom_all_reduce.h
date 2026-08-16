@@ -31,13 +31,17 @@ fptr_t init_custom_ar(int64_t meta_ptr,
                       const std::vector<int64_t>& offsets,
                       int64_t rank,
                       bool fully_connected);
+// one_stage_mode: -1 keeps the built-in size heuristic, 0 forces the two-stage
+// (reduce-scatter + all-gather) kernel, 1 forces the one-shot kernel. See
+// CustomAllreduce::kOneStage* in custom_all_reduce.cuh.
 void all_reduce(fptr_t _fa,
                 const aiter_tensor_t& inp,
                 const aiter_tensor_t& out,
                 bool use_new,
                 bool open_fp8_quant,
                 int64_t reg_inp_ptr,
-                int64_t reg_inp_bytes);
+                int64_t reg_inp_bytes,
+                int64_t one_stage_mode = -1);
 // reduce_scatter dispatcher. (m, n, k, split_dim) describe the canonical
 // shape the Python wrapper collapsed the input to:
 //   split_dim = 0 (kFirst): only `k` (= numel) used

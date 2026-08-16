@@ -544,7 +544,8 @@ namespace py = pybind11;
           py::arg("use_new"),                                                        \
           py::arg("open_fp8_quant"),                                                 \
           py::arg("reg_inp_ptr"),                                                    \
-          py::arg("reg_inp_bytes"));                                                 \
+          py::arg("reg_inp_bytes"),                                                  \
+          py::arg("one_stage_mode") = -1);                                           \
     m.def("reduce_scatter",                                                          \
           &aiter::reduce_scatter,                                                    \
           py::arg("_fa"),                                                            \

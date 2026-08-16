@@ -1178,6 +1178,20 @@ class CustomAllreduce:
             return inp_size <= (self.max_size / (self.world_size * 2))
         return False
 
+    # `one_stage_mode` values, mirroring CustomAllreduce::kOneStage* in
+    # csrc/include/custom_all_reduce.cuh.
+    ONE_STAGE_AUTO = -1
+    ONE_STAGE_OFF = 0
+    ONE_STAGE_ON = 1
+
+    @classmethod
+    def one_stage_mode(cls, use_1stage: bool | None) -> int:
+        """Translate the tri-state the fused entry points express as a bool
+        (plus None for "let the kernel decide") into the C++ enum."""
+        if use_1stage is None:
+            return cls.ONE_STAGE_AUTO
+        return cls.ONE_STAGE_ON if use_1stage else cls.ONE_STAGE_OFF
+
     def all_reduce(
         self,
         inp: torch.Tensor,
@@ -1186,18 +1200,33 @@ class CustomAllreduce:
         use_new: bool = True,
         open_fp8_quant: bool = False,
         registered_input: bool = False,
+        use_1stage: bool | None = None,
     ):
         """Performs an out-of-place all reduce.
 
         If registered is True, this assumes inp's pointer is already
         IPC-registered. Otherwise, inp is first copied into a pre-registered
         buffer.
+
+        `use_1stage` selects the one-shot or the two-stage kernel; None leaves
+        the choice to the size heuristic in the C++ dispatcher.
         """
         if out is None:
             out = torch.empty_like(inp)
         assert is_weak_contiguous(out), "output tensor is not weak-contiguous"
         reg_inp = 0 if registered_input else self._pool["input"].data_ptr
         reg_inp_bytes = 0 if registered_input else self._pool["input"].max_size
+        # The gfx1250 kernel is a separate implementation that does not take the
+        # algorithm selector; refuse to silently ignore a caller's choice there.
+        if self._is_gfx1250:
+            if use_1stage is not None:
+                raise NotImplementedError(
+                    "one-shot/two-stage selection is not implemented for the "
+                    "gfx1250 all_reduce kernel"
+                )
+            extra_args = ()
+        else:
+            extra_args = (self.one_stage_mode(use_1stage),)
         self._ops_all_reduce(
             self._ptr,
             inp,
@@ -1206,11 +1235,16 @@ class CustomAllreduce:
             open_fp8_quant,
             reg_inp,
             reg_inp_bytes,
+            *extra_args,
         )
         return out
 
     def custom_all_reduce(
-        self, input: torch.Tensor, use_new: bool = True, open_fp8_quant: bool = False
+        self,
+        input: torch.Tensor,
+        use_new: bool = True,
+        open_fp8_quant: bool = False,
+        use_1stage: bool | None = None,
     ) -> torch.Tensor | None:
         # when custom allreduce is disabled, this will be None
         if self.disabled or not self.should_custom_ar(input):
@@ -1222,6 +1256,7 @@ class CustomAllreduce:
                     use_new=use_new,
                     open_fp8_quant=open_fp8_quant,
                     registered_input=self.enable_register_for_capturing,
+                    use_1stage=use_1stage,
                 )
             else:
                 # if warm up, mimic the allocation pattern
@@ -1237,6 +1272,7 @@ class CustomAllreduce:
                 use_new=use_new,
                 open_fp8_quant=open_fp8_quant,
                 registered_input=False,
+                use_1stage=use_1stage,
             )
 
     # reduce_scatter split_dim enum — must match `aiter::ReduceScatterSplitDim`

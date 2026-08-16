@@ -3346,6 +3346,35 @@ __global__ void __launch_bounds__(1024, 1) allreduce_mhc_post_large_m_kernel(
 class CustomAllreduce
 {
     public:
+    // `one_stage_mode` values for `allreduce`. kOneStageAuto keeps the
+    // size-based heuristic below; the two Force values let a caller that knows
+    // better (a tuned threshold, or a benchmark sweeping the crossover) pin the
+    // algorithm. Mirrors the explicit `use_1stage` argument the fused
+    // allreduce+RMSNorm entry points already take.
+    static constexpr int kOneStageAuto     = -1;
+    static constexpr int kOneStageForceOff = 0;
+    static constexpr int kOneStageForceOn  = 1;
+
+    // One-shot / two-stage crossover for the plain all-reduce, in bytes. Below
+    // it every rank reads the whole message from all peers (one round trip);
+    // above it the reduce-scatter + all-gather pair moves ngpus/2 times less
+    // data per rank but pays a second sync.
+    //
+    // Measured on gfx950 (MI355X, ROCm 7.2.3) under CUDA-graph replay: the
+    // two-stage kernel is faster at every size custom AR accepts, at two ranks
+    // (17 sizes, 1 KB - 6 MB) and again at four ranks (19 sizes, 1 KB - 960 KB),
+    // with no crossover at either. There is therefore no one-shot window left to
+    // preserve at four ranks or fewer. Four ranks is where the gap is widest --
+    // one-shot reads 4x the message per rank against two-stage's 2x, while
+    // two-stage pays only a second barrier -- and it grows monotonically with
+    // the message, from 1.04x at 1 KB to 1.92x at 960 KB.
+    static constexpr size_t kOneStageMaxBytesUpTo4Ranks = 0;
+    // Not measured at 6 or 8 ranks. One-shot's traffic disadvantage is strictly
+    // worse there (8x the message per rank against 2x), so this is very likely
+    // too generous as well, but lowering a constant nobody measured is the
+    // mistake these comments exist to prevent.
+    static constexpr size_t kOneStageMaxBytesUpTo8Ranks = 80 * 1024;
+
     int rank_;
     int world_size_;
     bool full_nvlink_;
@@ -3730,6 +3759,7 @@ class CustomAllreduce
                    int size,
                    bool use_new                 = true,
                    bool is_broadcast_reg_outptr = false,
+                   int one_stage_mode           = kOneStageAuto,
 #ifndef USE_ROCM
                    int threads     = 512,
                    int block_limit = 20){
@@ -3772,11 +3802,25 @@ class CustomAllreduce
         bool call_2stage = false;
         if(world_size_ == 2)
         {
-            call_1stage = true;
+            // Measured on gfx950 (MI355X, ROCm 7.2.3) under CUDA-graph replay
+            // from 1 KB to 6 MB: the two-stage kernel is 3-26% faster than the
+            // one-shot at every size custom AR accepts. At two ranks the two
+            // move the same bytes per rank (2x the message either way), so the
+            // one-shot's single barrier is its only advantage, and it does not
+            // cover the cost of its less efficient inner loop even at 1 KB
+            // where the barrier is the whole cost. A caller that wants the
+            // one-shot regardless can ask for it via one_stage_mode.
+            call_2stage = true;
         }
         else if(full_nvlink_)
         {
-            if((world_size_ <= 4 && bytes < 160 * 1024) || (world_size_ <= 8 && bytes < 80 * 1024))
+            // Select the band's own limit rather than testing both: as an `||`
+            // the wider limit wins for the narrower band, which happens to be
+            // harmless while the <=4 value is the larger of the two but silently
+            // reinstates a one-shot window as soon as it is not.
+            const size_t one_stage_max = world_size_ <= 4 ? kOneStageMaxBytesUpTo4Ranks
+                                                          : kOneStageMaxBytesUpTo8Ranks;
+            if(world_size_ <= 8 && bytes < one_stage_max)
             {
                 call_1stage = true;
             }
@@ -3784,6 +3828,11 @@ class CustomAllreduce
             {
                 call_2stage = true;
             }
+        }
+        if(one_stage_mode != kOneStageAuto && (call_1stage || call_2stage))
+        {
+            call_1stage = (one_stage_mode == kOneStageForceOn);
+            call_2stage = !call_1stage;
         }
         if(call_1stage)
         {

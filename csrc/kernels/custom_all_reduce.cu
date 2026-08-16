@@ -73,7 +73,8 @@ int64_t meta_size() { return sizeof(aiter::Signal); }
 
 static void _all_reduce(fptr_t _fa, void* inp, void* out,
                         int64_t numel, AiterDtype dtype,
-                        bool use_new, bool open_fp8_quant, bool is_broadcast_reg_outptr)
+                        bool use_new, bool open_fp8_quant, bool is_broadcast_reg_outptr,
+                        int one_stage_mode)
 {
     hipStream_t stream = aiter::getCurrentHIPStream();
     auto fa = reinterpret_cast<aiter::CustomAllreduce*>(_fa);
@@ -83,7 +84,7 @@ static void _all_reduce(fptr_t _fa, void* inp, void* out,
         fa->allreduce<opus::fp32_t>(stream,
                              reinterpret_cast<opus::fp32_t*>(inp),
                              reinterpret_cast<opus::fp32_t*>(out),
-                             numel, use_new, is_broadcast_reg_outptr);
+                             numel, use_new, is_broadcast_reg_outptr, one_stage_mode);
         break;
     }
     case AITER_DTYPE_fp16: {
@@ -99,16 +100,18 @@ static void _all_reduce(fptr_t _fa, void* inp, void* out,
             fa->allreduce<opus::fp16_t>(stream,
                                 reinterpret_cast<opus::fp16_t*>(inp),
                                 reinterpret_cast<opus::fp16_t*>(out),
-                                numel, use_new, is_broadcast_reg_outptr);
+                                numel, use_new, is_broadcast_reg_outptr, one_stage_mode);
         }
         break;
     }
 #if (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
     case AITER_DTYPE_bf16: {
+        // bf16 keeps is_broadcast_reg_outptr off, as it was before this
+        // argument existed; only the algorithm choice is being threaded here.
         fa->allreduce<opus::bf16_t>(stream,
                                       reinterpret_cast<opus::bf16_t*>(inp),
                                       reinterpret_cast<opus::bf16_t*>(out),
-                                      numel, use_new);
+                                      numel, use_new, false, one_stage_mode);
         break;
     }
 #endif
@@ -425,7 +428,8 @@ void all_reduce(fptr_t _fa,
                 const aiter_tensor_t& inp,
                 const aiter_tensor_t& out,
                 bool use_new, bool open_fp8_quant,
-                int64_t reg_inp_ptr, int64_t reg_inp_bytes)
+                int64_t reg_inp_ptr, int64_t reg_inp_bytes,
+                int64_t one_stage_mode)
 {
     HipDeviceGuard device_guard(inp.device_id);
     hipStream_t stream = aiter::getCurrentHIPStream();
@@ -452,7 +456,8 @@ void all_reduce(fptr_t _fa,
     }
 
     _all_reduce(_fa, actual_inp, actual_out, numel, dtype,
-                use_new, open_fp8_quant, is_broadcast_reg_outptr);
+                use_new, open_fp8_quant, is_broadcast_reg_outptr,
+                static_cast<int>(one_stage_mode));
 }
 
 void reduce_scatter(fptr_t _fa,
