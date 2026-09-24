@@ -2091,6 +2091,15 @@ def _flydsl_moe_stage2_impl(
                 expert_mask,
                 topk_ids,
             )
+
+        # Opt-in peer all-reduce in place of the collective that follows the
+        # MoE. Placed after the reduce epilogue so it always sees the final
+        # [tokens, model_dim] result rather than the per-(token, slot) rows.
+        # Stage 2 itself is deliberately untouched: threading peer pointers
+        # through its signature cost ~14% even when the epilogue ignored them.
+        from aiter.ops.peer_all_reduce import maybe_all_reduce
+
+        maybe_all_reduce(out)
         return out
 
     if inter_states.ndim != 3:
