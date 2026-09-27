@@ -1,0 +1,407 @@
+{
+ "file": "dp0_pp0_tp0_dcp0_ep0_rank0.1790461198778113210.pt.trace.json.gz",
+ "n_events": 75468808,
+ "gpu_span_us": 21620099.890625,
+ "total_kernel_us": 21482207.038000043,
+ "top_kernels": [
+  {
+   "name": "void ck_tile::kentry<2, ck_tile::MoeFlatmmKernel<ck_tile::GemmSpatiallyLocalTilePartitioner<ck_tile::TileGemmShape<ck_tile::sequence<16, 128, 256>, ck_tile::sequence<1, 4, 1>, ck_t",
+   "total_us": 3002953.3,
+   "count": 58368,
+   "avg_us": 51.45
+  },
+  {
+   "name": "void quickreduce::allreduce_prototype_twoshot<quickreduce::AllReduceTwoshot<__half, quickreduce::CodecQ4<__half, 8>, true>, __half>(__half const*, __half*, unsigned int, unsigned i",
+   "total_us": 2494380.4,
+   "count": 2057,
+   "avg_us": 1212.63
+  },
+  {
+   "name": "void ck_tile::kentry<2, ck_tile::MoeFlatmmKernel<ck_tile::GemmSpatiallyLocalTilePartitioner<ck_tile::TileGemmShape<ck_tile::sequence<16, 128, 256>, ck_tile::sequence<1, 4, 1>, ck_t",
+   "total_us": 1629974.9,
+   "count": 58368,
+   "avg_us": 27.93
+  },
+  {
+   "name": "void aiter::cross_device_reduce_2stage<std::bfloat16_t, 8, false, false>(aiter::RankData*, aiter::RankData*, aiter::RankSignals, aiter::Signal*, std::bfloat16_t*, int, int) [clone ",
+   "total_us": 1500597.5,
+   "count": 123602,
+   "avg_us": 12.14
+  },
+  {
+   "name": "mfma_moe2_afp4_wfp4_bf16_cshuffle_t64x128x256_vscale_fix3_fp4opt_v1_persist_cu256_abuffer.kd",
+   "total_us": 1419286.6,
+   "count": 912,
+   "avg_us": 1556.24
+  },
+  {
+   "name": "paged_attention_decode_sliding_window_head_1.kd",
+   "total_us": 1274765.8,
+   "count": 60249,
+   "avg_us": 21.16
+  },
+  {
+   "name": "void aiter::sparse_attn::pa_sparse_block_score_decode<128, 128, 1, 4, 1, 8, false>(unsigned char const*, unsigned char const*, float*, int const*, int const*, int, int, int, int, i",
+   "total_us": 1042313.5,
+   "count": 59280,
+   "avg_us": 17.58
+  },
+  {
+   "name": "_gemma_fused_add_rmsnorm_kernel.kd",
+   "total_us": 1016831.7,
+   "count": 124740,
+   "avg_us": 8.15
+  },
+  {
+   "name": "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x256x64_MI16x16x1_CMS_SN_LDSB0_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA1_DTLB1_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB8_GSU0_GSUAM",
+   "total_us": 667147.8,
+   "count": 1911,
+   "avg_us": 349.11
+  },
+  {
+   "name": "hgemm_bf16_t32x32x64x8_ksd_w2x1x1_gm0_bias0_lnt_pft_0.kd",
+   "total_us": 583547.3,
+   "count": 57627,
+   "avg_us": 10.13
+  },
+  {
+   "name": "__amd_rocclr_copyBuffer.kd",
+   "total_us": 568351.2,
+   "count": 131346,
+   "avg_us": 4.33
+  },
+  {
+   "name": "mfma_moe1_silu_mul_afp4_wfp4_bf16_t64x128x256_pm1_async_swiglu_v33.kd",
+   "total_us": 531344.7,
+   "count": 912,
+   "avg_us": 582.61
+  },
+  {
+   "name": "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16tofloat32_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul> >(int, ",
+   "total_us": 445489.1,
+   "count": 59865,
+   "avg_us": 7.44
+  },
+  {
+   "name": "Cijk_Alik_Bljk_S_B_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA4_GRVWB4_GSU0_GSUAMB_GLS0_IS",
+   "total_us": 429059.9,
+   "count": 57855,
+   "avg_us": 7.42
+  },
+  {
+   "name": "_topp_sb_step_kernel.kd",
+   "total_us": 428298.8,
+   "count": 5205,
+   "avg_us": 82.29
+  },
+  {
+   "name": "_ZN5aiter27fused_qknorm_idxrqknorm_ops27fusedQKNormIdxrQKNormKernelI12hip_bfloat16DB8_S3_LN4vllm18Fp8KVCacheDataTypeE1ELS5_1ELb0ELb1ELb1ELb1ELb1ELb1EEEvPT_S7_S7_PS3_PKS6_SA_SA_SA_S",
+   "total_us": 424306.6,
+   "count": 59337,
+   "avg_us": 7.15
+  },
+  {
+   "name": "hgemm_bf16_t64x32x64x8_ks1_w4x1x1_gm0_bias0_lnt_pft_0.kd",
+   "total_us": 403725.6,
+   "count": 60660,
+   "avg_us": 6.66
+  },
+  {
+   "name": "Cijk_SS_BiasS_HAS_ScaleAlphaVec_PostGSU16_VW4.kd",
+   "total_us": 357449.0,
+   "count": 57855,
+   "avg_us": 6.18
+  },
+  {
+   "name": "Cijk_Alik_Bljk_S_B_Bias_HA_S_SAV_UserArgs_MT128x128x64_MI16x16x1_SN_LDSB1_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA4_GRVWB4_GSU0_GSUAMB_GLS0_",
+   "total_us": 312867.2,
+   "count": 855,
+   "avg_us": 365.93
+  },
+  {
+   "name": "void aiter::sparse_attn::pa_sparse_block_topk_kernel<128, 32, 16, 8, 8>(float const*, int*, int const*, int const*, int const*, int const*, int const*, int*, int*, int, int, int, i",
+   "total_us": 304759.8,
+   "count": 58368,
+   "avg_us": 5.22
+  },
+  {
+   "name": "void aiter::topk_reg_kernel<float, 2, true, false, true>(float*, float const*, float*, int*, unsigned long, unsigned long, int, int, int, float, bool) [clone .kd]",
+   "total_us": 257927.0,
+   "count": 59337,
+   "avg_us": 4.35
+  },
+  {
+   "name": "void aiter::opus_moe_sorting_entry<aiter::MoeSortingMultiPhaseKernel_P23<aiter::MoeSortingProblemMp<int, float, int, 1, false, false, true> >, aiter::MoeSortingMultiPhaseKernel_P23",
+   "total_us": 251360.9,
+   "count": 58368,
+   "avg_us": 4.31
+  },
+  {
+   "name": "void aiter::pa_decode_ps_reduce_hip_kernel<__hip_bfloat16, __hip_bfloat16, __hip_bfloat16, false, 128, 8, 8>(__hip_bfloat16*, float const*, float const*, __hip_bfloat16 const*, __h",
+   "total_us": 244129.9,
+   "count": 59280,
+   "avg_us": 4.12
+  },
+  {
+   "name": "void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1u",
+   "total_us": 238023.9,
+   "count": 58368,
+   "avg_us": 4.08
+  },
+  {
+   "name": "void aiter::opus_moe_sorting_entry<aiter::MoeSortingMultiPhaseKernel_P0_v2<aiter::MoeSortingProblemMp<int, float, int, 1, false, false, true> >, aiter::MoeSortingMultiPhaseKernel_P",
+   "total_us": 237181.5,
+   "count": 58368,
+   "avg_us": 4.06
+  },
+  {
+   "name": "void aiter::swiglu_act_and_mul_kernel<std::bfloat16_t, std::bfloat16_t, 8>(std::bfloat16_t*, std::bfloat16_t const*, int) [clone .kd]",
+   "total_us": 233013.9,
+   "count": 58368,
+   "avg_us": 3.99
+  },
+  {
+   "name": "void aiter::dynamic_per_group_scaled_quant_kernel<std::bfloat16_t, opus::fp4_t, 32, 32, false, 64, true, false, 0, false, false, false, false, false>(opus::fp4_t*, float*, std::bfl",
+   "total_us": 143528.2,
+   "count": 1938,
+   "avg_us": 74.06
+  },
+  {
+   "name": "_unified_attention_gluon_kernel.kd",
+   "total_us": 102003.7,
+   "count": 3123,
+   "avg_us": 32.66
+  },
+  {
+   "name": "void aiter::opus_moe_sorting_entry<aiter::MoeSortingMultiPhaseKernel_P23<aiter::MoeSortingProblemMp<int, float, unsigned char, 16, false, false, true> >, aiter::MoeSortingMultiPhas",
+   "total_us": 98885.2,
+   "count": 969,
+   "avg_us": 102.05
+  },
+  {
+   "name": "ncclDevKernel_Generic_1(ncclDevKernelArgsStorage<4096ul>) [clone .kd]",
+   "total_us": 86410.9,
+   "count": 1041,
+   "avg_us": 83.01
+  },
+  {
+   "name": "hgemm_bf16_t64x256x64x3_ksd_w2x4x1_gm0_bias0_lnt_pft_0.kd",
+   "total_us": 70704.5,
+   "count": 1024,
+   "avg_us": 69.05
+  },
+  {
+   "name": "hgemm_bf16_t64x64x64x8_ksd_w4x2x1_gm0_bias0_lnt_pft_0.kd",
+   "total_us": 44253.6,
+   "count": 3033,
+   "avg_us": 14.59
+  },
+  {
+   "name": "void aiter::sparse_attn::pa_sparse_block_score_prefill<128, 128, 1, 4, 4>(unsigned char const*, unsigned char const*, float*, int const*, int const*, int const*, int, int, int, int",
+   "total_us": 40596.4,
+   "count": 969,
+   "avg_us": 41.9
+  },
+  {
+   "name": "void aiter::mxfp4_moe_sort_kernel<256, 32, 24, 32>(unsigned char*, unsigned char*, int const*, int const*, int, int, int, int, int) [clone .kd]",
+   "total_us": 32387.4,
+   "count": 969,
+   "avg_us": 33.42
+  },
+  {
+   "name": "_topp_sb_mask_kernel.kd",
+   "total_us": 32242.8,
+   "count": 1041,
+   "avg_us": 30.97
+  },
+  {
+   "name": "_gumbel_sample_kernel.kd",
+   "total_us": 29318.0,
+   "count": 1041,
+   "avg_us": 28.16
+  },
+  {
+   "name": "void aiter::sparse_attn::pa_sparse_block_topk_kernel<128, 2, 16, 1, 8>(float const*, int*, int const*, int const*, int const*, int const*, int const*, int*, int*, int, int, int, in",
+   "total_us": 28545.3,
+   "count": 1824,
+   "avg_us": 15.65
+  },
+  {
+   "name": "hgemm_bf16_t64x32x64x6_ksd_w4x1x1_gm0_bias0_lnt_pft_0.kd",
+   "total_us": 27952.9,
+   "count": 3045,
+   "avg_us": 9.18
+  },
+  {
+   "name": "hgemm_bf16_t64x32x128x4_ks1_w4x1x1_gm0_bias0_lnt_pft_0.kd",
+   "total_us": 26072.0,
+   "count": 3033,
+   "avg_us": 8.6
+  },
+  {
+   "name": "_topp_sb_stats_kernel.kd",
+   "total_us": 23798.4,
+   "count": 1041,
+   "avg_us": 22.86
+  },
+  {
+   "name": "mfma_moe2_afp4_wfp4_bf16_cshuffle_t128x128x256_vscale_fix3_fp4opt_v1_persist_cu256_abuffer.kd",
+   "total_us": 23663.9,
+   "count": 57,
+   "avg_us": 415.16
+  },
+  {
+   "name": "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x208x64_MI16x16x1_SN_LDSB1_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB4_GSU0_GSUAMB_GL",
+   "total_us": 21325.0,
+   "count": 57,
+   "avg_us": 374.12
+  },
+  {
+   "name": "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x240x64_MI16x16x1_SN_LDSB0_AFC0_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA1_DTLB1_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB2_GSU0_GSUAMB_GL",
+   "total_us": 21200.5,
+   "count": 66,
+   "avg_us": 321.22
+  },
+  {
+   "name": "void at::native::elementwise_kernel_manual_unroll<128, 8, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()(",
+   "total_us": 20923.0,
+   "count": 1039,
+   "avg_us": 20.14
+  },
+  {
+   "name": "Cijk_Alik_Bljk_S_B_Bias_HA_S_SAV_UserArgs_MT64x224x64_MI16x16x1_SN_LDSB1_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA4_GRVWB4_GSU0_GSUAMB_GLS0_I",
+   "total_us": 18053.9,
+   "count": 57,
+   "avg_us": 316.73
+  },
+  {
+   "name": "_swiglu_oai_kernel.kd",
+   "total_us": 17616.2,
+   "count": 3123,
+   "avg_us": 5.64
+  },
+  {
+   "name": "void vllm::reshape_and_cache_flash_kernel<__hip_bfloat16, unsigned char, (vllm::Fp8KVCacheDataType)1>(__hip_bfloat16 const*, __hip_bfloat16 const*, unsigned char*, unsigned char*, ",
+   "total_us": 17003.0,
+   "count": 3123,
+   "avg_us": 5.44
+  },
+  {
+   "name": "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x224x64_MI16x16x1_SN_LDSB1_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB8_GSU0_GSUAMB_GL",
+   "total_us": 16435.3,
+   "count": 45,
+   "avg_us": 365.23
+  },
+  {
+   "name": "void vllm::minimax_m3_fused_ops::fusedMiniMaxM3QNormRopeKVInsertKernel<c10::BFloat16, __hip_bfloat16, (vllm::Fp8KVCacheDataType)0, c10::BFloat16, false, false, false, false>(c10::B",
+   "total_us": 15076.6,
+   "count": 3123,
+   "avg_us": 4.83
+  },
+  {
+   "name": "void vllm::scaled_fp8_quant_kernel_strided_group_shape<c10::BFloat16, c10::Float8_e4m3fn, true, true>(c10::Float8_e4m3fn*, c10::BFloat16 const*, float const*, int, long, long, int,",
+   "total_us": 13506.2,
+   "count": 3123,
+   "avg_us": 4.32
+  }
+ ],
+ "qr_stats": {
+  "n": 2057,
+  "min": 319.84,
+  "p1": 401.52,
+  "p5": 664.802,
+  "p10": 987.723,
+  "p25": 1251.964,
+  "p50": 1265.804,
+  "p75": 1283.005,
+  "p90": 1296.964,
+  "p95": 1303.484,
+  "p99": 1321.724,
+  "max": 2921.811,
+  "mean": 1212.63,
+  "sum": 2494380.4
+ },
+ "qr_grid": {
+  "None|None": 2057
+ },
+ "qr_names": {
+  "void quickreduce::allreduce_prototype_twoshot<quickreduce::AllReduceTwoshot<__half, quickreduce::CodecQ4<__half, 8>, true>, __half>(__half const*, __half*, unsigned int, unsigned int, int, unsigned ch": 2057
+ },
+ "qr_stream": {
+  "4": 2057
+ },
+ "qr_by_grid": {
+  "None|None": {
+   "n": 2057,
+   "min": 319.84,
+   "p1": 401.52,
+   "p5": 664.802,
+   "p10": 987.723,
+   "p25": 1251.964,
+   "p50": 1265.804,
+   "p75": 1283.005,
+   "p90": 1296.964,
+   "p95": 1303.484,
+   "p99": 1321.724,
+   "max": 2921.811,
+   "mean": 1212.63,
+   "sum": 2494380.4
+  }
+ },
+ "qr_eid_matched": 2057,
+ "qr_shapes": {
+  "_C_custom_ar::qr_all_reduce dims=[[], [32768, 6144], [32768, 6144], [], []]": 1815,
+  "_C_custom_ar::qr_all_reduce dims=[[], [8192, 6144], [8192, 6144], [], []]": 121,
+  "_C_custom_ar::qr_all_reduce dims=[[], [25057, 6144], [25057, 6144], [], []]": 121
+ },
+ "qr_shape_dur": {
+  "_C_custom_ar::qr_all_reduce dims=[[], [8192, 6144], [8192, 6144], [], []]": {
+   "n": 121,
+   "min": 319.84,
+   "p1": 321.6,
+   "p5": 378.281,
+   "p10": 388.16,
+   "p25": 408.921,
+   "p50": 473.961,
+   "p75": 649.762,
+   "p90": 677.602,
+   "p95": 696.402,
+   "p99": 1410.965,
+   "max": 1432.404,
+   "mean": 549.14,
+   "sum": 66445.7
+  },
+  "_C_custom_ar::qr_all_reduce dims=[[], [32768, 6144], [32768, 6144], [], []]": {
+   "n": 1815,
+   "min": 1223.684,
+   "p1": 1238.724,
+   "p5": 1245.284,
+   "p10": 1248.644,
+   "p25": 1256.244,
+   "p50": 1269.284,
+   "p75": 1285.204,
+   "p90": 1297.964,
+   "p95": 1304.204,
+   "p99": 1321.724,
+   "max": 2921.811,
+   "mean": 1272.65,
+   "sum": 2309858.1
+  },
+  "_C_custom_ar::qr_all_reduce dims=[[], [25057, 6144], [25057, 6144], [], []]": {
+   "n": 121,
+   "min": 948.043,
+   "p1": 948.603,
+   "p5": 955.083,
+   "p10": 958.083,
+   "p25": 964.643,
+   "p50": 974.603,
+   "p75": 987.803,
+   "p90": 996.003,
+   "p95": 999.763,
+   "p99": 1011.643,
+   "max": 1013.763,
+   "mean": 975.84,
+   "sum": 118076.6
+  }
+ }
+}
