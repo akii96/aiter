@@ -9,6 +9,10 @@ PRODUCER_COUNTER_STRIDE = 64
 
 SUPPORTED_TP_SIZES = (2, 4, 8)
 
+# Whether the kernel folds the caller's `shared_partial` buffer into the local
+# reduction. True reproduces the historical (and until now only) behaviour.
+DEFAULT_FOLD_SHARED = True
+
 
 @dataclass(frozen=True, slots=True)
 class Shape:
@@ -90,6 +94,21 @@ class MegakernelConfig:
     producer_mode: str = "routes"
     flat_producer_grid: bool = False
     sorted_input: bool = False
+    # Declared LAST so that its default can be elided from the compile-cache
+    # repr: the default (True) reproduces the historical behaviour in which
+    # `shared_partial` is unconditionally folded into the local reduction, so
+    # no existing cache key or launcher name moves. See
+    # megakernel._legacy_config_repr.
+    #
+    # Set False when the caller has no separate shared contribution to add --
+    # notably when the model fuses its shared expert *into* the routed topk
+    # rather than keeping it beside it. Folding a shared buffer in on top of
+    # that double-counts it: the result is `2*shared + sum(routes)` per rank,
+    # i.e. `TP * shared` of extra signal after the all-reduce, with no shape
+    # change and no exception to reveal it. With fold_shared=False the kernel
+    # never reads shared_resource, which also removes a dead
+    # [m, model_dim] load per N tile.
+    fold_shared: bool = DEFAULT_FOLD_SHARED
 
     def __post_init__(self):
         if self.m <= 0:

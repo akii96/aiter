@@ -32,10 +32,41 @@ from .collectives import (
     store_buffer,
     store_fp8_words,
 )
-from .config import PRODUCER_COUNTER_STRIDE, SLOTS, MegakernelConfig
+from .config import (
+    DEFAULT_FOLD_SHARED,
+    PRODUCER_COUNTER_STRIDE,
+    SLOTS,
+    MegakernelConfig,
+)
 from .producer import compile_megakernel_producer
 
 CPOL_COHERENT = 0x1 | 0x10
+
+
+def _legacy_config_repr(config: MegakernelConfig) -> str:
+    """Render the config exactly as it was rendered before ``fold_shared``.
+
+    ``compile_megakernel`` hashes this text into the compile-cache key and
+    bakes it into the launcher symbol name, so any change to it silently
+    invalidates every cached kernel and renames every launcher.
+
+    ``fold_shared`` is a dataclass field, so ``repr(config)`` already carries
+    it. The default (``True``) is stripped back out so that every
+    pre-existing configuration keeps its exact historical repr, and therefore
+    its exact historical cache key and launcher name. A config that declines
+    the fold keeps the token and hashes distinctly, which is required: the two
+    compile to different kernels and must never share a cache entry.
+    """
+
+    text = (
+        repr(config)
+        .replace("MegakernelConfig(", "Gemm2TPMegakernelConfig(", 1)
+        .replace("shape=Shape(", "shape=Gemm2TPShape(", 1)
+    )
+    default_token = f", fold_shared={DEFAULT_FOLD_SHARED!r})"
+    if text.endswith(default_token):
+        text = text[: -len(default_token)] + ")"
+    return text
 
 
 def _decode_scaled_fp8_bf16(words, scale):
@@ -288,25 +319,25 @@ def emit_service_tile(
             + tile_item * fx.Int32(config.vector_width)
         )
         if const_expr(config.producer_mode == "atomic_shared"):
-            shared_values = load_bf16(
-                shared_resource,
-                output_offset,
-                config.vector_width,
-                config.local_load_cache_modifier,
-            ).to(fx.Float32)
-            reduced_f32 = shared_values + load_bf16(
+            accumulated = load_bf16(
                 accumulator_resource,
                 output_offset,
                 config.vector_width,
                 config.local_load_cache_modifier,
             ).to(fx.Float32)
+            if const_expr(config.fold_shared):
+                reduced_f32 = (
+                    load_bf16(
+                        shared_resource,
+                        output_offset,
+                        config.vector_width,
+                        config.local_load_cache_modifier,
+                    ).to(fx.Float32)
+                    + accumulated
+                )
+            else:
+                reduced_f32 = accumulated
         else:
-            shared_values = load_bf16(
-                shared_resource,
-                output_offset,
-                config.vector_width,
-                config.local_load_cache_modifier,
-            ).to(fx.Float32)
 
             def load_bf16_route(route_slot):
                 route_offset = (
@@ -322,7 +353,15 @@ def emit_service_tile(
                     config.local_load_cache_modifier,
                 ).to(fx.Float32)
 
-            local_even = shared_values + load_bf16_route(0)
+            if const_expr(config.fold_shared):
+                local_even = load_bf16(
+                    shared_resource,
+                    output_offset,
+                    config.vector_width,
+                    config.local_load_cache_modifier,
+                ).to(fx.Float32) + load_bf16_route(0)
+            else:
+                local_even = load_bf16_route(0)
             if const_expr(topk == 1):
                 reduced_f32 = local_even
             else:
@@ -1147,11 +1186,7 @@ def compile_megakernel(
         if config.n_tile_cohort or config.flat_producer_grid
         else (config.n_tiles, config.compute_groups, 1)
     )
-    legacy_config_repr = (
-        repr(config)
-        .replace("MegakernelConfig(", "Gemm2TPMegakernelConfig(", 1)
-        .replace("shape=Shape(", "shape=Gemm2TPShape(", 1)
-    )
+    legacy_config_repr = _legacy_config_repr(config)
     cache_config = hashlib.sha256(
         f"mxmoe_bf16_route_dynamic_scale_v5:{legacy_config_repr}".encode()
     ).hexdigest()[:16]

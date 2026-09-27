@@ -174,6 +174,10 @@ def config_name(config: PipelineConfig) -> str:
         parts.append("patomic")
     if config.flat_producer_grid:
         parts.append("flat")
+    if not config.fold_shared:
+        # Only the non-default (do-not-fold) case is tagged, so every
+        # pre-existing kernelName is reproduced byte-for-byte.
+        parts.append("noshared")
     return "_".join(parts)
 
 
@@ -220,6 +224,8 @@ def _parse_megakernel_name(name: str, shape: Shape, m: int):
             values["producer_mode"] = "atomic_shared"
         elif part == "flat":
             values["flat_producer_grid"] = True
+        elif part == "noshared":
+            values["fold_shared"] = False
         else:
             for tag, field_name in sorted(
                 numeric_tags.items(), key=lambda item: -len(item[0])

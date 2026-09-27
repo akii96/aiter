@@ -10,6 +10,18 @@ from typing import Any
 import torch
 
 
+def _runner_folds_shared(runner: Any) -> bool:
+    """Whether this runner's compiled kernel reads ``shared_partial``.
+
+    Defaults to True for any runner that does not expose a config, so an
+    unrecognised runner keeps the historical strict behaviour rather than
+    silently dropping a contribution the caller meant to add.
+    """
+
+    config = getattr(runner, "config", None)
+    return bool(getattr(config, "fold_shared", True))
+
+
 class CommFusedMoeRuntime:
     """Reuse ordinary MoE through Stage1, then run fused Stage2 + TP AR.
 
@@ -67,7 +79,20 @@ class CommFusedMoeRuntime:
                 if before_stage2 is not None:
                     current_shared = before_stage2()
                 if current_shared is None:
-                    raise RuntimeError("comm-fused Stage2 requires shared_partial")
+                    # A runner compiled with fold_shared=False never reads the
+                    # buffer, so requiring one would force callers whose shared
+                    # expert is already inside the routed topk to allocate and
+                    # zero a dead [M, H] tensor -- and to risk passing a live
+                    # one, which would double-count silently.
+                    if _runner_folds_shared(runner):
+                        raise RuntimeError(
+                            "comm-fused Stage2 requires shared_partial "
+                            "(the selected runner was compiled with "
+                            "fold_shared=True). Pass an explicitly zeroed "
+                            "buffer, or select a 'noshared' kernel whose "
+                            "config sets fold_shared=False."
+                        )
+                    return runner(shared_partial=runner.output, **kwargs)
                 if bucket != raw_tokens:
                     padded_shared = runner.output
                     padded_shared[:raw_tokens].copy_(current_shared)
