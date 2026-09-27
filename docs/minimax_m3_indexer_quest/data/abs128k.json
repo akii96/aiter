@@ -1,0 +1,181 @@
+[
+  {
+    "ctx": 131072,
+    "nblk": 1024,
+    "sigma": 20.21282196044922,
+    "Tstar_sigma": 2.639063835144043,
+    "true_max_sigma": 4.347434043884277,
+    "true_med_sigma": 0.2617623209953308,
+    "budget_sigma": 2.3773012161254883,
+    "subs": [
+      {
+        "sub": 1,
+        "tokens_per_box": 128,
+        "box": {
+          "slack_sigma": 7.883753299713135,
+          "excess_sigma": 5.520671844482422,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9855630413859481,
+          "sum_bytes": 256
+        },
+        "polar": {
+          "slack_sigma": 11.54878044128418,
+          "excess_sigma": 9.286300659179688,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9912875121006777,
+          "sum_bytes": 160
+        },
+        "pbox": {
+          "slack_sigma": 7.883753299713135,
+          "excess_sigma": 5.520671844482422,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.983669548511047,
+          "sum_bytes": 288
+        }
+      },
+      {
+        "sub": 2,
+        "tokens_per_box": 64,
+        "box": {
+          "slack_sigma": 7.089114665985107,
+          "excess_sigma": 4.723545551300049,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9706161137440759,
+          "sum_bytes": 512
+        },
+        "polar": {
+          "slack_sigma": 11.140798568725586,
+          "excess_sigma": 8.882312774658203,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9817833173537871,
+          "sum_bytes": 320
+        },
+        "pbox": {
+          "slack_sigma": 7.089114665985107,
+          "excess_sigma": 4.723545551300049,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9669499527856469,
+          "sum_bytes": 576
+        }
+      },
+      {
+        "sub": 4,
+        "tokens_per_box": 32,
+        "box": {
+          "slack_sigma": 6.219947338104248,
+          "excess_sigma": 3.8526487350463867,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9420423183072677,
+          "sum_bytes": 1024
+        },
+        "polar": {
+          "slack_sigma": 10.65670108795166,
+          "excess_sigma": 8.40040111541748,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9633113828786454,
+          "sum_bytes": 640
+        },
+        "pbox": {
+          "slack_sigma": 6.219947338104248,
+          "excess_sigma": 3.8526487350463867,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.9351598173515981,
+          "sum_bytes": 1152
+        }
+      },
+      {
+        "sub": 8,
+        "tokens_per_box": 16,
+        "box": {
+          "slack_sigma": 5.262787818908691,
+          "excess_sigma": 2.8944573402404785,
+          "n_mean": 1022.40625,
+          "frac": 0.998443603515625,
+          "traffic": 0.8901244962784164,
+          "sum_bytes": 2048
+        },
+        "polar": {
+          "slack_sigma": 10.085077285766602,
+          "excess_sigma": 7.825435638427734,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.928377153218495,
+          "sum_bytes": 1280
+        },
+        "pbox": {
+          "slack_sigma": 5.262787818908691,
+          "excess_sigma": 2.8944573402404785,
+          "n_mean": 1022.40625,
+          "frac": 0.998443603515625,
+          "traffic": 0.8779142367943726,
+          "sum_bytes": 2304
+        }
+      },
+      {
+        "sub": 16,
+        "tokens_per_box": 8,
+        "box": {
+          "slack_sigma": 4.214021682739258,
+          "excess_sigma": 1.8428452014923096,
+          "n_mean": 1003.3125,
+          "frac": 0.97979736328125,
+          "traffic": 0.8140836953640256,
+          "sum_bytes": 4096
+        },
+        "polar": {
+          "slack_sigma": 9.391818046569824,
+          "excess_sigma": 7.134655952453613,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.8655959425190194,
+          "sum_bytes": 2560
+        },
+        "pbox": {
+          "slack_sigma": 4.214021682739258,
+          "excess_sigma": 1.8428452014923096,
+          "n_mean": 1003.3125,
+          "frac": 0.97979736328125,
+          "traffic": 0.793862145210394,
+          "sum_bytes": 4608
+        }
+      },
+      {
+        "sub": 32,
+        "tokens_per_box": 4,
+        "box": {
+          "slack_sigma": 3.0351219177246094,
+          "excess_sigma": 0.6639503240585327,
+          "n_mean": 781.84375,
+          "frac": 0.763519287109375,
+          "traffic": 0.7999062920142208,
+          "sum_bytes": 8192
+        },
+        "polar": {
+          "slack_sigma": 8.552457809448242,
+          "excess_sigma": 6.2951507568359375,
+          "n_mean": 1023.0,
+          "frac": 0.9990234375,
+          "traffic": 0.7624720774385704,
+          "sum_bytes": 5120
+        },
+        "pbox": {
+          "slack_sigma": 3.0351219177246094,
+          "excess_sigma": 0.6639503240585327,
+          "n_mean": 781.84375,
+          "frac": 0.763519287109375,
+          "traffic": 0.7614454705909266,
+          "sum_bytes": 9216
+        }
+      }
+    ]
+  }
+]
