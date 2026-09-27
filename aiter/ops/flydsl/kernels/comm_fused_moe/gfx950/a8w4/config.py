@@ -299,14 +299,31 @@ class MegakernelConfig:
 
     @property
     def producer_rows(self) -> int:
+        """Upper bound on sorted m_blocks, matching the host's own bound.
+
+        Sorting pads each non-empty expert independently to sort_block_m, so
+        the worst case is one partially filled block per expert plus whole
+        blocks for the remainder. The remainder division must round UP: the
+        leftover rows still occupy a block even when they do not fill one.
+
+        This must agree with the host bound computed in
+        ``mxmoe_dispatcher._active_m_blocks_upper_bound``
+        (``(routes + active*(SBM-1) + SBM-1) // SBM``), because the static
+        producer loop's trip count is compile-time and derived from this
+        value while the sort array is sized by the host. Flooring here
+        under-counts by one block whenever ``(routes - experts) % SBM != 0``,
+        and the loop guard in ``megakernel.py`` only masks overshoot -- an
+        undercount silently drops the tail m_block and its tokens are never
+        multiplied. See ``WindowConfig.compute_workers``, which has always
+        rounded up.
+        """
+
         route_rows = self.m * self.shape.topk
-        # Sorting pads each non-empty expert independently to sort_block_m.
-        max_sort_blocks = (
-            route_rows
-            if route_rows <= self.shape.experts
-            else self.shape.experts
-            + (route_rows - self.shape.experts) // self.sort_block_m
-        )
+        if route_rows <= self.shape.experts:
+            max_sort_blocks = route_rows
+        else:
+            tail = route_rows - self.shape.experts
+            max_sort_blocks = self.shape.experts + -(-tail // self.sort_block_m)
         return max_sort_blocks * self.sort_block_m // self.tile_m
 
     @property

@@ -2,13 +2,20 @@
 # Copyright (C) 2024-2026, Advanced Micro Devices, Inc. All rights reserved.
 """CPU-only contract tests for the comm-fused MoE Stage2 configuration.
 
-The load-bearing property here is invisible to a GPU numerics run:
-**compile-cache stability**. ``MegakernelConfig`` is rendered through
-``repr(config)`` into the compile-cache key and into the launcher symbol name,
-and ``compile_megakernel`` is ``@functools.cache``'d on the config. Adding a
-field therefore moves every cache key unless its default is elided from the
-repr. The five shipped DSV4 cache keys are frozen here as goldens captured
-before ``fold_shared`` existed.
+Two properties are load-bearing and invisible to a GPU numerics run:
+
+1. **Compile-cache stability.** ``MegakernelConfig`` is rendered through
+   ``repr(config)`` into the compile-cache key and into the launcher symbol
+   name, and ``compile_megakernel`` is ``@functools.cache``'d on the config.
+   Adding a field therefore moves every cache key unless its default is
+   elided from the repr. The five shipped DSV4 cache keys are frozen here as
+   goldens captured before ``fold_shared`` existed.
+
+2. **Host/kernel agreement on the producer bound.** The static producer
+   loop's trip count is compile-time and derived from
+   ``MegakernelConfig.producer_rows`` while the sort array is sized by
+   ``mxmoe_dispatcher._active_m_blocks_upper_bound``. If the two disagree
+   downward, the tail m_block is silently dropped.
 
 Everything here is pure Python dataclass/string work: no GPU, no compiler, no
 symmetric memory. ``config.py`` imports only ``dataclasses``, so it loads
@@ -24,9 +31,12 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _A8W4 = _REPO_ROOT / "aiter/ops/flydsl/kernels/comm_fused_moe/gfx950/a8w4"
 _HOST_PY = _REPO_ROOT / "aiter/ops/flydsl/comm_fused_moe_host.py"
+_DISPATCHER_PY = _REPO_ROOT / "aiter/ops/flydsl/kernels/mxmoe_dispatcher.py"
 _DSV4_CSV = (
     _REPO_ROOT / "aiter/configs/model_configs/dsv4_fp8fp4_tuned_comm_fused_moe.csv"
 )
@@ -388,3 +398,126 @@ def test_host_emits_and_parses_the_noshared_tag():
     assert 'parts.append("noshared")' in source
     assert 'elif part == "noshared":' in source
     assert 'values["fold_shared"] = False' in source
+
+
+# --------------------------------------------------------------------------
+# producer_rows must agree with the host's own bound
+# --------------------------------------------------------------------------
+
+
+def _host_active_m_blocks_upper_bound(m, topk, experts, tile_m, sort_block_m):
+    """Lifted verbatim from ``mxmoe_dispatcher._active_m_blocks_upper_bound``.
+
+    Kept as an independent copy so a change to either side shows up as a test
+    failure rather than as a silently dropped tile at runtime.
+    """
+
+    routes = m * topk
+    active_experts = min(routes, experts)
+    sort_blocks = (routes + active_experts * (sort_block_m - 1) + sort_block_m - 1) // (
+        sort_block_m
+    )
+    return sort_blocks * (sort_block_m // tile_m)
+
+
+def test_host_bound_mirror_matches_the_real_dispatcher():
+    """Drift guard: the mirror above must match the shipped dispatcher source."""
+
+    source = _DISPATCHER_PY.read_text(encoding="utf-8")
+    assert "def _active_m_blocks_upper_bound(M_logical, topk, NE, BM, SBM):" in source
+    assert "routes = M_logical * topk" in source
+    assert "active_experts = min(routes, NE)" in source
+    assert (
+        "sort_blocks = (routes + active_experts * (SBM - 1) + SBM - 1) // SBM" in source
+    )
+    assert "return sort_blocks * (SBM // BM)" in source
+
+
+_AGREEMENT_GEOMETRIES = (
+    (DSV4_SHAPE, 6, 384),
+    (FOLDED_SHARED_SHAPE, 5, 129),
+)
+_AGREEMENT_MS = (1, 2, 4, 8, 16, 25, 26, 32, 64, 65, 128, 256, 512, 2048)
+
+
+@pytest.mark.parametrize("shape,topk,experts", _AGREEMENT_GEOMETRIES)
+@pytest.mark.parametrize("m", _AGREEMENT_MS)
+def test_producer_rows_agrees_with_the_host_bound(shape, topk, experts, m):
+    """producer_rows must equal the host's bound at every m, both geometries.
+
+    The static producer loop's trip count is compile-time and derived from
+    ``producer_rows`` while the sort array is sized by the host bound. A floor
+    here under-counts by one block whenever ``(routes - experts) % SBM != 0``
+    and the loop guard only masks *overshoot*, so an undercount silently drops
+    the tail m_block. Over-counting is safe; under-counting is a wrong answer,
+    so assert exact equality.
+    """
+
+    tile_m, sort_block_m = 32, 32
+    config = MegakernelConfig(
+        shape=shape, m=m, tile_m=tile_m, sort_block_m=sort_block_m, compute_groups=1
+    )
+    assert config.producer_rows == _host_active_m_blocks_upper_bound(
+        m, topk, experts, tile_m, sort_block_m
+    )
+
+
+def test_ceil_beats_floor_against_the_host_bound():
+    """The ceil is *correct*, not merely different.
+
+    Across the sampled (m, geometry) pairs the current implementation matches
+    the host bound everywhere, while the previous floored division matched
+    only a subset. This pins the direction of the fix.
+    """
+
+    tile_m, sort_block_m = 32, 32
+    matches = {"current": 0, "floor": 0, "total": 0}
+    for shape, topk, experts in _AGREEMENT_GEOMETRIES:
+        for m in _AGREEMENT_MS:
+            config = MegakernelConfig(
+                shape=shape,
+                m=m,
+                tile_m=tile_m,
+                sort_block_m=sort_block_m,
+                compute_groups=1,
+            )
+            expected = _host_active_m_blocks_upper_bound(
+                m, topk, experts, tile_m, sort_block_m
+            )
+            routes = m * topk
+            floored_blocks = (
+                routes
+                if routes <= experts
+                else experts + (routes - experts) // sort_block_m
+            )
+            floored = floored_blocks * sort_block_m // tile_m
+            matches["total"] += 1
+            matches["current"] += config.producer_rows == expected
+            matches["floor"] += floored == expected
+
+    assert matches["current"] == matches["total"]
+    assert matches["floor"] < matches["total"]
+
+
+def test_producer_rows_fix_does_not_move_any_shipped_dsv4_row():
+    """The ceil only bites above m=64 for DSV4; every shipped row is m<=16.
+
+    This is why the change carries zero cache-key churn: all five tuned rows
+    sit in the ``routes <= experts`` branch, where no division happens at all.
+    """
+
+    for row in _dsv4_megakernel_rows():
+        config = _megakernel_from_row(row)
+        routes = config.m * config.shape.topk
+        assert routes <= config.shape.experts
+        assert config.producer_rows == routes * (config.sort_block_m // config.tile_m)
+
+
+def test_folded_shared_geometry_at_m64_is_now_consistent():
+    """The undercount that made direct@M=64 self-inconsistent is gone."""
+
+    config = MegakernelConfig(
+        shape=FOLDED_SHARED_SHAPE, m=64, tile_m=32, sort_block_m=32, compute_groups=1
+    )
+    assert config.producer_rows == 135
+    assert config.producer_rows == _host_active_m_blocks_upper_bound(64, 5, 129, 32, 32)
