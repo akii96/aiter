@@ -3688,7 +3688,23 @@ def get_2stage_cfgs(
         dtype == dtypes.bf16
         and not is_ep
         and q_type == QuantType.per_1x32
-        and activation == ActivationType.Situv2
+        # Swiglu is admitted alongside SiTUv2 so that non-256-aligned inter_dim
+        # reaches this branch's matched (fp4-output GEMM1, v2 layout GEMM2)
+        # pair instead of the heuristic fallback below, whose
+        # flydsl_kernel_name() can only emit a *native* (v1) GEMM2 name. The
+        # restriction was never about the activation: the comment above
+        # justifies it by the layout GEMM2 writing bf16 only and its
+        # output_aux sort dropping expert_mask, and both are already enforced
+        # by `dtype == dtypes.bf16` and `not is_ep` in this same expression.
+        # Swiglu MXMOE GEMM1 kernels are registered at every block_m.
+        and activation in (ActivationType.Situv2, ActivationType.Swiglu)
+        # ...but Swiglu only where the defect actually lives. This branch has no
+        # alignment predicate of its own, so without this conjunct admitting
+        # Swiglu would also move 256-ALIGNED untuned widths (e.g. 512, 1536)
+        # off the v1 native GEMM2 they run correctly today -- a behaviour change
+        # unrelated to the stride bug, and a regression risk for shapes that are
+        # working. SiTUv2 keeps its existing unconditional behaviour.
+        and (inter_dim % 256 != 0 or activation == ActivationType.Situv2)
         and q_dtype_a == dtypes.fp4x2
         and q_dtype_w == dtypes.fp4x2
         and is_shuffled
@@ -3708,7 +3724,8 @@ def get_2stage_cfgs(
         _rows_per_expert = -(-token * topk // expert)
         _g1_swz = min(6, max(1, -(-_rows_per_expert // _bm)))
         _g1_sfx = f"_xcd{_g1_swz}" if _g1_swz > 1 else ""
-        _kn1 = f"flydsl_mxmoe_g1_a4w4_{_bm}x256x256_situv2{_g1_sfx}"
+        _act_tok = get_flydsl_activation_name(activation)
+        _kn1 = f"flydsl_mxmoe_g1_a4w4_{_bm}x256x256_{_act_tok}{_g1_sfx}"
         _kn2 = f"flydsl_moe2_layout_afp4_wfp4_bf16_t{_bm}x256x128_reduce_sbm{_bm}"
         logger.warning(
             f"[fused_moe] no tuned FlyDSL config for {keys}, "
