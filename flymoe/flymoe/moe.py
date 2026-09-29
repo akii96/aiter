@@ -58,7 +58,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -72,6 +72,9 @@ class MoERun:
         # Step-major A scales pay off for large stage-1 tiles; at small tiles the extra
         # transpose launch costs more than it saves (measured).
         self.AST = (BM1 >= 128) if AST == "auto" else bool(AST)
+        # HT: stage 1 writes h K-step-major (h_t[I/128][R][64 B], step-major h scales), so
+        # stage 2's A and A-scale fetches are contiguous 1 KB DMAs.
+        self.HT = bool(HT)
         self.ids = topk_ids.reshape(-1).to(torch.int32).contiguous()
         self.w = topk_w.reshape(-1).to(torch.float32).contiguous()
         self.a_q = torch.empty(T, H // 2, dtype=torch.uint8, device=dev)
@@ -136,7 +139,7 @@ class MoERun:
                  tp, ntp, self.row_tok.data_ptr(), self.dummy.data_ptr(),
                  self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
                 self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"],
-                WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST,
+                WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT,
             )
 
     def stage2(self):
@@ -152,7 +155,7 @@ class MoERun:
                  tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
                  dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
                 self.spec_mt[b], D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
-                diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"],
+                diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.HT, HT=self.HT,
             )
 
     def combine(self):

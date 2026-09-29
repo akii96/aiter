@@ -25,7 +25,7 @@ def kv(s):
     return d
 
 
-GLOBAL = ("AST",)
+GLOBAL = ("AST", "HT")
 
 
 def screen(stage, I, T, cfgs, reps=7, inner=10):

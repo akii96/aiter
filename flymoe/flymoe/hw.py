@@ -239,3 +239,8 @@ def _install_fn_attr_hint():
 
 
 _install_fn_attr_hint()
+
+
+def exp2_raw(x):
+    """v_exp_f32 without LLVM's denormal-range fixup (valid for inputs well inside range)."""
+    return fx.Float32(llvm.call_intrinsic(T.f32, "llvm.amdgcn.exp2", [raw(fx.Float32(x))], [], []))
