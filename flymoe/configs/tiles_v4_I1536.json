@@ -1,0 +1,295 @@
+{
+ "32": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 22.948099672794342,
+   "stage1": 142.05700159072876,
+   "stage2": 74.50860142707825,
+   "combine": 7.19200000166893,
+   "total": 246.70570269227028
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "64": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 22.460199892520905,
+   "stage1": 191.18540287017822,
+   "stage2": 101.70880556106567,
+   "combine": 6.883999705314636,
+   "total": 322.23840802907944
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "128": {
+  "s1": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 20.704099535942078,
+   "stage1": 209.4254970550537,
+   "stage2": 113.1289005279541,
+   "combine": 6.916099786758423,
+   "total": 350.1745969057083
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "256": {
+  "s1": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 24.20019954442978,
+   "stage1": 216.6696071624756,
+   "stage2": 120.08490562438965,
+   "combine": 7.168000191450119,
+   "total": 368.12271252274513
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "512": {
+  "s1": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 26.02820098400116,
+   "stage1": 224.44560527801514,
+   "stage2": 129.31690216064453,
+   "combine": 7.144100219011307,
+   "total": 386.93480864167213
+  }
+ },
+ "1024": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 21.188099682331085,
+   "stage1": 244.72980499267578,
+   "stage2": 143.40900182724,
+   "combine": 12.988099455833435,
+   "total": 422.3150059580803
+  }
+ },
+ "2048": {
+  "s1": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3
+  },
+  "global": {
+   "HT": 1,
+   "FC": 1
+  },
+  "us": {
+   "prologue": 35.94430088996887,
+   "stage1": 268.9779043197632,
+   "stage2": 196.12540006637573,
+   "combine": 1.0200000368058681,
+   "total": 502.06760531291366
+  }
+ },
+ "4096": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1,
+   "diag": "skip"
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3
+  },
+  "global": {
+   "HT": 1,
+   "FC": 1
+  },
+  "us": {
+   "prologue": 45.6043004989624,
+   "stage1": 356.07450008392334,
+   "stage2": 281.2540054321289,
+   "combine": 1.0359999723732471,
+   "total": 683.9688059873879
+  }
+ },
+ "8192": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1,
+   "diag": "skip"
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 59.35239791870117,
+   "stage1": 564.228105545044,
+   "stage2": 401.29079818725586,
+   "combine": 119.23290491104126,
+   "total": 1144.1042065620422
+  }
+ },
+ "16384": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 88.34869861602783,
+   "stage1": 948.3787536621094,
+   "stage2": 725.6051063537598,
+   "combine": 235.90960502624512,
+   "total": 1998.242163658142
+  }
+ },
+ "32768": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 165.55320024490356,
+   "stage1": 1661.863899230957,
+   "stage2": 1362.2417449951172,
+   "combine": 449.66320991516113,
+   "total": 3639.322054386139
+  }
+ }
+}

@@ -142,3 +142,64 @@ Measured dead ends: GM rasterization, L2 touch-prefetch (hits the register cap a
 - The rest is LDS reads and barrier skew.
 
 The next structural levers: pre-gather A into compact step-major rows (halves the A TA cost), and cut the DMA instruction count per step.
+
+
+## Round 3 (v4, `configs/tiles_v4_I*.json`) vs v3 and v1
+
+Measured with `bench/compare.py`: serial on GPU 0, round-robin arms, a null arm, prologue included. Output matches the reference to within `rel_diff` ≤ 1e-6 in every cell. The fused-combine cells differ only in summation order; all others are bit-identical.
+
+| T | I=384 vs v3 | I=768 vs v3 | I=1536 vs v3 | I=384 vs v1 | I=768 vs v1 | I=1536 vs v1 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32–256 | noise | noise | noise | – | – | – |
+| 4096 | +1.0% | +6.9% | +4.8% | +5.1% | +10.0% | +12.3% |
+| 8192 | −2.4% (noise) | +5.8% | +7.2% | – | – | – |
+| 16384 | +4.9% | +10.1% | +3.0% | – | – | – |
+| 32768 | +1.6% | +6.7% | +1.4% | +12.8% | +15.4% | +15.1% |
+
+**Stage 1 at T=32768:**
+
+| Width | Time | Rate | Share of the measured ~6.5–7.3 PF MFMA peak |
+|---|---|---|---|
+| I=384 | 450 µs | 3.4 PF | about 50% |
+| I=768 | 865 µs | 3.6 PF | about 52% |
+| I=1536 | 1682 µs | 3.7 PF | about 54% |
+
+For I=1536 that's down from 2462 µs in v1.
+
+### Small T is MALL-inflated
+
+A 512 MB flush between launches (`--flush`) shows serving-like small-T times are about 2× the warm numbers: I=384 at T=32 is 85 µs warm versus 177 µs flushed. v4 is within noise of v3 either way.
+
+### What round 3 measured
+
+**Kept:**
+
+| Change | Effect | Notes |
+|---|---|---|
+| LDS reads interleaved with DMA issue in the ping-pong memory phase | stage 1 −2 to −7% | default |
+| Raw `v_exp_f32` in the SwiGLU epilogue | stage 1 about −2% | |
+| Row-block tail skipping (`diag=skip`) | −5 to −10% at T=4k–8k | chosen per bucket |
+| K-step-major stage-1 B scales, one DMA per step | −0.5 to −1.5% | |
+| Stage-2 LDS-staged 16 B stores (+ non-temporal) | e.g. I=768 stage 2 942 -> 811 µs with `hybrid2`; I=384 615 -> 574 µs with async + NT | chosen per bucket |
+| HT layout (`h_t`) and fused combine (FC) | wins at I=768 T ≥ 8k (FC) and some I=1536/384 cells (HT) | per-bucket global switches, chosen on total time |
+
+**Measured and off by default:**
+- A small-tile tail launch (`TB`): slower everywhere.
+- Uniform per-wave scale DMAs: +4–8% at D=3.
+- Persistent stage 1: +33–61%. Hardware dispatch already backfills the CUs.
+- Quant-side step-major scale writes: 32k prologue 194 vs 170 µs.
+- Single-launch small-R plan: 24.8 vs 18.6 µs.
+
+**Measured, not built:** the 128 B A DMA granule. The microbenchmark gives +16% on the A path (36–39 vs 31–33 B/clk/CU), which is about 2–3% of stage 1.
+
+**Infeasible:** `op_sel`-packed A scales. Tiles start at unaligned compact rows, so no global layout lines up with tile-relative row blocks.
+
+### Correctness and robustness fixes
+
+- 64-bit per-tile and per-row descriptor bases for `y_rows` and the combine. The T=40000 test passes with R·H·2 > 2³¹.
+- Clamp of dynamic descriptor sizes.
+- `gcount` is re-zeroed inside the single-CTA prefix kernel.
+- The global `amdgpu-mfma-vgpr-form` option is dropped.
+- JIT cache keys now include each kernel's full name string. FlyDSL's disk cache ignores list- and set-typed closure values, which served stale kernels twice.
+
+**A regression found and fixed:** sizing the `y_rows` store descriptor to exactly the tile's rows made stage-2 stores about 30% slower. The record count now spans the remaining rows. It was found by bisecting across the round's commits.

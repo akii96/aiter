@@ -1,0 +1,294 @@
+{
+ "32": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.280100524425507,
+   "stage1": 37.716299295425415,
+   "stage2": 24.35609996318817,
+   "combine": 1.071999967098236,
+   "total": 86.42449975013733
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "64": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.90819936990738,
+   "stage1": 44.99630033969879,
+   "stage2": 29.228198528289795,
+   "combine": 1.128000020980835,
+   "total": 99.2606982588768
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "128": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.544199764728546,
+   "stage1": 53.22039723396301,
+   "stage2": 32.7241986989975,
+   "combine": 1.1119999922811985,
+   "total": 110.60079568997025
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "256": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.93209934234619,
+   "stage1": 57.480400800704956,
+   "stage2": 34.41219925880432,
+   "combine": 1.116000022739172,
+   "total": 116.94069942459464
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "512": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 2
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 26.02820098400116,
+   "stage1": 64.26849961280823,
+   "stage2": 32.74030089378357,
+   "combine": 7.3840998113155365,
+   "total": 130.4211013019085
+  }
+ },
+ "1024": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 29.812198877334595,
+   "stage1": 68.04850101470947,
+   "stage2": 39.044299721717834,
+   "combine": 12.583999335765839,
+   "total": 149.48899894952774
+  },
+  "note": "v3 config (tuner pick lost serially)"
+ },
+ "2048": {
+  "s1": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 35.436299443244934,
+   "stage1": 80.31659722328186,
+   "stage2": 94.25269961357117,
+   "combine": 1.1881000362336636,
+   "total": 211.19369631633162
+  },
+  "note": "v3 config (tuner pick lost serially)"
+ },
+ "4096": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 46.232399344444275,
+   "stage1": 101.80070400238037,
+   "stage2": 155.2011013031006,
+   "combine": 1.104000024497509,
+   "total": 304.33820467442274
+  },
+  "note": "v3 config (tuner pick lost serially)"
+ },
+ "8192": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "async",
+   "D": 2,
+   "diag": "s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 59.848397970199585,
+   "stage1": 151.52510404586792,
+   "stage2": 175.69730281829834,
+   "combine": 120.36479711532593,
+   "total": 507.4356019496918
+  },
+  "note": "v3 stage 1 + tuner stage-2 pick (old store path measured -3.5% here)"
+ },
+ "16384": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "async",
+   "D": 2,
+   "diag": "s2nt"
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 92.31259822845459,
+   "stage1": 254.97379302978516,
+   "stage2": 306.53018951416016,
+   "combine": 240.0296926498413,
+   "total": 893.8462734222412
+  }
+ },
+ "32768": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "async",
+   "D": 2,
+   "diag": "s2nt"
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 169.2531943321228,
+   "stage1": 453.91931533813477,
+   "stage2": 564.5921230316162,
+   "combine": 479.9633979797363,
+   "total": 1667.72803068161
+  }
+ }
+}
