@@ -18,6 +18,7 @@ CONFIGS = [
     dict(PP, **H2, diag1="ilm0"),
     dict(PP, **H2, diag1="uni"),
     dict(PP, **H2, diag2="nos2w"),
+    dict(PP, **H2, diag2="nos2w+wpe3"),
     dict(PP, **A2, diag2="s2nt"),
     dict(PP, **A2, diag1="skip", diag2="skip+s2nt"),
     dict(PP, **H2, HT=1),

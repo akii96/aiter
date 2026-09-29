@@ -221,9 +221,9 @@
   "s2": {
    "BM": 128,
    "NW": 4,
-   "pipe": "async",
-   "D": 2,
-   "diag": "s2nt"
+   "pipe": "hybrid2",
+   "D": 4,
+   "diag": "nos2w+wpe3"
   },
   "global": {},
   "us": {
@@ -233,7 +233,7 @@
    "combine": 120.36479711532593,
    "total": 507.4356019496918
   },
-  "note": "v3 stage 1 + tuner stage-2 pick (old store path measured -3.5% here)"
+  "note": "wpe3: 3 waves/SIMD (164 VGPR + 80 AGPR, no spill) vs 178 VGPR / 2 waves"
  },
  "16384": {
   "s1": {

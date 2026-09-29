@@ -148,13 +148,34 @@ The next structural levers: pre-gather A into compact step-major rows (halves th
 
 Measured with `bench/compare.py`: serial on GPU 0, round-robin arms, a null arm, prologue included. Output matches the reference to within `rel_diff` ≤ 1e-6 in every cell. The fused-combine cells differ only in summation order; all others are bit-identical.
 
-| T | I=384 vs v3 | I=768 vs v3 | I=1536 vs v3 | I=384 vs v1 | I=768 vs v1 | I=1536 vs v1 |
-|---:|---:|---:|---:|---:|---:|---:|
-| 32–256 | noise | noise | noise | – | – | – |
-| 4096 | +1.0% | +6.9% | +4.8% | +5.1% | +10.0% | +12.3% |
-| 8192 | −2.4% (noise) | +5.8% | +7.2% | – | – | – |
-| 16384 | +4.9% | +10.1% | +3.0% | – | – | – |
-| 32768 | +1.6% | +6.7% | +1.4% | +12.8% | +15.4% | +15.1% |
+Final table: fixed code, one process on GPU 0, node otherwise idle. A cell counts as a win or loss when the change exceeds max(2×|ref − ref_null|, 2%).
+
+| T | I=384 vs v3 | I=768 vs v3 | I=1536 vs v3 |
+|---:|---:|---:|---:|
+| 32–256 | noise (−1.1 to −0.5%) | noise | noise |
+| 512 | +2.3% | noise (+0.8%) | +2.4% |
+| 1024 | noise | noise (+1.7%) | noise (+1.9%) |
+| 2048 | noise (+0.7%) | +3.1% | +3.0% |
+| 4096 | noise (+0.3%) | +6.1% | +4.1% |
+| 8192 | noise (+1.2%) | +4.5% | +8.1% |
+| 16384 | +3.2% | +10.1% | +2.6% |
+| 32768 | noise (+1.0%) | +7.5% | noise (+1.2%) |
+
+**vs v1**, measured before the review fixes (which A/B'd neutral against the pre-fix code):
+
+| T | I=384 | I=768 | I=1536 |
+|---:|---:|---:|---:|
+| 4096 | +5.1% | +10.0% | +12.3% |
+| 32768 | +12.8% | +15.4% | +15.1% |
+
+### Stage-2 occupancy cliff
+
+A regression at I=384 found and fixed: stage 2 on `hybrid2` with the old store path went from 165 µs (v3) to 187 µs at T=8192.
+
+- **Cause:** bisected to `5db00ad2b`. Its 64-bit per-tile descriptor math pushed the kernel from 168 to 178 VGPRs. That crosses the 170-register limit for three waves per SIMD, dropping occupancy from 3 to 2 waves.
+- **Fix:** `diag=wpe3` (`--amdgpu-waves-per-eu=3`) compiles it at 164 VGPRs + 80 AGPRs with no spills, and stage 2 returns to 166 µs. It's used for I=384 T=8192.
+- **Limit:** the same kernel's registers grow with K: 234 VGPRs at I=768 (2 waves) and 316 VGPRs + 60 AGPRs at I=1536 (1 wave). There `wpe3` spills (364 and 766 registers) and stage 2 gets 2–3× slower.
+- **Next target:** a stage-2 K loop whose live state doesn't scale with K.
 
 **Stage 1 at T=32768:**
 

@@ -757,6 +757,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         launch.compile_hints = {"fn_attrs": {"amdgpu-agpr-alloc": "0"}}
         if MV == 2:
             launch.compile_hints["waves_per_eu"] = 2
+    wpe = [int(t[3:]) for t in DG if t.startswith("wpe") and t[3:].isdigit()]
+    if wpe:
+        # diag=wpeN: cap registers so N waves/SIMD fit (e.g. wpe3: <= 168 VGPRs).
+        launch.compile_hints = dict(getattr(launch, "compile_hints", None) or {}, waves_per_eu=wpe[0])
     launch.persistent = PERS
     return launch, NB
 
