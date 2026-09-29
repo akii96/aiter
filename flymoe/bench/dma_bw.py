@@ -47,8 +47,15 @@ def build(mode, slice_bytes):
             c = (bid // 8 + it) % nchunk
             off0 = xcd * slice_bytes + c * chunk
             for j in range_constexpr(INFLIGHT):
-                voff = off0 + (j * 256 + tid) * 16
-                if const_expr(mode == "dma"):
+                if const_expr(mode.startswith("g")):
+                    # gathered rows like the stage-1 A tile: 4 lanes x 16 B per 3 KB-strided row,
+                    # rows spread pseudo-randomly over the slice.
+                    rowid = ((bid * 131 + it * 17 + j * 7) * 64 + tid // 4) * 2654435761
+                    row = (rowid >> 7) % (slice_bytes // 3072 - 1)
+                    voff = xcd * slice_bytes + row * 3072 + (tid % 4) * 16
+                else:
+                    voff = off0 + (j * 256 + tid) * 16
+                if const_expr(mode in ("dma", "gdma")):
                     hw.dma_async(rs, base, wave * 1024 + ((it % 2) * INFLIGHT + j) * 4096, voff)
                 else:
                     v = hw.bload(rs, voff, T.i32x4)
@@ -56,10 +63,10 @@ def build(mode, slice_bytes):
                         hw.lds_store(v, base, tid * 16 + ((it % 2) * INFLIGHT + j) * 4096)
                     else:
                         acc = acc ^ fx.Int32(fx.Vector(v)[0])
-            if const_expr(mode == "dma"):
+            if const_expr(mode in ("dma", "gdma")):
                 rocdl.asyncmark()
                 rocdl.wait_asyncmark(1)
-        if const_expr(mode == "dma"):
+        if const_expr(mode in ("dma", "gdma")):
             rocdl.wait_asyncmark(0)
             acc = fx.Int32(hw.lds_load(base, tid * 4, T.i32, align=4))
         elif const_expr(mode == "vlds"):
@@ -77,7 +84,7 @@ def build(mode, slice_bytes):
 def main():
     slice_bytes = 2 * 1024 * 1024
     src = torch.randint(0, 255, (8 * slice_bytes,), dtype=torch.uint8, device="cuda")
-    for mode in ("dma", "vgpr", "vlds"):
+    for mode in ("dma", "gdma", "vgpr", "gvgpr"):
         for ctas_per_cu in (1, 2):
             grid = 256 * ctas_per_cu * 4
             out = torch.empty(grid * 256, dtype=torch.int32, device="cuda")

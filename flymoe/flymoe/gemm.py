@@ -75,11 +75,17 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         NSTG = max(3 if pipe in ("hybrid2", "async2", "pingpong") else 2, min(D, KS + 1))
         DB = min(D, KS) if pipe in ("hybrid", "hybrid2") else min(3, KS)
         b_lds = pipe in ("async", "async2", "pingpong")
-        OFF_B = BM * 64
-        OFF_BS = OFF_B + (WN * 4096 if b_lds else 0)
-        OFF_AS = OFF_BS + (WN * 256 if b_lds else 0)
-        STAGE = OFF_AS + (max(BM * 4, 1024) if AST else max(BM, 64) * 4)
-        lds_bytes = NSTG * STAGE
+        # LDS is laid out per buffer kind across ring slots ([A x NSTG][B x NSTG][BS][AS]) so
+        # every LDS read is (one hoisted base VGPR per kind) + an immediate offset < 64 KB:
+        # no per-read address VALU, which would queue behind the partner wave's MFMAs.
+        SA = BM * 64
+        SB = WN * 4096 if b_lds else 0
+        SBS = WN * 256 if b_lds else 0
+        SAS = max(BM * 4, 1024) if AST else max(BM, 64) * 4
+        RB = NSTG * SA
+        RBS = RB + NSTG * SB
+        RAS = RBS + NSTG * SBS
+        lds_bytes = RAS + NSTG * SAS
         assert lds_bytes <= 160 * 1024, lds_bytes
     else:
         assert A_CH >= 1 and (BM * 4) % THREADS == 0, "regs pipe needs BM*4 >= threads"
@@ -216,49 +222,50 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
                 def dma_ops(s):
                     """This wave's DMA instructions for K step s, as thunks (issue order)."""
-                    base = (s % NSTG) * STAGE
+                    slot = s % NSTG
+                    oA, oB, oBS, oAS = slot * SA, RB + slot * SB, RBS + slot * SBS, RAS + slot * SAS
                     ops = []
                     for it in range_constexpr(A_IT if "nodmaA" not in DG else 0):
                         if const_expr(A_INSTR % NW == 0):
                             ops.append(lambda it=it: hw.dma_async(
-                                r_a, lds_base, wave * 1024 + (base + it * NW * 1024), a_dma_voff[it], soff=s * 64))
+                                r_a, lds_base, wave * 1024 + (oA + it * NW * 1024), a_dma_voff[it], soff=s * 64))
                         else:
                             def _a(it=it):
                                 if wave + it * NW < fx.Int32(A_INSTR):
-                                    hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
+                                    hw.dma_async(r_a, lds_base, wave * 1024 + (oA + it * NW * 1024),
                                                  a_dma_voff[it], soff=s * 64)
                             ops.append(_a)
                     if const_expr(b_lds and "nodmaB" not in DG):
                         for jj in range_constexpr(4 // WM):
                             if const_expr(WM == 1):
                                 ops.append(lambda jj=jj: hw.dma_async(
-                                    r_b, lds_base, wn * 4096 + (base + OFF_B + jj * 1024), b_voff[jj],
+                                    r_b, lds_base, wn * 4096 + (oB + jj * 1024), b_voff[jj],
                                     soff=s * 1024, cm=b_cm))
                             else:
                                 def _b(jj=jj):
                                     j = wm * (4 // WM) + jj
-                                    hw.dma_async(r_b, lds_base, wn * 4096 + j * 1024 + (base + OFF_B),
+                                    hw.dma_async(r_b, lds_base, wn * 4096 + j * 1024 + oB,
                                                  b_voff[0] + j * (KS * 1024), soff=s * 1024, cm=b_cm)
                                 ops.append(_b)
                         if const_expr(WM == 1):
-                            ops.append(lambda: hw.dma_async(r_bs, lds_base, wn * 256 + (base + OFF_BS), bs_voff,
+                            ops.append(lambda: hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
                                                             soff=s * 256, nbytes=4, cm=b_cm))
                         else:
                             def _bs():
                                 if wm == fx.Int32(0):
-                                    hw.dma_async(r_bs, lds_base, wn * 256 + (base + OFF_BS), bs_voff,
+                                    hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
                                                  soff=s * 256, nbytes=4, cm=b_cm)
                             ops.append(_bs)
                     for it in range_constexpr(AS_IT):
                         if const_expr(AST):
                             def _as(it=it):
                                 if wave + it * NW < fx.Int32(AS_W):
-                                    hw.dma_async(r_as, lds_base, wave * 1024 + (base + OFF_AS + it * NW * 1024),
+                                    hw.dma_async(r_as, lds_base, wave * 1024 + (oAS + it * NW * 1024),
                                                  as_dma_voff[it], soff=n_rows * (s * 4), nbytes=16)
                         else:
                             def _as(it=it):
                                 if wave + it * NW < fx.Int32(AS_W):
-                                    hw.dma_async(r_as, lds_base, wave * 256 + (base + OFF_AS + it * NW * 256),
+                                    hw.dma_async(r_as, lds_base, wave * 256 + (oAS + it * NW * 256),
                                                  as_dma_voff[it], soff=s * 4, nbytes=4)
                         ops.append(_as)
                     return ops
@@ -279,17 +286,23 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 for p in range_constexpr(min(NSTG - 1, KS)):
                     issue(p)
 
+                # Per-kind LDS read bases (lane-varying part + region start), computed once.
+                as_rd = l16 * 4 + lg + rb0 * 64 + RAS
+                b_rd = lane * 16 + wn * 4096 + RB
+                bs_rd = lane * 4 + wn * 256 + RBS
+
                 def read_a(s):
-                    base = (s % NSTG) * STAGE
-                    ops = [hw.lds_load(lds_base, a_rd + rb0 * 1024 + (base + rb * 1024), T.i32x4)
+                    slot = s % NSTG
+                    oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
+                    ops = [hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4)
                            for rb in range_constexpr(MBW)]
-                    sc = [fx.Int32(fx.Uint8(hw.lds_load(lds_base, l16 * 4 + lg + rb0 * 64 + (base + OFF_AS + rb * 64),
+                    sc = [fx.Int32(fx.Uint8(hw.lds_load(lds_base, as_rd + (oAS + rb * 64),
                                                         T.i8, align=1)))
                           for rb in range_constexpr(MBW)]
                     if const_expr(b_lds):
-                        bo = [hw.lds_load(lds_base, lane * 16 + wn * 4096 + (base + OFF_B + j * 1024), T.i32x4)
+                        bo = [hw.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4)
                               for j in range_constexpr(4)]
-                        bsv = hw.lds_load(lds_base, lane * 4 + wn * 256 + (base + OFF_BS), T.i32, align=4)
+                        bsv = hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4)
                         return ops, sc, (bo, bsv)
                     return ops, sc, None
 

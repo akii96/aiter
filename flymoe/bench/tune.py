@@ -16,16 +16,14 @@ from bench.bench_moe import get_problem, timeit
 from flymoe import moe
 
 S1 = [
-    dict(BM=16, NW=1, pipe="async", D=4, EF=1),
-    dict(BM=32, NW=1, pipe="async", D=4, EF=1),
-    dict(BM=32, NW=2, pipe="async", D=4, EF=1),
-    dict(BM=64, NW=2, pipe="async", D=3, EF=1),
-    dict(BM=64, NW=4, pipe="async", D=3, EF=1),
-    dict(BM=64, NW=4, pipe="hybrid2", D=3, EF=1),
-    dict(BM=128, NW=4, pipe="hybrid2", D=3, EF=1),
-    dict(BM=128, NW=4, pipe="async", D=3, EF=1),
-    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=3, EF=1),
-    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=2, EF=1),
+    dict(BM=16, NW=1, pipe="async", D=4, EF=1, MV=1),
+    dict(BM=32, NW=1, pipe="async", D=4, EF=1, MV=1),
+    dict(BM=32, NW=2, pipe="async", D=4, EF=1, MV=1),
+    dict(BM=64, NW=4, pipe="async", D=3, EF=1, MV=1),
+    dict(BM=64, NW=4, pipe="hybrid2", D=3, EF=1, MV=1),
+    dict(BM=128, NW=4, pipe="hybrid2", D=3, EF=1, MV=1),
+    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=3, EF=1, MV=1),
+    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=4, EF=1, MV=1),
 ]
 S2 = [
     dict(BM=16, NW=1, pipe="async", D=2),
@@ -87,7 +85,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     res = tune(a.I, a.T)
     os.makedirs(os.path.join(os.path.dirname(__file__), "..", "configs"), exist_ok=True)
-    path = os.path.join(os.path.dirname(__file__), "..", "configs", f"tiles_v2_I{a.I}.json")
+    path = os.path.join(os.path.dirname(__file__), "..", "configs", f"tiles_v3_I{a.I}.json")
     with open(path, "w") as f:
         json.dump(res, f, indent=1)
     print("wrote", path)

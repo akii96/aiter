@@ -88,8 +88,16 @@ def compare(I, T, cand_cfg, reps=5, inner=10, quiet=False):
     return res
 
 
+def table_cfg(path, I, T):
+    with open(path.format(I=I)) as f:
+        c = json.load(f)[str(T)]
+    kw = {f"{k}1": v for k, v in c["s1"].items()}
+    kw.update({f"{k}2": v for k, v in c["s2"].items()})
+    return kw
+
+
 def cand_from_args(a, I, T):
-    c = v1_cfg(I, T)
+    c = table_cfg(a.table, I, T) if a.table else v1_cfg(I, T)
     for k in ("BM1", "NW1", "pipe1", "D1", "BM2", "NW2", "pipe2", "D2"):
         v = getattr(a, k)
         if v is not None:
@@ -110,6 +118,7 @@ if __name__ == "__main__":
     ap.add_argument("--pipe2")
     ap.add_argument("--extra", nargs="*", help="extra MoERun kwargs k=v for new levers")
     ap.add_argument("--out")
+    ap.add_argument("--table", help="candidate tile table, e.g. configs/tiles_v3_I{I}.json")
     a = ap.parse_args()
     results = []
     for I in a.I:
