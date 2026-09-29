@@ -318,7 +318,11 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 b_rd = lane * 16 + wn * 4096 + RB
                 bs_rd = lane * 4 + wn * 256 + RBS
 
-                def read_a(s):
+                def read_a(s, dmas=None, every=3):
+                    """LDS operand reads for step s. dmas: DMA thunks to interleave, one after
+                    every `every` reads, fenced so the scheduler keeps the interleave."""
+                    if const_expr(dmas is not None):
+                        return read_a_il(s, dmas, every)
                     slot = s % NSTG
                     oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
                     ops = [hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4)
@@ -332,6 +336,34 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         bsv = hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4)
                         return ops, sc, (bo, bsv)
                     return ops, sc, None
+
+                def read_a_il(s, dmas, every):
+                    slot = s % NSTG
+                    oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
+                    thunks = []
+                    for rb in range_constexpr(MBW):
+                        thunks.append(lambda rb=rb: hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4))
+                    for j in range_constexpr(4):
+                        thunks.append(lambda j=j: hw.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4))
+                    thunks.append(lambda: hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4))
+                    for rb in range_constexpr(MBW):
+                        thunks.append(lambda rb=rb: hw.lds_load(lds_base, as_rd + (oAS + rb * 64), T.i8, align=1))
+                    vals = []
+                    di = 0
+                    for i in range_constexpr(len(thunks)):
+                        vals.append(thunks[i]())
+                        if const_expr(i % every == every - 1 and di < len(dmas)):
+                            rocdl.sched_barrier(0)
+                            dmas[di]()
+                            di += 1
+                            rocdl.sched_barrier(0)
+                    for k2 in range_constexpr(di, len(dmas)):
+                        dmas[k2]()
+                    ops = vals[:MBW]
+                    bo = vals[MBW:MBW + 4]
+                    bsv = vals[MBW + 4]
+                    sc = [fx.Int32(fx.Uint8(v)) for v in vals[MBW + 5:]]
+                    return ops, sc, (bo, bsv)
 
                 if const_expr(pipe == "pingpong"):
                     # Ping-pong: wave-row 1 runs one barrier behind wave-row 0, so on every
@@ -348,11 +380,17 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         # RF: LDS operand reads first, then DMA issue, so the LDS pipe and the
                         # texture/DMA path work concurrently (they touch different ring slots).
                         RF = "dmafirst" not in DG
-                        if const_expr(dma_now and not IL and not RF):
+                        ILM = next((int(t[3:]) for t in DG if t.startswith("ilm")), 2)  # measured best: 2
+                        if const_expr(dma_now and not IL and not RF and not ILM):
                             issue(s + NSTG - 1)
-                        a_ops, sa, bl = read_a(0 if const_expr("nolds" in DG) else s)
+                        if const_expr(ILM and dma_now and not IL):
+                            # LDS reads and this step's DMA issue interleaved (TA and LDS overlap)
+                            a_ops, sa, bl = read_a(s, dmas=dma_ops(s + NSTG - 1), every=ILM)
+                            rocdl.asyncmark()
+                        else:
+                            a_ops, sa, bl = read_a(0 if const_expr("nolds" in DG) else s)
                         b_ops, bs = bl
-                        if const_expr(dma_now and not IL and RF):
+                        if const_expr(dma_now and not IL and RF and not ILM):
                             issue(s + NSTG - 1)
                         if const_expr(s + 1 < KS and "nodma" not in DG):
                             # IL: this step's DMA has not been issued yet (it goes into the MFMA phase).
