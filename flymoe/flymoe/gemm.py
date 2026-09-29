@@ -36,7 +36,8 @@ def _swz(row):
 @functools.lru_cache(maxsize=None)
 def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
                epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
-               GM: int = 1, diag: str = "", WM: int = 1, alpha: float = 1.702, limit: float = 7.0):
+               GM: int = 1, diag: str = "", WM: int = 1, EF: bool = False,
+               alpha: float = 1.702, limit: float = 7.0):
     assert stage in (1, 2)
     assert epi in ("rows", "f32atomic", "bf16atomic")
     assert pipe in ("async", "regs", "hybrid", "hybrid2", "async2", "pingpong")
@@ -84,6 +85,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         name += "_xcd"
     if GM > 1:
         name += f"_gm{GM}"
+    if EF:
+        name += "_ef"
+    NEG_ALPHA_LOG2E = -alpha * 1.4426950408889634
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
@@ -375,11 +379,17 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         for gv, uv in ((vg_e[v], vu_e[v]), (vg_o[v], vu_o[v])):
                             gg = fx.min(fx.Float32(gv), lim)
                             uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
-                            sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
+                            if const_expr(EF):
+                                sig = hw.fast_rcp(fx.Float32(1.0) + fmath.exp2(gg * fx.Float32(NEG_ALPHA_LOG2E)))
+                            else:
+                                sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
                             hs.append(gg * sig * (uu + fx.Float32(1.0)))
                         m = fx.max(fmath.absf(hs[0]), fmath.absf(hs[1]))
-                        for off in (1, 2, 4, 8):
-                            m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
+                        if const_expr(EF):
+                            m = hw.row16_max_nonneg_f32(m)
+                        else:
+                            for off in (1, 2, 4, 8):
+                                m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
                         bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
                         bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
                         bexp = fx.min(bexp, fx.Int32(254))
@@ -463,12 +473,12 @@ _runners = {}
 
 
 def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_remap=True,
-             pipe="async", NW=4, GM=1, diag="", WM=1, stream=None):
+             pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, stream=None):
     import torch
 
-    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM)
+    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF)
     if key not in _runners:
-        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM)
+        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF)
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream

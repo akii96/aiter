@@ -133,3 +133,29 @@ def mfma_fp4(acc, a, b, sa, sb, opsel_a=0, opsel_b=0):
     return rocdl.mfma_scale_f32_16x16x128_f8f6f4(
         T.f32x4, [a, b, acc, 4, 4, opsel_a, raw(fx.Int32(sa)), opsel_b, raw(fx.Int32(sb))]
     )
+
+
+def dpp_i32(src, ctrl, row_mask=0xF, bank_mask=0xF, bound_ctrl=True):
+    """llvm.amdgcn.update.dpp.i32 with old = src (lanes outside the pattern keep src)."""
+    v = raw(fx.Int32(src))
+    return fx.Int32(llvm.call_intrinsic(
+        T.i32, "llvm.amdgcn.update.dpp.i32",
+        [v, v, raw(fx.Int32(ctrl)), raw(fx.Int32(row_mask)), raw(fx.Int32(bank_mask)),
+         raw(fx.Boolean(bound_ctrl))], [], []))
+
+
+def row16_max_nonneg_f32(x):
+    """Max over each 16-lane DPP row for non-negative floats (int order == float order).
+
+    quad_perm xor1, quad_perm xor2, row_half_mirror, row_mirror: after each step every
+    lane holds the max of the lanes combined so far, so the mirrors act like xor4/xor8.
+    """
+    v = fx.Float32(x).bitcast(fx.Int32)
+    for ctrl in (0xB1, 0x4E, 0x141, 0x140):
+        o = dpp_i32(v, ctrl)
+        v = (fx.Uint32(o) > fx.Uint32(v)).select(o, v)
+    return v.bitcast(fx.Float32)
+
+
+def fast_rcp(x):
+    return fx.Float32(rocdl.rcp(T.f32, raw(fx.Float32(x))))

@@ -64,8 +64,9 @@ def kv(s):
 
 def probe(I, s1, s2, T=64):
     x, ids, w, wts = make_problem(T, I)
-    run = moe.MoERun(x, ids, w, moe.MoEWeights(*wts), BM1=s1["BM"], NW1=s1["NW"], pipe1=s1["pipe"], D1=s1["D"],
-                     BM2=s2["BM"], NW2=s2["NW"], pipe2=s2["pipe"], D2=s2["D"])
+    kw = {f"{k}1": v for k, v in s1.items()}
+    kw.update({f"{k}2": v for k, v in s2.items()})
+    run = moe.MoERun(x, ids, w, moe.MoEWeights(*wts), **kw)
     with contextlib.redirect_stdout(io.StringIO()):
         run.forward()
     rows = []
@@ -74,7 +75,7 @@ def probe(I, s1, s2, T=64):
         if not isa:
             continue
         name = os.path.basename(d)
-        nw = int(re.search(r"_w(\d)_", name).group(1))
+        nw = int(re.search(r"_w(\d)", name).group(1))
         info = parse_isa(isa[0])
         info.update(occupancy(info, nw))
         rows.append((name, info))
