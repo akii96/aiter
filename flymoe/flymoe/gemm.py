@@ -117,6 +117,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     UNI = "uni" in DG and pipe == "pingpong" and WM == 2 and WN == 4 and BM == 256 and AST
     SWZ = next((int(t[3:]) for t in DG if t.startswith("swz")), 3)  # mode 3: zero LDS bank conflicts (measured)
 
+    # Stage-2 wide stores: each wave stages its weighted bf16 tile (rows x 64 cols = 128 B
+    # per row) in LDS, then writes 16 B/lane full-line row segments.
+    S2W = stage == 2 and epi == "rows" and "nos2w" not in DG
+    S2NT = "s2nt" in DG
+    ROWS_W = MBW * 16
+    if S2W:
+        lds_bytes = max(lds_bytes, NW * ROWS_W * 128)
+
     @fx.struct
     class SharedStorage:
         raw: fx.Array[fx.Uint8, lds_bytes, 16]
@@ -199,10 +207,15 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             for j in range_constexpr(4):
                 nt = nblk * (4 * WN) + wn * 4 + j
                 b_voff.append(nt * (KS * 1024) + lane * 16)
-            bs_voff = (nblk * WN + wn) * 256 + lane * 4
-            BS_STEP = (N // 64) * 256  # B scales are K-step-major
+            if const_expr(stage == 1):
+                # stage-1 B scales are K-step-major (layout.pack_w13)
+                bs_voff = (nblk * WN + wn) * 256 + lane * 4
+                BS_STEP = (N // 64) * 256
+            else:
+                bs_voff = (nblk * WN + wn) * (KS * 256) + lane * 4
+                BS_STEP = 256
             # One 16 B/lane DMA covers the CTA's 4 B-scale blocks (1 KB) for a step.
-            BS1 = WN == 4
+            BS1 = WN == 4 and stage == 1
             bs16_voff = (nblk * WN) * 256 + lane * 16
             bs_wave = 1 if NW <= 4 else 4  # a wave that issues no A-scale DMA
             rb0 = wm * MBW  # first row block owned by this wave
@@ -574,10 +587,36 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 else:
                     # Per-tile 64-bit base: offsets stay < BM*N*2 and rows past nrows fall
                     # outside the descriptor (dropped), for any number of rows.
+                    # 64-bit per-tile base (no 32-bit offset overflow for any R). The record
+                    # count spans all remaining rows: a tile-sized count measured ~30% slower.
                     r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
-                                  fx.Int64(nrows) * fx.Int64(N * 2))
+                                  fx.Int64(n_rows - row_start) * fx.Int64(N * 2))
                 col0 = nblk * BN + wn * 64 + l16 * 2
-                for rb in range_constexpr(MBW):
+                if const_expr(S2W):
+                    gpu.barrier()  # every wave is done reading the LDS ring
+                    wb = wave * (ROWS_W * 128)
+                    for rb in range_constexpr(MBW):
+                        vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
+                        r4 = rb0 * 16 + fx.Int32(rb * 16) + lg * 4
+                        wv = fx.Vector(hw.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32)))
+                        for v in range_constexpr(4):
+                            rl = fx.Int32(rb * 16) + lg * 4 + v  # wave-local row
+                            w = fx.Float32(wv[v])
+                            for p in range_constexpr(2):
+                                pk = fx.Vector.from_elements(
+                                    [fx.Float32(vs[2 * p][v]) * w, fx.Float32(vs[2 * p + 1][v]) * w],
+                                    fx.Float32).to(fx.BFloat16)
+                                ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
+                                hw.lds_store(pk, lds_base, wb + rl * 128 + ch * 16 + (l16 % 4) * 4, align=4)
+                    cm_o = hw.NT if const_expr(S2NT) else 0
+                    for it in range_constexpr(ROWS_W // 8):
+                        rl = fx.Int32(it * 8) + lane // 8
+                        ch = lane % 8
+                        v16 = hw.lds_load(lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4)
+                        row = rb0 * 16 + rl
+                        off = (row * N + nblk * BN + wn * 64) * 2 + ch * 16
+                        hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
+                for rb in range_constexpr(MBW if not S2W else 0):
                     vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
                     for v in range_constexpr(4):
                         row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v

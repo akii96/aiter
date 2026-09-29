@@ -6,7 +6,8 @@ contiguous bytes. One (16-column, 128-K) atom is therefore 1024 contiguous
 bytes and a wave loads it with a single 16 B/lane load.
 
     packed B       : [E][N/16][K/128][64 lanes][16 B]
-    packed B scale : [E][K/128][N/64][64 lanes][4 B]   byte j -> n16 tile 4*n64+j,
+    packed B scale : [E][K/128][N/64][64 lanes][4 B] (stage 1) or [E][N/64][K/128][64][4 B] (stage 2)
+                                                        byte j -> n16 tile 4*n64+j,
                                                        lane l -> (col l%16, group l//16)
 
 Requires N % 64 == 0 and K % 128 == 0, which holds for every MiniMax-M3 width
@@ -32,7 +33,7 @@ def stage1_row_perm(inter: int, device=None) -> torch.Tensor:
     return src.reshape(-1)
 
 
-def pack_b(w: torch.Tensor, s: torch.Tensor):
+def pack_b(w: torch.Tensor, s: torch.Tensor, bs_step_major: bool = False):
     """w [E, N, K/2] uint8 (fp4x2), s [E, N, K/32] uint8 -> (packed_b, packed_bs)."""
     E, N, KH = w.shape
     K = KH * 2
@@ -43,14 +44,24 @@ def pack_b(w: torch.Tensor, s: torch.Tensor):
         .contiguous()
         .view(E, N // 16, K // 128, 1024)
     )
-    # B scales are K-step-major: a CTA's consecutive 64-column blocks for one step are
-    # contiguous (4 blocks = one 1 KB DMA).
-    bs = (
-        s.view(E, N // 64, 4, 16, K // 128, 4)
-        .permute(0, 4, 1, 5, 3, 2)
-        .contiguous()
-        .view(E, K // 128, N // 64, 256)
-    )
+    if bs_step_major:
+        # K-step-major: a CTA's consecutive 64-column blocks for one step are contiguous
+        # (4 blocks = one 1 KB DMA). Used for stage 1 (DMA'd into LDS by the ping-pong tile).
+        bs = (
+            s.view(E, N // 64, 4, 16, K // 128, 4)
+            .permute(0, 4, 1, 5, 3, 2)
+            .contiguous()
+            .view(E, K // 128, N // 64, 256)
+        )
+    else:
+        # Column-block-major: one 64-column block's scales are contiguous over K (better
+        # for pipes that load B scales per lane from global memory every step).
+        bs = (
+            s.view(E, N // 64, 4, 16, K // 128, 4)
+            .permute(0, 1, 4, 5, 3, 2)
+            .contiguous()
+            .view(E, N // 64, K // 128, 256)
+        )
     return b, bs
 
 
@@ -60,7 +71,7 @@ def pack_w13(w_gate, s_gate, w_up, s_up):
     w = torch.cat([w_gate, w_up], dim=1)
     s = torch.cat([s_gate, s_up], dim=1)
     perm = stage1_row_perm(inter, w.device)
-    return pack_b(w[:, perm].contiguous(), s[:, perm].contiguous())
+    return pack_b(w[:, perm].contiguous(), s[:, perm].contiguous(), bs_step_major=True)
 
 
 def stage2_row_perm(hidden: int, device=None) -> torch.Tensor:
