@@ -70,7 +70,7 @@ def probe(I, s1, s2, T=64):
     with contextlib.redirect_stdout(io.StringIO()):
         run.forward()
     rows = []
-    for d in sorted(glob.glob(os.path.join(DUMP, "flymoe_s*"))):
+    for d in sorted(glob.glob(os.path.join(DUMP, "flymoe_s[12]_*"))):
         isa = glob.glob(os.path.join(d, "*final_isa.s"))
         if not isa:
             continue
