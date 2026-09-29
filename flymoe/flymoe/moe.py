@@ -58,7 +58,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -95,9 +95,17 @@ class MoERun:
         self.launches1 = [(spec((BM1, -1) if TB1 else BM1), self.cfg1)]
         if TB1:
             self.launches1.append((spec((TB1, BM1)), _tail_cfg(TB1, 1, self.cfg1)))
-        self.launches2 = [(spec((BM2, -1) if TB2 else BM2), self.cfg2)]
-        if TB2:
-            self.launches2.append((spec((TB2, BM2)), dict(_tail_cfg(TB2, 2, self.cfg2), epi=epi)))
+        # FC: fused combine. The shared expert (E-1, on every token) gets token-ordered rows;
+        # stage 2 runs routed tiles first (y_rows), then shared tiles whose epilogue adds the
+        # token's routed rows and writes `out` directly (no combine kernel, no shared y rows).
+        self.FC = bool(FC)
+        if self.FC:
+            assert epi == "rows" and not TB2, "FC needs the rows epilogue and no stage-2 tail split"
+            self.launches2 = [(spec((BM2, -2)), self.cfg2), (spec((BM2, -3)), dict(self.cfg2, epi="fused"))]
+        else:
+            self.launches2 = [(spec((BM2, -1) if TB2 else BM2), self.cfg2)]
+            if TB2:
+                self.launches2.append((spec((TB2, BM2)), dict(_tail_cfg(TB2, 2, self.cfg2), epi=epi)))
         self.bms = tuple(specs)
         self.spec_mt = [prologue.spec_max_tiles(b, R, W.E) for b in specs]
         self.MAXT = max(self.spec_mt)
@@ -124,7 +132,8 @@ class MoERun:
     def prologue(self):
         prologue.run_quant(self.x, self.a_q, self.a_s)
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
-                          self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch)
+                          self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch,
+                          shared_last=self.FC)
         if self.AST:
             prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
 
@@ -137,7 +146,7 @@ class MoERun:
                 1, self.H, 2 * self.I, c["BM"],
                 (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
                  tp, ntp, self.row_tok.data_ptr(), self.dummy.data_ptr(),
-                 self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
+                 self.h_q.data_ptr(), self.h_s.data_ptr(), self.dummy.data_ptr(), self.T, self.R, self.T),
                 self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"],
                 WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT,
             )
@@ -153,13 +162,13 @@ class MoERun:
                 2, self.I, self.H, c["BM"],
                 (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
                  tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
-                 dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
-                self.spec_mt[b], D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
+                 dst.data_ptr(), self.out.data_ptr(), self.inv.data_ptr(), self.R, self.R, self.T),
+                self.spec_mt[b], D=c["D"], epi=c.get("epi", self.epi), KTOP=self.k, pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
                 diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.HT, HT=self.HT,
             )
 
     def combine(self):
-        if self.epi == "rows":
+        if self.epi == "rows" and not self.FC:
             combine.run_combine(self.y_rows, self.inv, self.out, self.k)
 
     def forward(self):

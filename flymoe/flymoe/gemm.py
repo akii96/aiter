@@ -46,10 +46,11 @@ def _swz(row, mode=3):
 def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
                epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
                GM: int = 1, diag: str = "", WM: int = 1, EF: bool = False, MV: int = 0, AST: bool = False,
-               HT: bool = False,
+               HT: bool = False, KTOP: int = 5,
                alpha: float = 1.702, limit: float = 7.0):
     assert stage in (1, 2)
-    assert epi in ("rows", "f32atomic", "bf16atomic")
+    assert epi in ("rows", "f32atomic", "bf16atomic", "fused")
+    assert epi != "fused" or stage == 2
     assert pipe in ("async", "regs", "hybrid", "hybrid2", "async2", "pingpong")
     assert NW in (1, 2, 4, 8) and WM in (1, 2, 4) and NW % WM == 0
     WN = NW // WM  # waves along N; WM wave-rows share each B slice through LDS
@@ -109,6 +110,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         name += "_ast"
     if HT:
         name += "_ht"
+    if epi == "fused":
+        name += f"_k{KTOP}"
     NEG_ALPHA_LOG2E = -alpha * 1.4426950408889634
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
@@ -124,7 +127,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
     # Stage-2 wide stores: each wave stages its weighted bf16 tile (rows x 64 cols = 128 B
     # per row) in LDS, then writes 16 B/lane full-line row segments.
-    S2W = stage == 2 and epi == "rows" and "nos2w" not in DG
+    S2W = stage == 2 and ((epi == "rows" and "nos2w" not in DG) or epi == "fused")
     S2NT = "s2nt" in DG
     ROWS_W = MBW * 16
     if S2W:
@@ -148,6 +151,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         rw_ptr: fx.Int64,
         o_ptr: fx.Int64,
         os_ptr: fx.Int64,
+        aux_ptr: fx.Int64,
         n_a_rows: fx.Int32,
         n_rows: fx.Int32,
         n_out: fx.Int32,
@@ -651,13 +655,34 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                 ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
                                 hw.lds_store(pk, lds_base, wb + rl * 128 + ch * 16 + (l16 % 4) * 4, align=4)
                     cm_o = hw.NT if const_expr(S2NT) else 0
+                    if const_expr(epi == "fused"):
+                        # Shared-expert tile: out[t] = own row + the token's routed rows
+                        # (y_rows, via inv), summed in fp32; no combine pass, no shared y rows.
+                        r_inv = hw.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
                     for it in range_constexpr(ROWS_W // 8):
                         rl = fx.Int32(it * 8) + lane // 8
                         ch = lane % 8
                         v16 = hw.lds_load(lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4)
                         row = rb0 * 16 + rl
-                        off = (row * N + nblk * BN + wn * 64) * 2 + ch * 16
-                        hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
+                        colb = (nblk * BN + wn * 64) * 2 + ch * 16
+                        if const_expr(epi == "fused"):
+                            if row < nrows:
+                                grow = row_start + row
+                                t = fx.Int32(hw.bload(r_tok, grow * 4, T.i32))
+                                accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
+                                for sl in range_constexpr(KTOP):
+                                    rs = fx.Int32(hw.bload(r_inv, (t * KTOP + sl) * 4, T.i32))
+                                    other = rs != grow
+                                    src = other.select(rs, grow)
+                                    yv = fx.Vector(hw.gload(fx.Int64(o_ptr) + fx.Int64(src) * fx.Int64(N * 2)
+                                                            + fx.Int64(colb), T.vec(8, T.bf16))).to(fx.Float32)
+                                    zero8 = fx.Vector.filled(8, 0.0, fx.Float32)
+                                    accv = accv + other.select(yv, zero8)
+                                hw.gstore(accv.to(fx.BFloat16), fx.Int64(os_ptr) + fx.Int64(t) * fx.Int64(N * 2)
+                                          + fx.Int64(colb))
+                        else:
+                            off = row * (N * 2) + colb
+                            hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
                 for rb in range_constexpr(MBW if not S2W else 0):
                     vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
                     for v in range_constexpr(4):
@@ -689,12 +714,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     def launch(
         a_ptr: fx.Int64, as_ptr: fx.Int64, b_ptr: fx.Int64, bs_ptr: fx.Int64,
         tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64, rtok_ptr: fx.Int64, rw_ptr: fx.Int64,
-        o_ptr: fx.Int64, os_ptr: fx.Int64,
+        o_ptr: fx.Int64, os_ptr: fx.Int64, aux_ptr: fx.Int64,
         n_a_rows: fx.Int32, n_rows: fx.Int32, n_out: fx.Int32, grid: fx.Int32,
         stream: fx.Stream = fx.Stream(None),
     ):
         kern(a_ptr, as_ptr, b_ptr, bs_ptr, tiles_ptr, ntiles_ptr, rtok_ptr, rw_ptr,
-             o_ptr, os_ptr, n_a_rows, n_rows, n_out).launch(
+             o_ptr, os_ptr, aux_ptr, n_a_rows, n_rows, n_out).launch(
             grid=(grid, 1, 1), block=(THREADS, 1, 1), stream=stream)
 
     if MV:
@@ -722,12 +747,14 @@ _runners = {}
 
 
 def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_remap=True,
-             pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, MV=0, AST=False, HT=False, stream=None):
+             pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, MV=0, AST=False, HT=False, KTOP=5,
+             stream=None):
     import torch
 
-    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST, HT)
+    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST, HT, KTOP)
     if key not in _runners:
-        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST, HT)
+        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV,
+                                AST, HT, KTOP)
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream

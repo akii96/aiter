@@ -244,3 +244,16 @@ _install_fn_attr_hint()
 def exp2_raw(x):
     """v_exp_f32 without LLVM's denormal-range fixup (valid for inputs well inside range)."""
     return fx.Float32(llvm.call_intrinsic(T.f32, "llvm.amdgcn.exp2", [raw(fx.Float32(x))], [], []))
+
+
+def gptr(addr_i64):
+    """Global (addrspace 1) LLVM pointer from a 64-bit address (per-lane OK)."""
+    return llvm.IntToPtrOp(ir.Type.parse("!llvm.ptr<1>"), raw(fx.Int64(addr_i64))).result
+
+
+def gload(addr_i64, res_ty, align=16):
+    return llvm.LoadOp(res_ty, gptr(addr_i64), alignment=align).result
+
+
+def gstore(val, addr_i64, align=16):
+    llvm.StoreOp(raw(val), gptr(addr_i64), alignment=align)

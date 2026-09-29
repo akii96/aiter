@@ -124,20 +124,23 @@ def spec_of(b):
 
 
 def spec_tag(bms):
-    return "_".join(f"{bm}" if p == 0 else (f"{bm}f" if p < 0 else f"{bm}r{p}") for bm, p in map(spec_of, bms))
+    names = {0: "", -1: "f", -2: "ro", -3: "sh"}
+    return "_".join(f"{bm}{names[p]}" if p <= 0 else f"{bm}r{p}" for bm, p in map(spec_of, bms))
 
 
 def spec_max_tiles(b, R, E):
     bm, p = spec_of(b)
     if p == 0:
         return (R + bm - 1) // bm + E
-    if p < 0:
+    if p == -1:
         return R // bm + 1
+    if p in (-2, -3):
+        return (R + bm - 1) // bm + E
     return E * ((p + bm - 1) // bm)
 
 
 @functools.lru_cache(maxsize=None)
-def build_plan_par(E: int, k: int, bms: tuple):
+def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
     """Parallel plan in 3 launches (hist -> prefix/tiles -> scatter).
 
     hist   : CTA c counts its CHUNK of topk_ids in LDS, then one global atomic per
@@ -179,11 +182,19 @@ def build_plan_par(E: int, k: int, bms: tuple):
 
     specs = tuple(spec_of(b) for b in bms)  # tuple: part of the JIT cache key (lists are not)
 
-    def _nt(c, bm, parent):
+    def _nt(c, bm, parent, e):
+        """Tiles of expert e (Python int or thread id) in a spec's list."""
         if parent == 0:
             return (c + (bm - 1)) // bm
-        if parent < 0:
+        if parent == -1:
             return c // bm
+        if parent in (-2, -3):
+            n = (c + (bm - 1)) // bm
+            if isinstance(e, int):
+                keep = (e < E - 1) if parent == -2 else (e == E - 1)
+                return n if keep else fx.Int32(0)
+            keep = (e < fx.Int32(E - 1)) if parent == -2 else (e == fx.Int32(E - 1))
+            return keep.select(n, fx.Int32(0))
         return (c % parent + (bm - 1)) // bm
 
     ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}"
@@ -208,11 +219,11 @@ def build_plan_par(E: int, k: int, bms: tuple):
                 before = fx.Int32(e2) < tid
                 off = off + before.select(c2, fx.Int32(0))
                 for b in range_constexpr(NBM):
-                    toffs[b] = toffs[b] + before.select(_nt(c2, *specs[b]), fx.Int32(0))
+                    toffs[b] = toffs[b] + before.select(_nt(c2, *specs[b], e2), fx.Int32(0))
             hw.bstore(off, r_offs, tid * 4)
             for b in range_constexpr(NBM):
                 bm, parent = specs[b]
-                nt = _nt(cnt, bm, parent)
+                nt = _nt(cnt, bm, parent, tid)
                 tb = max_tiles0 * b  # spec b's tile list starts at b * stride
                 if const_expr(parent > 0):
                     # remainder rows after this expert's full parent-size tiles
@@ -223,7 +234,7 @@ def build_plan_par(E: int, k: int, bms: tuple):
                     left = cnt
                 for m in range(0, nt, 1):
                     mi = fx.Int32(m)
-                    nr = fx.Int32(bm) if const_expr(parent < 0) else fx.min(left - mi * bm, fx.Int32(bm))
+                    nr = fx.Int32(bm) if const_expr(parent == -1) else fx.min(left - mi * bm, fx.Int32(bm))
                     v = fx.Vector.from_elements([tid, base + mi * bm, nr, fx.Int32(0)], fx.Int32)
                     hw.bstore(v, r_tiles, (tb + toffs[b] + mi) * 16)
                 if tid == fx.Int32(E - 1):
@@ -238,7 +249,7 @@ def build_plan_par(E: int, k: int, bms: tuple):
     class ScatStorage:
         raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
 
-    @flyc.kernel(name=f"flymoe_plan_scatter_e{E}_k{k}", known_block_size=[TH, 1, 1])
+    @flyc.kernel(name=f"flymoe_plan_scatter_e{E}_k{k}{'_sl' if shared_last else ''}", known_block_size=[TH, 1, 1])
     def k_scatter(ids_ptr: fx.Int64, w_ptr: fx.Int64, offs_ptr: fx.Int64, cbase_ptr: fx.Int64,
                   rtok_ptr: fx.Int64, rw_ptr: fx.Int64, inv_ptr: fx.Int64, gcount_ptr: fx.Int64,
                   n_rows: fx.Int32):
@@ -260,7 +271,15 @@ def build_plan_par(E: int, k: int, bms: tuple):
             i = c * CHUNK + j * TH + tid
             if i < n_rows:
                 e = fx.Int32(hw.bload(r_ids, i * 4, T.i32))
-                row = fx.Int32(_lds_atomic_add(base, e * 4, 1))
+                if const_expr(shared_last):
+                    # Shared expert (E-1, exactly once per token): token-ordered rows.
+                    row = fx.Int32(0)
+                    if e == fx.Int32(E - 1):
+                        row = fx.Int32(hw.bload(r_offs, (E - 1) * 4, T.i32)) + i // k
+                    else:
+                        row = fx.Int32(_lds_atomic_add(base, e * 4, 1))
+                else:
+                    row = fx.Int32(_lds_atomic_add(base, e * 4, 1))
                 hw.bstore(i // k, r_rt, row * 4)
                 hw.bstore(fx.Float32(hw.bload(r_w, i * 4, T.f32)), r_rw, row * 4)
                 hw.bstore(row, r_inv, i * 4)
@@ -390,7 +409,7 @@ def run_quant(x, q, s, stream=None):
 
 
 def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_tiles0, stream=None,
-             scratch=None):
+             scratch=None, shared_last=False):
     """scratch: (gcount [E] int32 zero-initialised once, offs [E], cbase [n_cta*E])."""
     import torch
 
@@ -403,7 +422,7 @@ def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_
         return
     gcount, offs, cbase = scratch
     n_cta = (n + CHUNK - 1) // CHUNK
-    _run(("pp", E, k, bms), build_plan_par(E, k, bms),
+    _run(("pp", E, k, bms, shared_last), build_plan_par(E, k, bms, shared_last),
          (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
           tiles.data_ptr(), ntiles.data_ptr(), gcount.data_ptr(), offs.data_ptr(), cbase.data_ptr(),
           n, n_cta, max_tiles0, stream))
