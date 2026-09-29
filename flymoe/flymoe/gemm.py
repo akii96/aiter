@@ -29,6 +29,9 @@ from flydsl.expr.typing import T
 
 from . import hw
 
+NUM_CUS = 256
+
+
 def _swz(row, mode=3):
     """XOR (in 16 B units) applied to the logical K chunk of an A-tile LDS row (64 B rows)."""
     if mode == 0:
@@ -46,7 +49,7 @@ def _swz(row, mode=3):
 def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
                epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
                GM: int = 1, diag: str = "", WM: int = 1, EF: bool = False, MV: int = 0, AST: bool = False,
-               HT: bool = False, KTOP: int = 5,
+               HT: bool = False, KTOP: int = 5, PERS: int = 0,
                alpha: float = 1.702, limit: float = 7.0):
     assert stage in (1, 2)
     assert epi in ("rows", "f32atomic", "bf16atomic", "fused")
@@ -112,6 +115,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         name += "_ht"
     if epi == "fused":
         name += f"_k{KTOP}"
+    if PERS:
+        name += f"_p{PERS}"
     NEG_ALPHA_LOG2E = -alpha * 1.4426950408889634
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
@@ -168,16 +173,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         r_misc = hw.rsrc(ntiles_ptr, 4)
         ntiles = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_misc, 0, T.i32)))
         bound = ntiles * NB
-        if bid < bound:
-            # CTAs are dealt round-robin over the 8 XCDs; give each XCD a contiguous
-            # range of work so an expert's m-tiles share one L2.
-            if const_expr(xcd_remap):
-                xq = bound // 8
-                xr = bound % 8
-                xc = bid % 8
-                work = xc * xq + fx.min(xc, xr) + bid // 8
-            else:
-                work = bid
+        def _tile_body(work):
+            if const_expr(PERS):
+                gpu.barrier()  # previous tile's LDS use is finished before the ring refills
             if const_expr(GM == 1):
                 tile = work // NB
                 nblk = work % NB
@@ -710,6 +708,24 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                 else:
                                     hw.bstore(pk, r_o, off)
 
+        # CTAs are dealt round-robin over the 8 XCDs; each XCD gets a contiguous range of
+        # work so an expert's m-tiles share one L2.
+        xq = bound // 8
+        xr = bound % 8
+        xc = bid % 8
+        xstart = xc * xq + fx.min(xc, xr)
+        if const_expr(PERS):
+            # Persistent: grid = CUs * PERS CTAs; CTA c walks its XCD's range with stride
+            # (CTAs per XCD).
+            gx = fx.Int32(gpu.grid_dim.x) // 8
+            wend = xstart + xq + (xc < xr).select(fx.Int32(1), fx.Int32(0))
+            for w in range(xstart + bid // 8, wend, gx):
+                _tile_body(fx.Int32(w))
+        else:
+            work0 = (xstart + bid // 8) if const_expr(xcd_remap) else bid
+            if bid < bound:
+                _tile_body(work0)
+
     @flyc.jit
     def launch(
         a_ptr: fx.Int64, as_ptr: fx.Int64, b_ptr: fx.Int64, bs_ptr: fx.Int64,
@@ -728,6 +744,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         launch.compile_hints = {"fn_attrs": {"amdgpu-agpr-alloc": "0"}}
         if MV == 2:
             launch.compile_hints["waves_per_eu"] = 2
+    launch.persistent = PERS
     return launch, NB
 
 
@@ -748,14 +765,15 @@ _runners = {}
 
 def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_remap=True,
              pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, MV=0, AST=False, HT=False, KTOP=5,
-             stream=None):
+             PERS=0, stream=None):
     import torch
 
-    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST, HT, KTOP)
+    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST, HT, KTOP, PERS)
     if key not in _runners:
         launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV,
-                                AST, HT, KTOP)
+                                AST, HT, KTOP, PERS)
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream
-    r(*args, max_tiles * nb, stream)
+    grid = NUM_CUS * PERS if PERS else max_tiles * nb
+    r(*args, grid, stream)

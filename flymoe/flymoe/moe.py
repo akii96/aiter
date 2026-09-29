@@ -58,7 +58,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -66,7 +66,7 @@ class MoERun:
         dev = x.device
         self.x, self.W = x, W
         self.T, self.H, self.I, self.k, self.R = T, H, I, k, R
-        self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1, GM=GM1, diag=diag1, WM=WM1, EF=EF1, MV=MV1)
+        self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1, GM=GM1, diag=diag1, WM=WM1, EF=EF1, MV=MV1, PERS=PERS1)
         self.cfg2 = dict(BM=BM2, D=D2, pipe=pipe2, NW=NW2, GM=GM2, diag=diag2, WM=WM2, EF=EF2, MV=MV2, epi=epi)
         self.epi = epi
         # Step-major A scales pay off for large stage-1 tiles; at small tiles the extra
@@ -156,7 +156,7 @@ class MoERun:
                  tp, ntp, self.row_tok.data_ptr(), self.dummy.data_ptr(),
                  self.h_q.data_ptr(), self.h_s.data_ptr(), self.dummy.data_ptr(), self.T, self.R, self.T),
                 self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"],
-                WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT,
+                WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT, PERS=c.get("PERS", 0),
             )
 
     def stage2(self):
