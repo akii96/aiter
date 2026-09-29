@@ -104,3 +104,36 @@ HIP_VISIBLE_DEVICES=0 python tests/test_variants.py
 HIP_VISIBLE_DEVICES=0 python bench/bench_moe.py --T 32 4096 32768 --I 384
 HIP_VISIBLE_DEVICES=0 python bench/tune.py --I 384
 ```
+
+
+## Round 2 (v3) vs frozen v1 (tag `flymoe-v1`)
+
+Measured serially on one GPU with `bench/compare_v1.py`: arms run round-robin, with a null arm (v1 vs v1). Times cover prologue + K1 + K2 + combine. The output is bit-identical to v1 in every cell. Small T (≤ 512) is within noise at all widths.
+
+| T | I=384 v1 -> v3 | I=768 v1 -> v3 | I=1536 v1 -> v3 |
+|---:|---:|---:|---:|
+| 4096 | 317 -> 299 (+5.7%) | 486 -> 463 (+4.8%) | 782 -> 727 (+7.0%) |
+| 32768 | 1971 -> 1756 (+10.9%) | 2760 -> 2531 (+8.3%) | 4426 -> 3859 (+12.8%) |
+
+Stage 1 alone at T=32768 is down 20–29% (I=1536: 2448 -> 1741 µs, 3.55 PF). Most of those levers came from rocprofv3 counters and thread traces:
+
+| Lever | Stage-1 effect |
+|---|---|
+| Ping-pong schedule (2x4 waves, 256x256 CTA tile; wave-rows alternate MFMA and memory phases) | -10 to -14% |
+| Fast SwiGLU epilogue (exp2 + hardware rcp, DPP amax) | -5 to -10% |
+| A-tile LDS swizzle `xor((row>>1)&3)` | bank conflicts 1.03e8 -> 0 |
+| `amdgpu-agpr-alloc=0`, attached to the lowered `llvm.func` (no AGPR<->VGPR accumulator copies) | -2 to -4% |
+| K-step-major compact A scales (1 contiguous DMA instead of a 4 B-per-row gather) | -6 to -8% |
+| Per-kind LDS ring layout (every LDS read = base + immediate) | memory-phase VALU 21 -> 1 |
+| Ring depth 4 | -2 to -4% |
+| LDS operand reads issued before the DMA | -2 to -8% |
+
+Measured dead ends: GM rasterization, L2 touch-prefetch (hits the register cap and spills), DMA issue interleaved into the MFMA phase, deeper stage-2 rings, and stage-2 mainloop changes. Stage 2 is bound by its y-row store, at about 90% of that store's bandwidth floor.
+
+**Stage-1 ceiling analysis** (thread trace, I=1536):
+- The compute phase takes 556 cycles per K step, against an ideal of 512.
+- The memory phase is still about 1.1–1.2 k cycles, so each SIMD's MFMA duty is about 30–35%.
+- About 400 cycles of that is texture-address (TA) serialization of DMA instructions. Gathered A rows cost about 32 cycles/KB and contiguous B about 20 cycles/KB, per the DMA benchmark.
+- The rest is LDS reads and barrier skew.
+
+The next structural levers: pre-gather A into compact step-major rows (halves the A TA cost), and cut the DMA instruction count per step.

@@ -51,7 +51,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST=True):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto"):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -62,7 +62,9 @@ class MoERun:
         self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1, GM=GM1, diag=diag1, WM=WM1, EF=EF1, MV=MV1)
         self.cfg2 = dict(BM=BM2, D=D2, pipe=pipe2, NW=NW2, GM=GM2, diag=diag2, WM=WM2, EF=EF2, MV=MV2, epi=epi)
         self.epi = epi
-        self.AST = bool(AST)
+        # Step-major A scales pay off for large stage-1 tiles; at small tiles the extra
+        # transpose launch costs more than it saves (measured).
+        self.AST = (BM1 >= 128) if AST == "auto" else bool(AST)
         self.ids = topk_ids.reshape(-1).to(torch.int32).contiguous()
         self.w = topk_w.reshape(-1).to(torch.float32).contiguous()
         self.a_q = torch.empty(T, H // 2, dtype=torch.uint8, device=dev)

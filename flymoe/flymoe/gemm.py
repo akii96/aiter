@@ -318,10 +318,15 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     IL = "il" in DG  # DMA issue interleaved into the MFMA phase
                     for s in range_constexpr(KS):
                         dma_now = s + NSTG - 1 < KS and "nodma" not in DG
-                        if const_expr(dma_now and not IL):
+                        # RF: LDS operand reads first, then DMA issue, so the LDS pipe and the
+                        # texture/DMA path work concurrently (they touch different ring slots).
+                        RF = "dmafirst" not in DG
+                        if const_expr(dma_now and not IL and not RF):
                             issue(s + NSTG - 1)
                         a_ops, sa, bl = read_a(0 if const_expr("nolds" in DG) else s)
                         b_ops, bs = bl
+                        if const_expr(dma_now and not IL and RF):
+                            issue(s + NSTG - 1)
                         if const_expr(s + 1 < KS and "nodma" not in DG):
                             # IL: this step's DMA has not been issued yet (it goes into the MFMA phase).
                             pend = min(NSTG - 2, KS - 2 - s) - (1 if IL and dma_now else 0)

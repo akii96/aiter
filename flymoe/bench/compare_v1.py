@@ -28,7 +28,7 @@ import flymoe_v1.moe as v1moe  # noqa: E402
 from flymoe import moe  # noqa: E402
 from tests.test_moe import make_problem  # noqa: E402
 
-STAGES = ("stage1", "stage2", "combine")
+STAGES = ("prologue", "stage1", "stage2", "combine")
 
 
 def v1_cfg(I, T):
