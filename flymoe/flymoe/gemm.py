@@ -111,6 +111,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         name += f"_diag{diag.replace('+', '_')}"
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
     SKIP = "skip" in DG
+    # Uniform scale DMAs for the 2x4 ping-pong tile: every wave issues exactly one 256 B
+    # scale DMA per step (wave-row 0: its B-scale block, wave-row 1: a quarter of the
+    # step-major A scales), so all waves carry identical DMA counts and vmcnt is exact.
+    UNI = "uni" in DG and pipe == "pingpong" and WM == 2 and WN == 4 and BM == 256 and AST
     SWZ = next((int(t[3:]) for t in DG if t.startswith("swz")), 3)  # mode 3: zero LDS bank conflicts (measured)
 
     @fx.struct
@@ -195,7 +199,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             for j in range_constexpr(4):
                 nt = nblk * (4 * WN) + wn * 4 + j
                 b_voff.append(nt * (KS * 1024) + lane * 16)
-            bs_voff = (nblk * WN + wn) * (KS * 256) + lane * 4
+            bs_voff = (nblk * WN + wn) * 256 + lane * 4
+            BS_STEP = (N // 64) * 256  # B scales are K-step-major
+            # One 16 B/lane DMA covers the CTA's 4 B-scale blocks (1 KB) for a step.
+            BS1 = WN == 4
+            bs16_voff = (nblk * WN) * 256 + lane * 16
+            bs_wave = 1 if NW <= 4 else 4  # a wave that issues no A-scale DMA
             rb0 = wm * MBW  # first row block owned by this wave
             lds_base = fx.Int32(
                 fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
@@ -210,6 +219,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
                     a_dma_voff.append(a_row_of(row) * KH + ((pc * 16) ^ _swz(row, SWZ)))
+                as_uni_voff = (row_start + wn * 64 + lane) * 4
                 if const_expr(AST):
                     # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
                     AS_W = (BM + 255) // 256
@@ -236,6 +246,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                     hw.dma_async(r_a, lds_base, wave * 1024 + (oA + it * NW * 1024),
                                                  a_dma_voff[it], soff=s * 64)
                             ops.append(_a)
+                    if const_expr(UNI):
+                        def _sc():
+                            if wm == fx.Int32(0):
+                                hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
+                                             soff=s * BS_STEP, nbytes=4, cm=b_cm)
+                            else:
+                                hw.dma_async(r_as, lds_base, wn * 256 + oAS, as_uni_voff,
+                                             soff=n_rows * (s * 4), nbytes=4)
                     if const_expr(b_lds and "nodmaB" not in DG):
                         for jj in range_constexpr(4 // WM):
                             if const_expr(WM == 1):
@@ -248,16 +266,24 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                     hw.dma_async(r_b, lds_base, wn * 4096 + j * 1024 + oB,
                                                  b_voff[0] + j * (KS * 1024), soff=s * 1024, cm=b_cm)
                                 ops.append(_b)
-                        if const_expr(WM == 1):
+                        if const_expr(UNI):
+                            ops.append(_sc)
+                        elif const_expr(BS1 and NW > 1):
+                            def _bs1():
+                                if wave == fx.Int32(bs_wave):
+                                    hw.dma_async(r_bs, lds_base, oBS, bs16_voff, soff=s * BS_STEP,
+                                                 nbytes=16, cm=b_cm)
+                            ops.append(_bs1)
+                        elif const_expr(WM == 1):
                             ops.append(lambda: hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
-                                                            soff=s * 256, nbytes=4, cm=b_cm))
+                                                            soff=s * BS_STEP, nbytes=4, cm=b_cm))
                         else:
                             def _bs():
                                 if wm == fx.Int32(0):
                                     hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
-                                                 soff=s * 256, nbytes=4, cm=b_cm)
+                                                 soff=s * BS_STEP, nbytes=4, cm=b_cm)
                             ops.append(_bs)
-                    for it in range_constexpr(AS_IT):
+                    for it in range_constexpr(AS_IT if not UNI else 0):
                         if const_expr(AST):
                             def _as(it=it):
                                 if wave + it * NW < fx.Int32(AS_W):
@@ -278,7 +304,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
                 def issue_b(s):
                     bb = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm) for j in range_constexpr(4)]
-                    return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * 256, cm=b_cm)
+                    return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP, cm=b_cm)
 
                 breg = {}
                 if const_expr(not b_lds):
@@ -422,7 +448,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     a = [hw.bload(r_a, a_voff[i], T.i32x4, soff=s * 64) for i in range_constexpr(A_CH)]
                     b = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm)
                          for j in range_constexpr(4)]
-                    bs = hw.bload(r_bs, bs_voff, T.i32, soff=s * 256, cm=b_cm)
+                    bs = hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP, cm=b_cm)
                     sa = [fx.Int32(fx.Uint8(hw.bload(r_as, as_voff[rb], T.i8,
                                                      soff=(n_rows * (s * 4)) if const_expr(AST) else s * 4)))
                           for rb in range_constexpr(MB)]
