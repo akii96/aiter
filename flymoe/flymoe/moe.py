@@ -58,7 +58,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -75,6 +75,7 @@ class MoERun:
         # HT: stage 1 writes h K-step-major (h_t[I/128][R][64 B], step-major h scales), so
         # stage 2's A and A-scale fetches are contiguous 1 KB DMAs.
         self.HT = bool(HT)
+        self.QAST = bool(QAST)
         self.ids = topk_ids.reshape(-1).to(torch.int32).contiguous()
         self.w = topk_w.reshape(-1).to(torch.float32).contiguous()
         self.a_q = torch.empty(T, H // 2, dtype=torch.uint8, device=dev)
@@ -130,12 +131,19 @@ class MoERun:
         return self.tiles.data_ptr() + b * self.MAXT * 16, self.ntiles.data_ptr() + b * 4
 
     def prologue(self):
-        prologue.run_quant(self.x, self.a_q, self.a_s)
+        # Plan first (needs only the routing ids); quant then writes the step-major compact A
+        # scales for stage 1 directly (no separate scale-transpose launch).
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
                           self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch,
                           shared_last=self.FC)
-        if self.AST:
-            prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
+        if self.AST and self.QAST:
+            prologue.run_quant(self.x, self.a_q, self.a_s, inv=self.inv, a_s_t=self.a_s_t, k=self.k)
+        else:
+            # Separate transpose measured faster than quant-side strided scale stores
+            # (32k: 170 vs 194 us prologue).
+            prologue.run_quant(self.x, self.a_q, self.a_s)
+            if self.AST:
+                prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
 
     def stage1(self):
         W = self.W
