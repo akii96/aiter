@@ -45,15 +45,32 @@ def check(T, I, BM=128, skew=None, seed=0, epis=("rows", "f32atomic", "bf16atomi
     return ok
 
 
+def check_quant(T=37, H=6144):
+    from flymoe import prologue
+    g = torch.Generator(device="cuda").manual_seed(1)
+    x = (torch.randn(T, H, device="cuda", generator=g) * 3).to(torch.bfloat16)
+    q = torch.empty(T, H // 2, dtype=torch.uint8, device="cuda")
+    s = torch.empty(T, H // 32, dtype=torch.uint8, device="cuda")
+    prologue.run_quant(x, q, s)
+    torch.cuda.synchronize()
+    q_ref, s_ref = mx.quant(x.float())
+    ok_s = torch.equal(s, s_ref)
+    mism = (q != q_ref).float().mean().item()
+    print(f"quant: scales_equal={ok_s} code_byte_mismatch={mism:.2e}")
+    return ok_s and mism == 0.0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--I", type=int, nargs="+", default=[384])
     ap.add_argument("--T", type=int, nargs="+", default=[1, 7, 256, 1000])
     ap.add_argument("--BM", type=int, default=128)
+    ap.add_argument("--epis", nargs="+", default=["rows", "f32atomic", "bf16atomic"])
     a = ap.parse_args()
-    ok = True
+    ok = check_quant()
     for I in a.I:
         for T in a.T:
-            ok &= check(T, I, a.BM)
-        ok &= check(64, I, a.BM, skew="one_expert")
+            ok &= check(T, I, a.BM, epis=a.epis)
+        ok &= check(64, I, a.BM, skew="one_expert", epis=a.epis)
     print("ALL OK" if ok else "SOME FAILED")
+

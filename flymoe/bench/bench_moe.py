@@ -44,19 +44,23 @@ def get_problem(T, I):
     return _problems[key]
 
 
-def bench(T, I, BM1=128, BM2=128, D1=5, D2=4, epi="rows", H=6144, E=129, quiet=False, pipe="async"):
+def bench(T, I, BM1=128, BM2=128, D1=3, D2=2, epi="rows", H=6144, E=129, quiet=False,
+          pipe1="async", pipe2="regs", NW1=4, NW2=4):
     x, ids, w, W = get_problem(T, I)
-    run = moe.MoERun(x, ids, w, W, BM1=BM1, BM2=BM2, D1=D1, D2=D2, epi=epi, pipe=pipe)
+    run = moe.MoERun(x, ids, w, W, BM1=BM1, BM2=BM2, D1=D1, D2=D2, epi=epi, pipe1=pipe1,
+                     pipe2=pipe2, NW1=NW1, NW2=NW2)
     R = run.R
+    tp = timeit(run.prologue)
     t1 = timeit(run.stage1)
     t2 = timeit(run.stage2)
     tc = timeit(run.combine) if epi == "rows" else 0.0
     fl1 = 2 * R * H * 2 * I
     fl2 = 2 * R * I * H
     if not quiet:
-        print(f"T={T:6d} I={I:5d} bm={BM1}/{BM2} {pipe}{D1}/{D2} {epi:10s} | s1 {t1:7.1f}us {fl1/t1/1e6:5.0f}TF"
-              f" | s2 {t2:7.1f}us {fl2/t2/1e6:5.0f}TF | comb {tc:6.1f}us | total {t1+t2+tc:7.1f}us", flush=True)
-    return t1, t2, tc
+        print(f"T={T:6d} I={I:5d} s1[bm{BM1} w{NW1} {pipe1}{D1}] s2[bm{BM2} w{NW2} {pipe2}{D2}] {epi} | pro {tp:6.1f}"
+              f" | s1 {t1:7.1f}us {fl1/t1/1e6:5.0f}TF | s2 {t2:7.1f}us {fl2/t2/1e6:5.0f}TF | comb {tc:6.1f}us"
+              f" | gemm+comb {t1+t2+tc:7.1f}us | all {tp+t1+t2+tc:7.1f}us", flush=True)
+    return tp, t1, t2, tc
 
 
 if __name__ == "__main__":
@@ -65,12 +69,15 @@ if __name__ == "__main__":
     ap.add_argument("--I", type=int, nargs="+", default=[384])
     ap.add_argument("--BM1", type=int, default=128)
     ap.add_argument("--BM2", type=int, default=128)
-    ap.add_argument("--D1", type=int, default=5)
-    ap.add_argument("--D2", type=int, default=4)
-    ap.add_argument("--pipe", default="async")
+    ap.add_argument("--D1", type=int, default=3)
+    ap.add_argument("--D2", type=int, default=2)
+    ap.add_argument("--pipe1", default="async")
+    ap.add_argument("--pipe2", default="regs")
+    ap.add_argument("--NW1", type=int, default=4)
+    ap.add_argument("--NW2", type=int, default=4)
     ap.add_argument("--epi", nargs="+", default=["rows"])
     a = ap.parse_args()
     for I in a.I:
         for T in a.T:
             for epi in a.epi:
-                bench(T, I, a.BM1, a.BM2, a.D1, a.D2, epi, pipe=a.pipe)
+                bench(T, I, a.BM1, a.BM2, a.D1, a.D2, epi, pipe1=a.pipe1, pipe2=a.pipe2, NW1=a.NW1, NW2=a.NW2)

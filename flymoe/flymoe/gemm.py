@@ -29,25 +29,27 @@ from flydsl.expr.typing import T
 
 from . import hw
 
-BN = 256
-
-
 def _swz(row):
     return ((row >> 2) & 3) * 16
 
 
 @functools.lru_cache(maxsize=None)
 def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
-               epi: str = "rows", xcd_remap: bool = True, pipe: str = "async",
+               epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
                alpha: float = 1.702, limit: float = 7.0):
     assert stage in (1, 2)
     assert epi in ("rows", "f32atomic", "bf16atomic")
     assert pipe in ("async", "regs")
-    assert K % 128 == 0 and N % BN == 0 and BM % 64 == 0
+    assert NW in (1, 2, 4)
+    BN = 64 * NW
+    THREADS = 64 * NW
+    assert K % 128 == 0 and N % BN == 0 and BM % 16 == 0
     KS = K // 128
     MB = BM // 16
     NB = N // BN
-    A_CH = BM // 64
+    A_INSTR = BM // 16  # 1 KB (16 rows x 64 B) per wave-wide DMA / load
+    A_IT = (A_INSTR + NW - 1) // NW
+    A_CH = (BM * 4) // THREADS
     KH = K // 2
     KG = K // 32
     INTER = N // 2
@@ -56,17 +58,18 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     if pipe == "async":
         NSTG = max(2, min(D, KS + 1))
         OFF_B = BM * 64
-        OFF_BS = OFF_B + 4 * 4096
-        OFF_AS = OFF_BS + 4 * 256
-        STAGE = OFF_AS + BM * 4
+        OFF_BS = OFF_B + NW * 4096
+        OFF_AS = OFF_BS + NW * 256
+        STAGE = OFF_AS + max(BM, 64) * 4
         lds_bytes = NSTG * STAGE
         assert lds_bytes <= 160 * 1024, lds_bytes
     else:
+        assert A_CH >= 1 and (BM * 4) % THREADS == 0, "regs pipe needs BM*4 >= threads"
         D = max(1, min(D, KS))
         SLOT = BM * 64
         lds_bytes = 2 * SLOT
 
-    name = f"flymoe_s{stage}_k{K}_n{N}_bm{BM}_{pipe}{D}{'_nt' if b_nt else ''}"
+    name = f"flymoe_s{stage}_k{K}_n{N}_bm{BM}_w{NW}_{pipe}{D}{'_nt' if b_nt else ''}"
     if stage == 2:
         name += f"_{epi}"
     if xcd_remap:
@@ -76,7 +79,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     class SharedStorage:
         raw: fx.Array[fx.Uint8, lds_bytes, 16]
 
-    @flyc.kernel(name=name, known_block_size=[256, 1, 1])
+    @flyc.kernel(name=name, known_block_size=[THREADS, 1, 1])
     def kern(
         a_ptr: fx.Int64,
         as_ptr: fx.Int64,
@@ -139,9 +142,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             a_rd = l16 * 64 + ((lg * 16) ^ _swz(l16))
             b_voff = []
             for j in range_constexpr(4):
-                nt = nblk * 16 + wave * 4 + j
+                nt = nblk * (4 * NW) + wave * 4 + j
                 b_voff.append(nt * (KS * 1024) + lane * 16)
-            bs_voff = (nblk * 4 + wave) * (KS * 256) + lane * 4
+            bs_voff = (nblk * NW + wave) * (KS * 256) + lane * 4
             lds_base = fx.Int32(
                 fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
             )
@@ -150,26 +153,34 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
             if const_expr(pipe == "async"):
                 # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
-                pc = tid % 4
+                pc = lane % 4
                 a_dma_voff = []
-                for i in range_constexpr(A_CH):
-                    row = fx.Int32(i * 64) + tid // 4
+                for it in range_constexpr(A_IT):
+                    row = (wave + it * NW) * 16 + lane // 4
                     a_dma_voff.append(a_row_of(row) * KH + ((pc * 16) ^ _swz(row)))
-                as_dma_voff = a_row_of(tid) * KG
+                AS_W = (max(BM, 64) // 64)
+                AS_IT = (AS_W + NW - 1) // NW
+                as_dma_voff = [a_row_of((wave + it * NW) * 64 + lane) * KG for it in range_constexpr(AS_IT)]
 
                 def issue(s):
                     base = (s % NSTG) * STAGE
-                    for i in range_constexpr(A_CH):
-                        hw.dma_async(r_a, lds_base, wave * 1024 + (base + i * 4096),
-                                     a_dma_voff[i], soff=s * 64)
+                    for it in range_constexpr(A_IT):
+                        if const_expr(A_INSTR % NW == 0):
+                            hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
+                                         a_dma_voff[it], soff=s * 64)
+                        else:
+                            if wave + it * NW < fx.Int32(A_INSTR):
+                                hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
+                                             a_dma_voff[it], soff=s * 64)
                     for j in range_constexpr(4):
                         hw.dma_async(r_b, lds_base, wave * 4096 + (base + OFF_B + j * 1024),
                                      b_voff[j], soff=s * 1024, cm=b_cm)
                     hw.dma_async(r_bs, lds_base, wave * 256 + (base + OFF_BS), bs_voff,
                                  soff=s * 256, nbytes=4, cm=b_cm)
-                    if wave < fx.Int32(BM // 64):
-                        hw.dma_async(r_as, lds_base, wave * 256 + (base + OFF_AS), as_dma_voff,
-                                     soff=s * 4, nbytes=4)
+                    for it in range_constexpr(AS_IT):
+                        if wave + it * NW < fx.Int32(AS_W):
+                            hw.dma_async(r_as, lds_base, wave * 256 + (base + OFF_AS + it * NW * 256),
+                                         as_dma_voff[it], soff=s * 4, nbytes=4)
                     rocdl.asyncmark()
 
                 for p in range_constexpr(min(NSTG - 1, KS)):
@@ -197,7 +208,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 a_voff = []
                 a_lds = []
                 for i in range_constexpr(A_CH):
-                    row = fx.Int32(i * 64) + tid // 4
+                    row = fx.Int32(i * (THREADS // 4)) + tid // 4
                     a_voff.append(a_row_of(row) * KH + lc * 16)
                     a_lds.append(row * 64 + ((lc * 16) ^ _swz(row)))
                 as_voff = []
@@ -237,7 +248,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     gpu.barrier()
 
             if const_expr(stage == 1):
-                g = nblk * 4 + wave
+                g = nblk * NW + wave
                 r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
                 r_os = hw.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
                 lim = fx.Float32(limit)
@@ -319,7 +330,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     ):
         kern(a_ptr, as_ptr, b_ptr, bs_ptr, tiles_ptr, ntiles_ptr, rtok_ptr, rw_ptr,
              o_ptr, os_ptr, n_a_rows, n_rows, n_out).launch(
-            grid=(grid, 1, 1), block=(256, 1, 1), stream=stream)
+            grid=(grid, 1, 1), block=(THREADS, 1, 1), stream=stream)
 
     return launch, NB
 
@@ -340,12 +351,12 @@ _runners = {}
 
 
 def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_remap=True,
-             pipe="async", stream=None):
+             pipe="async", NW=4, stream=None):
     import torch
 
-    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe)
+    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW)
     if key not in _runners:
-        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe)
+        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW)
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream
