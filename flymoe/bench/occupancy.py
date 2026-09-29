@@ -78,6 +78,8 @@ def probe(I, s1, s2, T=64):
         nw = int(re.search(r"_w(\d)", name).group(1))
         info = parse_isa(isa[0])
         info.update(occupancy(info, nw))
+        if "_mv" in name:
+            assert info["agpr"] == 0, f"{name}: MV set but {info['agpr']} AGPRs allocated (fn-attr hook failed)"
         rows.append((name, info))
     return rows
 

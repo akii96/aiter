@@ -498,7 +498,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 elif const_expr(epi == "bf16atomic"):
                     r_o = hw.rsrc(o_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
                 else:
-                    r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(N * 2))
+                    # Per-tile 64-bit base: offsets stay < BM*N*2 and rows past nrows fall
+                    # outside the descriptor (dropped), for any number of rows.
+                    r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
+                                  fx.Int64(nrows) * fx.Int64(N * 2))
                 col0 = nblk * BN + wn * 64 + l16 * 2
                 for rb in range_constexpr(MBW):
                     vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
@@ -508,7 +511,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         grow = row_start + row
                         w = fx.Float32(hw.bload(r_w, grow * 4, T.f32))
                         if const_expr(epi == "rows"):
-                            dst_row = grow
+                            dst_row = row
                         else:
                             dst_row = fx.Int32(hw.bload(r_tok, grow * 4, T.i32))
                         for p in range_constexpr(2):
@@ -542,8 +545,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     if MV:
         # MV=1: no AGPRs at all (amdgpu-agpr-alloc=0) -> MFMA accumulators in arch VGPRs,
         #       no AGPR<->VGPR copies; MV=2: same + waves_per_eu=2.
-        launch.compile_hints = {"fn_attrs": {"amdgpu-agpr-alloc": "0"},
-                                "llvm_options": {"amdgpu-mfma-vgpr-form": True}}
+        launch.compile_hints = {"fn_attrs": {"amdgpu-agpr-alloc": "0"}}
         if MV == 2:
             launch.compile_hints["waves_per_eu"] = 2
     return launch, NB

@@ -39,6 +39,8 @@ def rsrc(addr_i64, num_bytes=None):
         n = fx.Int64(max(0, min(num_bytes, 0xFFFFFFFF)))
     else:
         n = fx.Int64(num_bytes)
+        big = n > fx.Int64(0xFFFFFFFF)
+        n = big.select(fx.Int64(0xFFFFFFFF), n)
     return _mrocdl.MakeBufferRsrcOp(
         ir.Type.parse("!llvm.ptr<8>"),
         base,

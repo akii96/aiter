@@ -25,20 +25,21 @@ def build_combine(H: int, k: int, threads: int = 256):
         tid = fx.Int32(gpu.thread_id("x"))
         t = fx.Int32(gpu.block_id("x"))
         r_inv = hw.rsrc(inv_ptr)
-        r_y = hw.rsrc(y_ptr, fx.Int64(n_rows) * fx.Int64(H * 2))
-        r_o = hw.rsrc(o_ptr, fx.Int64(n_tok) * fx.Int64(H * 2))
-        rows = []
+        # 64-bit per-row / per-token descriptor bases: no 32-bit offset overflow at any R.
+        r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(t) * fx.Int64(H * 2), H * 2)
+        r_rows = []
         for s in range_constexpr(k):
-            rows.append(fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_inv, (t * k + s) * 4, T.i32))))
+            row = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_inv, (t * k + s) * 4, T.i32)))
+            r_rows.append(hw.rsrc(fx.Int64(y_ptr) + fx.Int64(row) * fx.Int64(H * 2), H * 2))
         for c in range_constexpr(chunks):
             col = (tid + c * threads) * 8
             ok = col < H if not exact else None
-            vals = [fx.Vector(hw.bload(r_y, rows[s] * (H * 2) + col * 2, T.vec(8, T.bf16))).to(fx.Float32)
+            vals = [fx.Vector(hw.bload(r_rows[s], col * 2, T.vec(8, T.bf16))).to(fx.Float32)
                     for s in range_constexpr(k)]
             acc = vals[0]
             for s in range_constexpr(1, k):
                 acc = acc + vals[s]
-            off = col * 2 + t * (H * 2)
+            off = col * 2
             if ok is not None:
                 off = ok.select(off, fx.Int32(0x7FFFFF00))
             hw.bstore(acc.to(fx.BFloat16), r_o, off)

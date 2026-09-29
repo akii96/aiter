@@ -81,12 +81,13 @@ class MoERun:
         self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
         self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
         # AST: stage-1 A scales in K-step-major compact-row layout ([H/128, R, 4 B]).
-        self.a_s_t = torch.empty(R * (H // 32), dtype=torch.uint8, device=dev) if AST else None
+        self.a_s_t = torch.empty(R * (H // 32), dtype=torch.uint8, device=dev) if self.AST else None
         self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
         if epi == "rows":
             self.y_rows = torch.empty(R, H, dtype=torch.bfloat16, device=dev)
             self.out = torch.empty(T, H, dtype=torch.bfloat16, device=dev)
         elif epi == "f32atomic":
+            assert T * H * 4 < 2**31, "atomic epilogues use 32-bit offsets into out"
             self.out = torch.zeros(T, H, dtype=torch.float32, device=dev)
         else:
             self.out = torch.zeros(T, H, dtype=torch.bfloat16, device=dev)

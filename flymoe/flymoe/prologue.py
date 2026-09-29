@@ -128,6 +128,7 @@ def build_plan_par(E: int, k: int, bms: tuple):
     """
     NBM = len(bms)
     TH = 1024
+    assert E <= 256, "k_prefix runs one thread per expert in a 256-thread CTA"
 
     @fx.struct
     class HistStorage:
@@ -189,6 +190,10 @@ def build_plan_par(E: int, k: int, bms: tuple):
                 if tid == fx.Int32(E - 1):
                     hw.bstore(toffs[b] + nt, r_nt, b * 4)
         gpu.barrier()
+        # Every thread has read every count above; re-zero here (single CTA, same launch
+        # that consumed them) so an aborted later launch cannot leave gcount dirty.
+        if tid < fx.Int32(E):
+            hw.bstore(fx.Int32(0), r_gc, tid * 4)
 
     @fx.struct
     class ScatStorage:
@@ -220,10 +225,6 @@ def build_plan_par(E: int, k: int, bms: tuple):
                 hw.bstore(i // k, r_rt, row * 4)
                 hw.bstore(fx.Float32(hw.bload(r_w, i * 4, T.f32)), r_rw, row * 4)
                 hw.bstore(row, r_inv, i * 4)
-        # CTA 0 re-zeroes the global counters for the next call (hist of this call is done).
-        if c == fx.Int32(0):
-            if tid < fx.Int32(E):
-                hw.bstore(fx.Int32(0), hw.rsrc(gcount_ptr), tid * 4)
 
     @flyc.jit
     def launch(ids_ptr: fx.Int64, w_ptr: fx.Int64, rtok_ptr: fx.Int64, rw_ptr: fx.Int64,
