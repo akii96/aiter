@@ -51,7 +51,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -59,8 +59,8 @@ class MoERun:
         dev = x.device
         self.x, self.W = x, W
         self.T, self.H, self.I, self.k, self.R = T, H, I, k, R
-        self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1)
-        self.cfg2 = dict(BM=BM2, D=D2, pipe=pipe2, NW=NW2, epi=epi)
+        self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1, GM=GM1, diag=diag1, WM=WM1)
+        self.cfg2 = dict(BM=BM2, D=D2, pipe=pipe2, NW=NW2, GM=GM2, diag=diag2, WM=WM2, epi=epi)
         self.epi = epi
         self.ids = topk_ids.reshape(-1).to(torch.int32).contiguous()
         self.w = topk_w.reshape(-1).to(torch.float32).contiguous()
@@ -103,7 +103,7 @@ class MoERun:
             (self.a_q.data_ptr(), self.a_s.data_ptr(), W.b1.data_ptr(), W.bs1.data_ptr(),
              self.tiles.data_ptr(), self.ntiles.data_ptr(), self.row_tok.data_ptr(), self.dummy.data_ptr(),
              self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
-            self.mt1, D=c["D"], pipe=c["pipe"], NW=c["NW"],
+            self.mt1, D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"],
         )
 
     def stage2(self):
@@ -117,7 +117,7 @@ class MoERun:
             (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
              tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
              dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
-            self.mt2, D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"],
+            self.mt2, D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"],
         )
 
     def combine(self):
