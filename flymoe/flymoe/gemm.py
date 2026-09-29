@@ -29,8 +29,17 @@ from flydsl.expr.typing import T
 
 from . import hw
 
-def _swz(row):
-    return ((row >> 2) & 3) * 16
+def _swz(row, mode=3):
+    """XOR (in 16 B units) applied to the logical K chunk of an A-tile LDS row (64 B rows)."""
+    if mode == 0:
+        return row * 0
+    if mode == 1:
+        return ((row >> 2) & 3) * 16
+    if mode == 2:
+        return (row & 3) * 16
+    if mode == 3:
+        return ((row >> 1) & 3) * 16
+    return (((row >> 2) ^ row) & 3) * 16
 
 
 @functools.lru_cache(maxsize=None)
@@ -91,6 +100,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
+    SWZ = next((int(t[3:]) for t in DG if t.startswith("swz")), 3)  # mode 3: zero LDS bank conflicts (measured)
 
     @fx.struct
     class SharedStorage:
@@ -167,7 +177,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
             l16 = lane % 16
             lg = lane // 16
-            a_rd = l16 * 64 + ((lg * 16) ^ _swz(l16))
+            a_rd = l16 * 64 + ((lg * 16) ^ _swz(l16, SWZ))
             b_voff = []
             for j in range_constexpr(4):
                 nt = nblk * (4 * WN) + wn * 4 + j
@@ -186,7 +196,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 a_dma_voff = []
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
-                    a_dma_voff.append(a_row_of(row) * KH + ((pc * 16) ^ _swz(row)))
+                    a_dma_voff.append(a_row_of(row) * KH + ((pc * 16) ^ _swz(row, SWZ)))
                 AS_W = (max(BM, 64) // 64)
                 AS_IT = (AS_W + NW - 1) // NW
                 as_dma_voff = [a_row_of((wave + it * NW) * 64 + lane) * KG for it in range_constexpr(AS_IT)]
@@ -320,7 +330,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 for i in range_constexpr(A_CH):
                     row = fx.Int32(i * (THREADS // 4)) + tid // 4
                     a_voff.append(a_row_of(row) * KH + lc * 16)
-                    a_lds.append(row * 64 + ((lc * 16) ^ _swz(row)))
+                    a_lds.append(row * 64 + ((lc * 16) ^ _swz(row, SWZ)))
                 as_voff = []
                 for rb in range_constexpr(MB):
                     as_voff.append(a_row_of(fx.Int32(rb * 16) + l16) * KG + lg)
