@@ -31,6 +31,11 @@ def _lds_atomic_add(base_i32, byte_off, val):
 
 
 @functools.lru_cache(maxsize=None)
+def _clamp_e(e, E):
+    # Out-of-range expert ids must not index the per-expert LDS counters.
+    return fx.max(fx.min(e, fx.Int32(E - 1)), fx.Int32(0))
+
+
 def build_plan(E: int, k: int, bms: tuple):
     NBM = len(bms)
     # LDS: counts[E], cursor[E], offs[E], tile_off[NBM][E]
@@ -65,7 +70,7 @@ def build_plan(E: int, k: int, bms: tuple):
             hw.lds_store(fx.Int32(0), base, CUR_OFF + tid * 4, align=4)
         gpu.barrier()
         for i in range(tid, n_rows, PLAN_THREADS):
-            e = fx.Int32(hw.bload(r_ids, fx.Int32(i) * 4, T.i32))
+            e = _clamp_e(fx.Int32(hw.bload(r_ids, fx.Int32(i) * 4, T.i32)), E)
             _lds_atomic_add(base, C_OFF + e * 4, 1)
         gpu.barrier()
         if tid == fx.Int32(0):
@@ -100,7 +105,7 @@ def build_plan(E: int, k: int, bms: tuple):
         gpu.barrier()
         for i in range(tid, n_rows, PLAN_THREADS):
             ii = fx.Int32(i)
-            e = fx.Int32(hw.bload(r_ids, ii * 4, T.i32))
+            e = _clamp_e(fx.Int32(hw.bload(r_ids, ii * 4, T.i32)), E)
             pos = fx.Int32(_lds_atomic_add(base, CUR_OFF + e * 4, 1))
             row = fx.Int32(hw.lds_load(base, OFFS_OFF + e * 4, T.i32, align=4)) + pos
             hw.bstore(ii // k, r_rt, row * 4)
@@ -176,7 +181,7 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
         for j in range_constexpr(CHUNK // TH):
             i = c * CHUNK + j * TH + tid
             if i < n_rows:
-                e = fx.Int32(hw.bload(r_ids, i * 4, T.i32))
+                e = _clamp_e(fx.Int32(hw.bload(r_ids, i * 4, T.i32)), E)
                 _lds_atomic_add(base, e * 4, 1)
         gpu.barrier()
         if tid < fx.Int32(E):
@@ -281,7 +286,7 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
         for j in range_constexpr(CHUNK // TH):
             i = c * CHUNK + j * TH + tid
             if i < n_rows:
-                e = fx.Int32(hw.bload(r_ids, i * 4, T.i32))
+                e = _clamp_e(fx.Int32(hw.bload(r_ids, i * 4, T.i32)), E)
                 if const_expr(shared_last):
                     # Shared expert (E-1, exactly once per token): token-ordered rows.
                     row = fx.Int32(0)
@@ -358,7 +363,7 @@ def build_plan_small(E: int, k: int, bms: tuple, shared_last: bool = False):
             hw.lds_store(fx.Int32(0), base, C + tid * 4, align=4)
         gpu.barrier()
         for i in range(tid, n_rows, TH):
-            e = fx.Int32(hw.bload(r_ids, fx.Int32(i) * 4, T.i32))
+            e = _clamp_e(fx.Int32(hw.bload(r_ids, fx.Int32(i) * 4, T.i32)), E)
             _lds_atomic_add(base, C + e * 4, 1)
         gpu.barrier()
         if tid < fx.Int32(E):
@@ -393,7 +398,7 @@ def build_plan_small(E: int, k: int, bms: tuple, shared_last: bool = False):
         gpu.barrier()
         for i in range(tid, n_rows, TH):
             ii = fx.Int32(i)
-            e = fx.Int32(hw.bload(r_ids, ii * 4, T.i32))
+            e = _clamp_e(fx.Int32(hw.bload(r_ids, ii * 4, T.i32)), E)
             if const_expr(shared_last):
                 row = fx.Int32(0)
                 if e == fx.Int32(E - 1):
@@ -569,6 +574,8 @@ def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_
     stream = torch.cuda.current_stream() if stream is None else stream
     n = ids_i32.numel()
     if scratch is None:
+        assert all(isinstance(b, int) for b in bms) and len(bms) <= 2, \
+            "the single-CTA legacy plan supports plain BM specs only; pass scratch for tail specs"
         _run(("p", E, k, bms), build_plan(E, k, bms),
              (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
               tiles.data_ptr(), ntiles.data_ptr(), n, max_tiles0, stream))
