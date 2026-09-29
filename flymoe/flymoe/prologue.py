@@ -117,6 +117,25 @@ def build_plan(E: int, k: int, bms: tuple):
 CHUNK = 4096  # routing entries per CTA in the parallel plan
 
 
+def spec_of(b):
+    """Tile-list spec: int BM (all rows) or (BM, parent): parent=-1 -> only full BM tiles;
+    parent=P>0 -> only the rows left after an expert's full P-row tiles, in BM tiles."""
+    return (b, 0) if isinstance(b, int) else (int(b[0]), int(b[1]))
+
+
+def spec_tag(bms):
+    return "_".join(f"{bm}" if p == 0 else (f"{bm}f" if p < 0 else f"{bm}r{p}") for bm, p in map(spec_of, bms))
+
+
+def spec_max_tiles(b, R, E):
+    bm, p = spec_of(b)
+    if p == 0:
+        return (R + bm - 1) // bm + E
+    if p < 0:
+        return R // bm + 1
+    return E * ((p + bm - 1) // bm)
+
+
 @functools.lru_cache(maxsize=None)
 def build_plan_par(E: int, k: int, bms: tuple):
     """Parallel plan in 3 launches (hist -> prefix/tiles -> scatter).
@@ -158,9 +177,22 @@ def build_plan_par(E: int, k: int, bms: tuple):
                 hw.raw(cnt), llvm.AtomicOrdering.monotonic, syncscope="agent").result)
             hw.bstore(prev, r_cb, (c * E + tid) * 4)
 
-    @flyc.kernel(name=f"flymoe_plan_prefix_e{E}_bm{'_'.join(map(str, bms))}", known_block_size=[256, 1, 1])
+    specs = tuple(spec_of(b) for b in bms)  # tuple: part of the JIT cache key (lists are not)
+
+    def _nt(c, bm, parent):
+        if parent == 0:
+            return (c + (bm - 1)) // bm
+        if parent < 0:
+            return c // bm
+        return (c % parent + (bm - 1)) // bm
+
+    ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}"
+
+    @flyc.kernel(name=ptag, known_block_size=[256, 1, 1])
     def k_prefix(gcount_ptr: fx.Int64, offs_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64,
                  max_tiles0: fx.Int32):
+        if const_expr(ptag == ""):  # tag string in the JIT cache key
+            pass
         tid = fx.Int32(gpu.thread_id("x"))
         r_gc = hw.rsrc(gcount_ptr)
         r_offs = hw.rsrc(offs_ptr)
@@ -176,16 +208,23 @@ def build_plan_par(E: int, k: int, bms: tuple):
                 before = fx.Int32(e2) < tid
                 off = off + before.select(c2, fx.Int32(0))
                 for b in range_constexpr(NBM):
-                    toffs[b] = toffs[b] + before.select((c2 + (bms[b] - 1)) // bms[b], fx.Int32(0))
+                    toffs[b] = toffs[b] + before.select(_nt(c2, *specs[b]), fx.Int32(0))
             hw.bstore(off, r_offs, tid * 4)
             for b in range_constexpr(NBM):
-                bm = bms[b]
-                nt = (cnt + (bm - 1)) // bm
-                tb = fx.Int32(0) if b == 0 else max_tiles0
+                bm, parent = specs[b]
+                nt = _nt(cnt, bm, parent)
+                tb = max_tiles0 * b  # spec b's tile list starts at b * stride
+                if const_expr(parent > 0):
+                    # remainder rows after this expert's full parent-size tiles
+                    base = off + (cnt // parent) * parent
+                    left = cnt % parent
+                else:
+                    base = off
+                    left = cnt
                 for m in range(0, nt, 1):
                     mi = fx.Int32(m)
-                    v = fx.Vector.from_elements([tid, off + mi * bm, fx.min(cnt - mi * bm, fx.Int32(bm)),
-                                                 fx.Int32(0)], fx.Int32)
+                    nr = fx.Int32(bm) if const_expr(parent < 0) else fx.min(left - mi * bm, fx.Int32(bm))
+                    v = fx.Vector.from_elements([tid, base + mi * bm, nr, fx.Int32(0)], fx.Int32)
                     hw.bstore(v, r_tiles, (tb + toffs[b] + mi) * 16)
                 if tid == fx.Int32(E - 1):
                     hw.bstore(toffs[b] + nt, r_nt, b * 4)

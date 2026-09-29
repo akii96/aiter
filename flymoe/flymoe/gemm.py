@@ -110,6 +110,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
+    SKIP = "skip" in DG
     SWZ = next((int(t[3:]) for t in DG if t.startswith("swz")), 3)  # mode 3: zero LDS bank conflicts (measured)
 
     @fx.struct
@@ -132,7 +133,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         n_rows: fx.Int32,
         n_out: fx.Int32,
     ):
-        if const_expr(MV):  # keeps MV in the JIT cache key (it only changes compile hints)
+        if const_expr(name == "" or MV < 0):  # name + MV in the JIT cache key (name encodes every build param)
             pass
         tid = fx.Int32(gpu.thread_id("x"))
         bid = fx.Int32(gpu.block_id("x"))
@@ -337,8 +338,17 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         rocdl.s_setprio(1)
                         ops = dma_ops(s + NSTG - 1) if const_expr(IL and dma_now) else []
                         for rb in range_constexpr(MBW):
-                            for j in range_constexpr(4):
-                                acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
+                            if const_expr(SKIP):
+                                # Row blocks past the tile's valid rows skip their MFMAs
+                                # (wave-uniform: nrows and rb0 are SGPR values).
+                                acc_rb = acc[rb]
+                                if (rb0 + rb) * 16 < nrows:
+                                    acc_rb = [hw.mfma_fp4(acc_rb[j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
+                                              for j in range_constexpr(4)]
+                                acc[rb] = acc_rb
+                            else:
+                                for j in range_constexpr(4):
+                                    acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
                             if const_expr(IL and rb < len(ops)):
                                 rocdl.sched_barrier(0)
                                 ops[rb]()

@@ -23,6 +23,13 @@ def max_tiles_for(R, E, BM):
     return (R + BM - 1) // BM + E
 
 
+def _tail_cfg(TB, stage, c):
+    """Small-tile kernel for an expert's leftover rows (after full BM tiles)."""
+    nw = 1 if TB <= 16 else (2 if TB <= 32 else 4)
+    return dict(BM=TB, D=4 if stage == 1 else 2, pipe="async", NW=nw, GM=1, diag="", WM=1,
+                EF=c.get("EF", False), MV=c.get("MV", 0))
+
+
 def make_plan(topk_ids: torch.Tensor, E: int, BM: int):
     """Torch oracle: compact expert-sorted rows and a BM tile list (host-synchronizing)."""
     T, k = topk_ids.shape
@@ -51,7 +58,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto"):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -72,11 +79,27 @@ class MoERun:
         self.row_tok = torch.empty(R, dtype=torch.int32, device=dev)
         self.row_w = torch.empty(R, dtype=torch.float32, device=dev)
         self.inv = torch.empty(R, dtype=torch.int32, device=dev)
-        self.bms = (BM1,) if BM2 == BM1 else (BM1, BM2)
-        self.mt1 = max_tiles_for(R, W.E, BM1)
-        self.mt2 = max_tiles_for(R, W.E, BM2)
-        self.tiles = torch.zeros(self.mt1 + self.mt2, 4, dtype=torch.int32, device=dev)
-        self.ntiles = torch.zeros(2, dtype=torch.int32, device=dev)
+        # Tile lists. TB>0: the main kernel runs only full BM tiles and a small-tile (TB)
+        # kernel runs each expert's leftover rows, so tail tiles never cost a full BM tile.
+        self.TB1, self.TB2 = TB1, TB2
+        specs = []
+
+        def spec(x):
+            if x not in specs:
+                specs.append(x)
+            return specs.index(x)
+
+        self.launches1 = [(spec((BM1, -1) if TB1 else BM1), self.cfg1)]
+        if TB1:
+            self.launches1.append((spec((TB1, BM1)), _tail_cfg(TB1, 1, self.cfg1)))
+        self.launches2 = [(spec((BM2, -1) if TB2 else BM2), self.cfg2)]
+        if TB2:
+            self.launches2.append((spec((TB2, BM2)), dict(_tail_cfg(TB2, 2, self.cfg2), epi=epi)))
+        self.bms = tuple(specs)
+        self.spec_mt = [prologue.spec_max_tiles(b, R, W.E) for b in specs]
+        self.MAXT = max(self.spec_mt)
+        self.tiles = torch.zeros(len(specs) * self.MAXT, 4, dtype=torch.int32, device=dev)
+        self.ntiles = torch.zeros(len(specs), dtype=torch.int32, device=dev)
         self.plan_scratch = prologue.plan_scratch(R, W.E, dev)
         self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
         self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
@@ -92,41 +115,45 @@ class MoERun:
         else:
             self.out = torch.zeros(T, H, dtype=torch.bfloat16, device=dev)
 
-    def _tiles2(self):
-        if len(self.bms) == 1:
-            return self.tiles.data_ptr(), self.ntiles.data_ptr()
-        return self.tiles.data_ptr() + self.mt1 * 16, self.ntiles.data_ptr() + 4
+    def _tl(self, b):
+        return self.tiles.data_ptr() + b * self.MAXT * 16, self.ntiles.data_ptr() + b * 4
 
     def prologue(self):
         prologue.run_quant(self.x, self.a_q, self.a_s)
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
-                          self.ntiles, self.W.E, self.k, self.bms, self.mt1, scratch=self.plan_scratch)
+                          self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch)
         if self.AST:
             prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
 
     def stage1(self):
-        W, c = self.W, self.cfg1
-        gemm.run_gemm(
-            1, self.H, 2 * self.I, c["BM"],
-            (self.a_q.data_ptr(), (self.a_s_t if self.AST else self.a_s).data_ptr(), W.b1.data_ptr(), W.bs1.data_ptr(),
-             self.tiles.data_ptr(), self.ntiles.data_ptr(), self.row_tok.data_ptr(), self.dummy.data_ptr(),
-             self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
-            self.mt1, D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST,
-        )
+        W = self.W
+        a_s = (self.a_s_t if self.AST else self.a_s).data_ptr()
+        for b, c in self.launches1:
+            tp, ntp = self._tl(b)
+            gemm.run_gemm(
+                1, self.H, 2 * self.I, c["BM"],
+                (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
+                 tp, ntp, self.row_tok.data_ptr(), self.dummy.data_ptr(),
+                 self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
+                self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"],
+                WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST,
+            )
 
     def stage2(self):
-        W, c = self.W, self.cfg2
+        W = self.W
         dst = self.y_rows if self.epi == "rows" else self.out
         if self.epi != "rows":
             self.out.zero_()
-        tp, ntp = self._tiles2()
-        gemm.run_gemm(
-            2, self.I, self.H, c["BM"],
-            (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
-             tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
-             dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
-            self.mt2, D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"],
-        )
+        for b, c in self.launches2:
+            tp, ntp = self._tl(b)
+            gemm.run_gemm(
+                2, self.I, self.H, c["BM"],
+                (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
+                 tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
+                 dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
+                self.spec_mt[b], D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
+                diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"],
+            )
 
     def combine(self):
         if self.epi == "rows":

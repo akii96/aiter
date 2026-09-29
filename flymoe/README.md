@@ -19,7 +19,12 @@ Target shape (MiniMax-M3-MXFP4, with the shared expert fused):
 - **Weights and scales are stored at their true shapes.** Our own layout is MFMA-native. K is always a multiple of 128 and N a multiple of 64 at every MiniMax-M3 width, so nothing is padded. TP8 runs at 384, not 512.
 - **Rows are compact.** There are exactly `T*topk` expert-sorted rows, with no rounding up to `block_m` in memory. Padding rows never touch HBM: no loads, no stores.
 - **Activations are quantized once per token**, not once per (token, expert) pair.
-- **Tail tiles waste MFMA lanes.** Less than one 16-row granule per active expert is wasted. That is at most about 1.3–10% in the 4096–32768 token band. In the streaming band (32–256 tokens) the MFMA waste is large, but the units are idle there anyway: the band is limited by HBM, and the zero-padding claim applies to bytes, not MFMA lanes.
+- **Tail tiles cost compute, not bytes.** Rows past a tile's `nrows` are never loaded from HBM (out-of-bounds DMA returns zeros) and never stored. The MFMA work is a different story:
+  - **Without skipping, a tail tile runs full BM.** With BM=256 that wastes about 10% of stage-1 MFMA rows at T=32768 and about 45% at T=4096.
+  - **`diag=skip` skips MFMAs row block by row block** (16-row granules, wave-uniform), so waste drops to under one 16-row block per tile. It measures −5 to −10% at T=4096–8192 and 0 to +2% at T=32768, where tail tiles are rare, so it is chosen per bucket.
+  - **A separate small-tile launch for the tails (`TB`) was measured slower everywhere.** The tail kernel is far less efficient per row, and it runs after the main kernel.
+
+  In the streaming band (32–256 tokens) the kernel is limited by HBM, so idle MFMA lanes cost little there.
 
 ## Pipeline (all FlyDSL kernels, no host sync)
 
