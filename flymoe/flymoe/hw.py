@@ -107,6 +107,23 @@ def dma_to_lds(rs, lds_base_i32, lds_off, voff, soff=0, nbytes=16, cm=0):
     )
 
 
+def dma_async(rs, lds_base_i32, lds_off, voff, soff=0, nbytes=16, cm=0):
+    """Async global->LDS DMA (completion tracked by rocdl.asyncmark/wait_asyncmark).
+
+    lds_off must be wave-uniform; lane i lands at lds_base + lds_off + i*nbytes.
+    """
+    lptr = lds_llvm_ptr(lds_base_i32, fx.Int32(rocdl.readfirstlane(T.i32, raw(fx.Int32(lds_off)))))
+    _mrocdl.raw_ptr_buffer_load_async_lds(
+        rs,
+        lptr,
+        raw(fx.Int32(nbytes)),
+        raw(fx.Int32(voff)),
+        raw(fx.Int32(soff)),
+        raw(fx.Int32(0)),
+        aux=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), cm),
+    )
+
+
 def mfma_fp4(acc, a, b, sa, sb, opsel_a=0, opsel_b=0):
     """v_mfma_scale_f32_16x16x128_f8f6f4 with fp4 (e2m1) A and B and e8m0 scales.
 

@@ -29,15 +29,19 @@ def make_problem(T, I, H=6144, E=129, k_routed=4, seed=0, skew=None, dev="cuda")
     return x, ids, w, (wg, sg, wu, su, wd, sd)
 
 
-def check(T, I, BM=128, skew=None, seed=0):
+def check(T, I, BM=128, skew=None, seed=0, epis=("rows", "f32atomic", "bf16atomic")):
     x, ids, w, wts = make_problem(T, I, skew=skew, seed=seed)
     W = moe.MoEWeights(*wts)
-    y = moe.flymoe_forward(x, ids, w, W, BM1=BM, BM2=BM)
-    torch.cuda.synchronize()
     y_ref, _, _ = ref.moe_ref(x, ids, w, *wts)
-    e = ref.rel_l2(y, y_ref)
-    ok = e < 1e-2 and torch.isfinite(y).all().item()
-    print(f"T={T:6d} I={I:5d} BM={BM} skew={skew}: rel_l2={e:.3e} {'OK' if ok else 'FAIL'}")
+    ok = True
+    for epi in epis:
+        y = moe.flymoe_forward(x, ids, w, W, BM1=BM, BM2=BM, epi=epi)
+        torch.cuda.synchronize()
+        e = ref.rel_l2(y, y_ref)
+        # bf16 output quantization alone is ~2e-3 rel.
+        good = e < 1e-2 and torch.isfinite(y.float()).all().item()
+        ok &= good
+        print(f"T={T:6d} I={I:5d} BM={BM} skew={skew} epi={epi:10s}: rel_l2={e:.3e} {'OK' if good else 'FAIL'}")
     return ok
 
 

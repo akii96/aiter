@@ -1,8 +1,8 @@
-"""Host-side orchestration: routing plan, activation quant, stage 1, stage 2."""
+"""Host-side orchestration: routing plan, activation quant, stage 1, stage 2, combine."""
 
 import torch
 
-from . import gemm, layout, mx
+from . import combine, gemm, layout, mx
 
 
 class MoEWeights:
@@ -39,40 +39,71 @@ def make_plan(topk_ids: torch.Tensor, E: int, BM: int):
     return order, row_tok, tiles, ntiles, max_tiles
 
 
-def flymoe_forward(x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=3,
-                   x_quant=None, return_h=False):
-    T, H = x.shape
-    k = topk_ids.shape[1]
-    R = T * k
-    I = W.I
-    dev = x.device
-    a_q, a_s = mx.quant(x.float()) if x_quant is None else x_quant
+class MoERun:
+    """All buffers for one (T, routing) problem; stage callables for timing."""
 
-    order1, row_tok1, tiles1, nt1, mt1 = make_plan(topk_ids, W.E, BM1)
-    h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
-    h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
-    dummy = torch.empty(1, dtype=torch.float32, device=dev)
-    gemm.run_gemm(
-        1, H, 2 * I, BM1,
-        (a_q.data_ptr(), a_s.data_ptr(), W.b1.data_ptr(), W.bs1.data_ptr(),
-         tiles1.data_ptr(), nt1.data_ptr(), row_tok1.data_ptr(), dummy.data_ptr(),
-         h_q.data_ptr(), h_s.data_ptr(), T, R, T),
-        mt1, D=D1,
-    )
+    def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=5, D2=4,
+                 epi="rows", x_quant=None, pipe="async"):
+        T, H = x.shape
+        k = topk_ids.shape[1]
+        R = T * k
+        I = W.I
+        dev = x.device
+        self.T, self.H, self.I, self.k, self.R, self.W = T, H, I, k, R, W
+        self.BM1, self.BM2, self.D1, self.D2, self.epi, self.pipe = BM1, BM2, D1, D2, epi, pipe
+        self.a_q, self.a_s = mx.quant(x.float()) if x_quant is None else x_quant
+        self.order, self.row_tok, self.tiles1, self.nt1, self.mt1 = make_plan(topk_ids, W.E, BM1)
+        if BM2 == BM1:
+            self.tiles2, self.nt2, self.mt2 = self.tiles1, self.nt1, self.mt1
+        else:
+            _, _, self.tiles2, self.nt2, self.mt2 = make_plan(topk_ids, W.E, BM2)
+        self.row_w = topk_w.reshape(-1)[self.order].to(torch.float32).contiguous()
+        self.inv = torch.empty(R, dtype=torch.int32, device=dev)
+        self.inv[self.order] = torch.arange(R, dtype=torch.int32, device=dev)
+        self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
+        self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
+        self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
+        if epi == "rows":
+            self.y_rows = torch.empty(R, H, dtype=torch.bfloat16, device=dev)
+            self.out = torch.empty(T, H, dtype=torch.bfloat16, device=dev)
+        elif epi == "f32atomic":
+            self.out = torch.zeros(T, H, dtype=torch.float32, device=dev)
+        else:
+            self.out = torch.zeros(T, H, dtype=torch.bfloat16, device=dev)
 
-    if BM2 == BM1:
-        tiles2, nt2, mt2 = tiles1, nt1, mt1
-    else:
-        _, _, tiles2, nt2, mt2 = make_plan(topk_ids, W.E, BM2)
-    row_w = topk_w.reshape(-1)[order1].to(torch.float32).contiguous()
-    out32 = torch.zeros(T, H, dtype=torch.float32, device=dev)
-    gemm.run_gemm(
-        2, I, H, BM2,
-        (h_q.data_ptr(), h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
-         tiles2.data_ptr(), nt2.data_ptr(), row_tok1.data_ptr(), row_w.data_ptr(),
-         out32.data_ptr(), dummy.data_ptr(), R, R, T),
-        mt2, D=D2,
-    )
-    if return_h:
-        return out32, (h_q, h_s, order1, row_tok1)
-    return out32
+    def stage1(self):
+        W = self.W
+        gemm.run_gemm(
+            1, self.H, 2 * self.I, self.BM1,
+            (self.a_q.data_ptr(), self.a_s.data_ptr(), W.b1.data_ptr(), W.bs1.data_ptr(),
+             self.tiles1.data_ptr(), self.nt1.data_ptr(), self.row_tok.data_ptr(), self.dummy.data_ptr(),
+             self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
+            self.mt1, D=self.D1, pipe=self.pipe,
+        )
+
+    def stage2(self):
+        W = self.W
+        dst = self.y_rows if self.epi == "rows" else self.out
+        if self.epi != "rows":
+            self.out.zero_()
+        gemm.run_gemm(
+            2, self.I, self.H, self.BM2,
+            (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
+             self.tiles2.data_ptr(), self.nt2.data_ptr(), self.row_tok.data_ptr(), self.row_w.data_ptr(),
+             dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
+            self.mt2, D=self.D2, epi=self.epi, pipe=self.pipe,
+        )
+
+    def combine(self):
+        if self.epi == "rows":
+            combine.run_combine(self.y_rows, self.inv, self.out, self.k)
+
+    def forward(self):
+        self.stage1()
+        self.stage2()
+        self.combine()
+        return self.out
+
+
+def flymoe_forward(x, topk_ids, topk_w, W: MoEWeights, **kw):
+    return MoERun(x, topk_ids, topk_w, W, **kw).forward()

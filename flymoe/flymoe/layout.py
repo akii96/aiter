@@ -61,6 +61,16 @@ def pack_w13(w_gate, s_gate, w_up, s_up):
     return pack_b(w[:, perm].contiguous(), s[:, perm].contiguous())
 
 
+def stage2_row_perm(hidden: int, device=None) -> torch.Tensor:
+    """Packed row p = g*32 + q*16 + c holds output column 32g + 2c + q, so each lane
+    of an MFMA tile pair holds two adjacent output columns (packed bf16x2 stores)."""
+    g = torch.arange(hidden // 32, device=device).view(-1, 1, 1)
+    q = torch.arange(2, device=device).view(1, -1, 1)
+    c = torch.arange(16, device=device).view(1, 1, -1)
+    return (32 * g + 2 * c + q).reshape(-1)
+
+
 def pack_w2(w_down, s_down):
     """down [E, H, I/2] + scales [E, H, I/32] -> packed stage-2 B (N = H, K = I)."""
-    return pack_b(w_down.contiguous(), s_down.contiguous())
+    perm = stage2_row_perm(w_down.shape[1], w_down.device)
+    return pack_b(w_down[:, perm].contiguous(), s_down[:, perm].contiguous())
