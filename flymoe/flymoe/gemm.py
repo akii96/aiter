@@ -30,6 +30,7 @@ from flydsl.expr.typing import T
 from . import hw
 
 NUM_CUS = 256
+OOB = 0x7FFFFFC0  # voffset sentinel: >= hw.REC_CAP even with a 63 B chunk offset added
 
 
 def _swz(row, mode=3):
@@ -120,6 +121,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     NEG_ALPHA_LOG2E = -alpha * 1.4426950408889634
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
+    if (alpha, limit) != (1.702, 7.0):
+        name += f"_a{alpha}_l{limit}".replace(".", "p")
+    name += "_" + hw.SRC_HASH
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
     SKIP = "skip" in DG
     HTA = HT and stage == 2   # stage-2 A (= h) is K-step-major: h_t[I/128][R][64 B]
@@ -207,7 +211,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     t = fx.Int32(hw.bload(r_tok, (row_start + row) * 4, T.i32))
                 else:
                     t = row_start + row
-                return valid.select(t, n_a_rows)
+                # HT planes are addressed via soffset, which the buffer range check ignores:
+                # invalid rows need an out-of-range voffset of their own.
+                return valid.select(t, (OOB // 64) if const_expr(HTA) else n_a_rows)
+
+            def as_off(row):
+                return (row < nrows).select((row_start + row) * 4, OOB)
 
             l16 = lane % 16
             lg = lane // 16
@@ -230,7 +239,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             # One 16 B/lane DMA covers the CTA's 4 B-scale blocks (1 KB) for a step.
             BS1 = WN == 4 and stage == 1
             bs16_voff = (nblk * WN) * 256 + lane * 16
-            bs_wave = 1 if NW <= 4 else 4  # a wave that issues no A-scale DMA
+            bs_wave = 1 if NW <= 4 else 4  # the wave issuing the B-scale DMA
             rb0 = wm * MBW  # first row block owned by this wave
             lds_base = fx.Int32(
                 fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
@@ -245,19 +254,19 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
                     a_dma_voff.append(a_row_of(row) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
-                as_uni_voff = (row_start + wn * 64 + lane) * 4
+                as_uni_voff = as_off(wn * 64 + lane)
                 AS16 = AST and BM >= 256
                 if const_expr(AS16):
                     # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
                     AS_W = (BM + 255) // 256
                     AS_IT = (AS_W + NW - 1) // NW
-                    as_dma_voff = [(row_start + (wave + it * NW) * 256 + lane * 4) * 4
+                    as_dma_voff = [as_off((wave + it * NW) * 256 + lane * 4)
                                    for it in range_constexpr(AS_IT)]
                 elif const_expr(AST):
                     # K-step-major compact scales, 64 rows (256 B) per 4 B/lane DMA: exact for BM < 256.
                     AS_W = (max(BM, 64) // 64)
                     AS_IT = (AS_W + NW - 1) // NW
-                    as_dma_voff = [(row_start + (wave + it * NW) * 64 + lane) * 4
+                    as_dma_voff = [as_off((wave + it * NW) * 64 + lane)
                                    for it in range_constexpr(AS_IT)]
                 else:
                     AS_W = (max(BM, 64) // 64)
@@ -516,7 +525,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 as_voff = []
                 for rb in range_constexpr(MB):
                     if const_expr(AST):
-                        as_voff.append((row_start + rb * 16 + l16) * 4 + lg)
+                        as_voff.append(as_off(fx.Int32(rb * 16) + l16) + lg)
                     else:
                         as_voff.append(a_row_of(fx.Int32(rb * 16) + l16) * KG + lg)
 
@@ -579,7 +588,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             gg = fx.min(fx.Float32(gv), lim)
                             uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
                             if const_expr(EF):
-                                # gate <= limit: the exp2 argument is bounded, so no denormal fixup needed
+                                # gate <= limit bounds the exp2 argument from below; a very negative gate
+                                # gives exp2 -> inf, rcp -> 0, silu -> gg * 0 = 0 (finite inputs only)
                                 sig = hw.fast_rcp(fx.Float32(1.0) + hw.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E)))
                             else:
                                 sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
@@ -657,6 +667,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         # Shared-expert tile: out[t] = own row + the token's routed rows
                         # (y_rows, via inv), summed in fp32; no combine pass, no shared y rows.
                         r_inv = hw.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
+                        r_out = hw.rsrc(os_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
                     for it in range_constexpr(ROWS_W // 8):
                         rl = fx.Int32(it * 8) + lane // 8
                         ch = lane % 8
@@ -664,20 +675,22 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         row = rb0 * 16 + rl
                         colb = (nblk * BN + wn * 64) * 2 + ch * 16
                         if const_expr(epi == "fused"):
+                            # Bad token / row ids (FC invariant broken) stay in bounds: the out
+                            # store is buffer-checked and routed rows are clamped into y_rows.
                             if row < nrows:
                                 grow = row_start + row
                                 t = fx.Int32(hw.bload(r_tok, grow * 4, T.i32))
                                 accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
                                 for sl in range_constexpr(KTOP):
                                     rs = fx.Int32(hw.bload(r_inv, (t * KTOP + sl) * 4, T.i32))
+                                    rs = fx.max(fx.min(rs, n_rows - 1), fx.Int32(0))
                                     other = rs != grow
                                     src = other.select(rs, grow)
                                     yv = fx.Vector(hw.gload(fx.Int64(o_ptr) + fx.Int64(src) * fx.Int64(N * 2)
                                                             + fx.Int64(colb), T.vec(8, T.bf16))).to(fx.Float32)
                                     zero8 = fx.Vector.filled(8, 0.0, fx.Float32)
                                     accv = accv + other.select(yv, zero8)
-                                hw.gstore(accv.to(fx.BFloat16), fx.Int64(os_ptr) + fx.Int64(t) * fx.Int64(N * 2)
-                                          + fx.Int64(colb))
+                                hw.bstore(accv.to(fx.BFloat16), r_out, t * (N * 2) + colb)
                         else:
                             off = row * (N * 2) + colb
                             hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)

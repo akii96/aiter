@@ -8,7 +8,7 @@ import functools
 
 import flydsl.compiler as flyc
 import flydsl.expr as fx
-from flydsl.expr import gpu, range_constexpr, rocdl
+from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr.typing import T
 
 from . import hw
@@ -20,8 +20,12 @@ def build_combine(H: int, k: int, threads: int = 256):
     chunks = (H // 8 + threads - 1) // threads
     exact = (H // 8) % threads == 0
 
-    @flyc.kernel(name=f"flymoe_combine_h{H}_k{k}", known_block_size=[threads, 1, 1])
+    kname = f"flymoe_combine_h{H}_k{k}_{hw.SRC_HASH}"
+
+    @flyc.kernel(name=kname, known_block_size=[threads, 1, 1])
     def kern(y_ptr: fx.Int64, inv_ptr: fx.Int64, o_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32):
+        if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
+            pass
         tid = fx.Int32(gpu.thread_id("x"))
         t = fx.Int32(gpu.block_id("x"))
         r_inv = hw.rsrc(inv_ptr)

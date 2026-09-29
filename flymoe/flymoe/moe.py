@@ -102,6 +102,9 @@ class MoERun:
         self.FC = bool(FC)
         if self.FC:
             assert epi == "rows" and not TB2, "FC needs the rows epilogue and no stage-2 tail split"
+            assert bool(((topk_ids == W.E - 1).sum(1) == 1).all()), \
+                "FC needs the shared expert (E-1) exactly once per token"
+            assert T * H * 2 < 2**31, "the fused epilogue stores out with 32-bit offsets"
             self.launches2 = [(spec((BM2, -2)), self.cfg2), (spec((BM2, -3)), dict(self.cfg2, epi="fused"))]
         else:
             self.launches2 = [(spec((BM2, -1) if TB2 else BM2), self.cfg2)]
@@ -116,7 +119,8 @@ class MoERun:
         self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
         self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
         # AST: stage-1 A scales in K-step-major compact-row layout ([H/128, R, 4 B]).
-        self.a_s_t = torch.empty(R * (H // 32), dtype=torch.uint8, device=dev) if self.AST else None
+        # +64 B allocation slack: a 16 B/lane scale DMA's last lanes may cover up to 3 rows past R.
+        self.a_s_t = torch.empty(R * (H // 32) + 64, dtype=torch.uint8, device=dev) if self.AST else None
         self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
         if epi == "rows":
             self.y_rows = torch.empty(R, H, dtype=torch.bfloat16, device=dev)
@@ -125,6 +129,7 @@ class MoERun:
             assert T * H * 4 < 2**31, "atomic epilogues use 32-bit offsets into out"
             self.out = torch.zeros(T, H, dtype=torch.float32, device=dev)
         else:
+            assert T * H * 2 < 2**31, "atomic epilogues use 32-bit offsets into out"
             self.out = torch.zeros(T, H, dtype=torch.bfloat16, device=dev)
 
     def _tl(self, b):

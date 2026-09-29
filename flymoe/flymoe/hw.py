@@ -4,7 +4,9 @@ Everything here is plumbing: buffer descriptors, raw buffer loads/stores,
 LDS pointers and the scaled fp4 MFMA. No MoE logic lives in this file.
 """
 
+import hashlib
 import inspect
+import pathlib
 
 import flydsl.expr as fx
 from flydsl._mlir import ir
@@ -20,6 +22,13 @@ _AUX_IS_ATTR = (
 )
 
 NT = 2  # non-temporal cache modifier
+# FlyDSL's cache keys on a kernel's own source and closure only; kernel names carry this so
+# edits to shared helpers (this file, gemm/prologue/combine) invalidate cached binaries.
+SRC_HASH = hashlib.sha1(b"".join(
+    (pathlib.Path(__file__).parent / f).read_bytes()
+    for f in ("hw.py", "gemm.py", "prologue.py", "combine.py"))).hexdigest()[:8]
+# Sized descriptors never cover more than this, so any voffset >= REC_CAP is out of range.
+REC_CAP = 0x7FFFFF00
 
 
 def raw(v):
@@ -36,11 +45,11 @@ def rsrc(addr_i64, num_bytes=None):
     if num_bytes is None:
         n = fx.Int64(0xFFFFFFFF)
     elif isinstance(num_bytes, int):
-        n = fx.Int64(max(0, min(num_bytes, 0xFFFFFFFF)))
+        n = fx.Int64(max(0, min(num_bytes, REC_CAP)))
     else:
         n = fx.Int64(num_bytes)
-        big = n > fx.Int64(0xFFFFFFFF)
-        n = big.select(fx.Int64(0xFFFFFFFF), n)
+        big = n > fx.Int64(REC_CAP)
+        n = big.select(fx.Int64(REC_CAP), n)
     return _mrocdl.MakeBufferRsrcOp(
         ir.Type.parse("!llvm.ptr<8>"),
         base,

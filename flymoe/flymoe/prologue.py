@@ -41,11 +41,14 @@ def build_plan(E: int, k: int, bms: tuple):
     class SharedStorage:
         raw: fx.Array[fx.Uint8, lds_bytes, 16]
 
-    @flyc.kernel(name=f"flymoe_plan_e{E}_k{k}_bm{'_'.join(map(str, bms))}",
-                 known_block_size=[PLAN_THREADS, 1, 1])
+    kname = f"flymoe_plan_e{E}_k{k}_bm{'_'.join(map(str, bms))}_{hw.SRC_HASH}"
+
+    @flyc.kernel(name=kname, known_block_size=[PLAN_THREADS, 1, 1])
     def kern(ids_ptr: fx.Int64, w_ptr: fx.Int64, rtok_ptr: fx.Int64, rw_ptr: fx.Int64,
              inv_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64, n_rows: fx.Int32,
              max_tiles0: fx.Int32):
+        if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
+            pass
         tid = fx.Int32(gpu.thread_id("x"))
         base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr))
         C_OFF, CUR_OFF, OFFS_OFF, TOFF_OFF = 0, E * 4, 2 * E * 4, 3 * E * 4
@@ -156,8 +159,12 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
     class HistStorage:
         raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
 
-    @flyc.kernel(name=f"flymoe_plan_hist_e{E}", known_block_size=[TH, 1, 1])
+    kname = f"flymoe_plan_hist_e{E}_{hw.SRC_HASH}"
+
+    @flyc.kernel(name=kname, known_block_size=[TH, 1, 1])
     def k_hist(ids_ptr: fx.Int64, gcount_ptr: fx.Int64, cbase_ptr: fx.Int64, n_rows: fx.Int32):
+        if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
+            pass
         tid = fx.Int32(gpu.thread_id("x"))
         c = fx.Int32(gpu.block_id("x"))
         base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(HistStorage).peek().raw.ptr))
@@ -197,7 +204,7 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
             return keep.select(n, fx.Int32(0))
         return (c % parent + (bm - 1)) // bm
 
-    ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}"
+    ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}_{hw.SRC_HASH}"
 
     @flyc.kernel(name=ptag, known_block_size=[256, 1, 1])
     def k_prefix(gcount_ptr: fx.Int64, offs_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64,
@@ -249,10 +256,14 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
     class ScatStorage:
         raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
 
-    @flyc.kernel(name=f"flymoe_plan_scatter_e{E}_k{k}{'_sl' if shared_last else ''}", known_block_size=[TH, 1, 1])
+    sname = f"flymoe_plan_scatter_e{E}_k{k}{'_sl' if shared_last else ''}_{hw.SRC_HASH}"
+
+    @flyc.kernel(name=sname, known_block_size=[TH, 1, 1])
     def k_scatter(ids_ptr: fx.Int64, w_ptr: fx.Int64, offs_ptr: fx.Int64, cbase_ptr: fx.Int64,
                   rtok_ptr: fx.Int64, rw_ptr: fx.Int64, inv_ptr: fx.Int64, gcount_ptr: fx.Int64,
                   n_rows: fx.Int32):
+        if const_expr(sname == ""):  # name (incl. source hash) in the JIT cache key
+            pass
         tid = fx.Int32(gpu.thread_id("x"))
         c = fx.Int32(gpu.block_id("x"))
         base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(ScatStorage).peek().raw.ptr))
@@ -307,7 +318,7 @@ def build_plan_small(E: int, k: int, bms: tuple, shared_last: bool = False):
     assert E <= TH
     specs = tuple(spec_of(b) for b in bms)
     NBM = len(specs)
-    tag = f"flymoe_plan_small_e{E}_k{k}_{spec_tag(bms)}{'_sl' if shared_last else ''}"
+    tag = f"flymoe_plan_small_e{E}_k{k}_{spec_tag(bms)}{'_sl' if shared_last else ''}_{hw.SRC_HASH}"
 
     def _nt(c, bm, parent, e):
         if parent == 0:
@@ -423,8 +434,12 @@ def build_scale_t(KG: int, threads: int = 256):
     """
     KS = KG // 4
 
-    @flyc.kernel(name=f"flymoe_scale_t_kg{KG}", known_block_size=[threads, 1, 1])
+    kname = f"flymoe_scale_t_kg{KG}_{hw.SRC_HASH}"
+
+    @flyc.kernel(name=kname, known_block_size=[threads, 1, 1])
     def kern(as_ptr: fx.Int64, rtok_ptr: fx.Int64, ast_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32):
+        if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
+            pass
         b = fx.Int32(gpu.block_id("x"))
         row = (b % ((n_rows + threads - 1) // threads)) * threads + fx.Int32(gpu.thread_id("x"))
         s = b // ((n_rows + threads - 1) // threads)
@@ -461,7 +476,7 @@ def build_quant(H: int, threads: int = 256, k: int = 0):
     """k > 0: also write K-step-major compact A scales ([H/128][R][4 B]) for the token's k
     compact rows (via inv, so the plan must run first); replaces the scale_t kernel."""
     G = H // 32
-    name = f"flymoe_quant_h{H}" + (f"_ast{k}" if k else "")
+    name = f"flymoe_quant_h{H}" + (f"_ast{k}" if k else "") + f"_{hw.SRC_HASH}"
 
     @flyc.kernel(name=name, known_block_size=[threads, 1, 1])
     def kern(x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64, n_groups: fx.Int32,
@@ -536,6 +551,7 @@ def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0):
 
     Tn, H = x.shape
     ng = Tn * (H // 32)
+    assert ng * 64 < 2**31, "quant uses 32-bit byte offsets"
     grid = (ng + 255) // 256
     stream = torch.cuda.current_stream() if stream is None else stream
     kk = k if a_s_t is not None else 0
