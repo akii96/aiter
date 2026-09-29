@@ -74,6 +74,7 @@ class MoERun:
         self.mt2 = max_tiles_for(R, W.E, BM2)
         self.tiles = torch.zeros(self.mt1 + self.mt2, 4, dtype=torch.int32, device=dev)
         self.ntiles = torch.zeros(2, dtype=torch.int32, device=dev)
+        self.plan_scratch = prologue.plan_scratch(R, W.E, dev)
         self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
         self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
         self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
@@ -93,7 +94,7 @@ class MoERun:
     def prologue(self):
         prologue.run_quant(self.x, self.a_q, self.a_s)
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
-                          self.ntiles, self.W.E, self.k, self.bms, self.mt1)
+                          self.ntiles, self.W.E, self.k, self.bms, self.mt1, scratch=self.plan_scratch)
 
     def stage1(self):
         W, c = self.W, self.cfg1

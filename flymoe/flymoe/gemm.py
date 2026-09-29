@@ -39,7 +39,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                alpha: float = 1.702, limit: float = 7.0):
     assert stage in (1, 2)
     assert epi in ("rows", "f32atomic", "bf16atomic")
-    assert pipe in ("async", "regs")
+    assert pipe in ("async", "regs", "hybrid")
     assert NW in (1, 2, 4)
     BN = 64 * NW
     THREADS = 64 * NW
@@ -55,11 +55,13 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     INTER = N // 2
     b_cm = hw.NT if b_nt else 0
 
-    if pipe == "async":
+    if pipe in ("async", "hybrid"):
         NSTG = max(2, min(D, KS + 1))
+        DB = min(3, KS)
+        b_lds = pipe == "async"
         OFF_B = BM * 64
-        OFF_BS = OFF_B + NW * 4096
-        OFF_AS = OFF_BS + NW * 256
+        OFF_BS = OFF_B + (NW * 4096 if b_lds else 0)
+        OFF_AS = OFF_BS + (NW * 256 if b_lds else 0)
         STAGE = OFF_AS + max(BM, 64) * 4
         lds_bytes = NSTG * STAGE
         assert lds_bytes <= 160 * 1024, lds_bytes
@@ -151,7 +153,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             zero = hw.raw(fx.Vector.filled(4, 0.0, fx.Float32))
             acc = [[zero] * 4 for _ in range(MB)]
 
-            if const_expr(pipe == "async"):
+            if const_expr(pipe in ("async", "hybrid")):
                 # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
                 pc = lane % 4
                 a_dma_voff = []
@@ -172,17 +174,26 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             if wave + it * NW < fx.Int32(A_INSTR):
                                 hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
                                              a_dma_voff[it], soff=s * 64)
-                    for j in range_constexpr(4):
-                        hw.dma_async(r_b, lds_base, wave * 4096 + (base + OFF_B + j * 1024),
-                                     b_voff[j], soff=s * 1024, cm=b_cm)
-                    hw.dma_async(r_bs, lds_base, wave * 256 + (base + OFF_BS), bs_voff,
-                                 soff=s * 256, nbytes=4, cm=b_cm)
+                    if const_expr(b_lds):
+                        for j in range_constexpr(4):
+                            hw.dma_async(r_b, lds_base, wave * 4096 + (base + OFF_B + j * 1024),
+                                         b_voff[j], soff=s * 1024, cm=b_cm)
+                        hw.dma_async(r_bs, lds_base, wave * 256 + (base + OFF_BS), bs_voff,
+                                     soff=s * 256, nbytes=4, cm=b_cm)
                     for it in range_constexpr(AS_IT):
                         if wave + it * NW < fx.Int32(AS_W):
                             hw.dma_async(r_as, lds_base, wave * 256 + (base + OFF_AS + it * NW * 256),
                                          as_dma_voff[it], soff=s * 4, nbytes=4)
                     rocdl.asyncmark()
 
+                def issue_b(s):
+                    bb = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm) for j in range_constexpr(4)]
+                    return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * 256, cm=b_cm)
+
+                breg = {}
+                if const_expr(not b_lds):
+                    for p in range_constexpr(DB):
+                        breg[p] = issue_b(p)
                 for p in range_constexpr(min(NSTG - 1, KS)):
                     issue(p)
                 for s in range_constexpr(KS):
@@ -190,13 +201,18 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     gpu.barrier()
                     if const_expr(s + NSTG - 1 < KS):
                         issue(s + NSTG - 1)
+                    if const_expr((not b_lds) and s + DB < KS):
+                        breg[s + DB] = issue_b(s + DB)
                     base = (s % NSTG) * STAGE
                     a_ops = [hw.lds_load(lds_base, a_rd + (base + rb * 1024), T.i32x4)
                              for rb in range_constexpr(MB)]
-                    b_ops = [hw.lds_load(lds_base, lane * 16 + wave * 4096 + (base + OFF_B + j * 1024),
-                                         T.i32x4)
-                             for j in range_constexpr(4)]
-                    bs = hw.lds_load(lds_base, lane * 4 + wave * 256 + (base + OFF_BS), T.i32, align=4)
+                    if const_expr(b_lds):
+                        b_ops = [hw.lds_load(lds_base, lane * 16 + wave * 4096 + (base + OFF_B + j * 1024),
+                                             T.i32x4)
+                                 for j in range_constexpr(4)]
+                        bs = hw.lds_load(lds_base, lane * 4 + wave * 256 + (base + OFF_BS), T.i32, align=4)
+                    else:
+                        b_ops, bs = breg.pop(s)
                     sa = [fx.Int32(fx.Uint8(hw.lds_load(lds_base, l16 * 4 + lg + (base + OFF_AS + rb * 64),
                                                         T.i8, align=1)))
                           for rb in range_constexpr(MB)]

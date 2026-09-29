@@ -35,7 +35,9 @@ def check(T, I, BM=128, skew=None, seed=0, epis=("rows", "f32atomic", "bf16atomi
     y_ref, _, _ = ref.moe_ref(x, ids, w, *wts)
     ok = True
     for epi in epis:
-        y = moe.flymoe_forward(x, ids, w, W, BM1=BM, BM2=BM, epi=epi)
+        run = moe.MoERun(x, ids, w, W, BM1=BM, BM2=BM, epi=epi)
+        run.forward()
+        y = run.forward().clone()  # second call: plan counters must have been re-zeroed
         torch.cuda.synchronize()
         e = ref.rel_l2(y, y_ref)
         # bf16 output quantization alone is ~2e-3 rel.

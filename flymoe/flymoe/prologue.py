@@ -114,6 +114,138 @@ def build_plan(E: int, k: int, bms: tuple):
     return launch
 
 
+CHUNK = 4096  # routing entries per CTA in the parallel plan
+
+
+@functools.lru_cache(maxsize=None)
+def build_plan_par(E: int, k: int, bms: tuple):
+    """Parallel plan in 3 launches (hist -> prefix/tiles -> scatter).
+
+    hist   : CTA c counts its CHUNK of topk_ids in LDS, then one global atomic per
+             expert returns the CTA's base inside that expert (cbase[c, e]).
+    prefix : one CTA turns gcount into expert offsets and tile lists; re-zeroes gcount.
+    scatter: CTA c re-walks its chunk; row = offs[e] + cbase[c, e] + local position.
+    """
+    NBM = len(bms)
+    TH = 1024
+
+    @fx.struct
+    class HistStorage:
+        raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
+
+    @flyc.kernel(name=f"flymoe_plan_hist_e{E}", known_block_size=[TH, 1, 1])
+    def k_hist(ids_ptr: fx.Int64, gcount_ptr: fx.Int64, cbase_ptr: fx.Int64, n_rows: fx.Int32):
+        tid = fx.Int32(gpu.thread_id("x"))
+        c = fx.Int32(gpu.block_id("x"))
+        base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(HistStorage).peek().raw.ptr))
+        r_ids = hw.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_cb = hw.rsrc(cbase_ptr)
+        if tid < fx.Int32(E):
+            hw.lds_store(fx.Int32(0), base, tid * 4, align=4)
+        gpu.barrier()
+        for j in range_constexpr(CHUNK // TH):
+            i = c * CHUNK + j * TH + tid
+            if i < n_rows:
+                e = fx.Int32(hw.bload(r_ids, i * 4, T.i32))
+                _lds_atomic_add(base, e * 4, 1)
+        gpu.barrier()
+        if tid < fx.Int32(E):
+            cnt = fx.Int32(hw.lds_load(base, tid * 4, T.i32, align=4))
+            prev = fx.Int32(llvm.AtomicRMWOp(
+                llvm.AtomicBinOp.add,
+                hw.raw(_global_ptr(gcount_ptr, tid * 4)),
+                hw.raw(cnt), llvm.AtomicOrdering.monotonic, syncscope="agent").result)
+            hw.bstore(prev, r_cb, (c * E + tid) * 4)
+
+    @flyc.kernel(name=f"flymoe_plan_prefix_e{E}_bm{'_'.join(map(str, bms))}", known_block_size=[256, 1, 1])
+    def k_prefix(gcount_ptr: fx.Int64, offs_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64,
+                 max_tiles0: fx.Int32):
+        tid = fx.Int32(gpu.thread_id("x"))
+        r_gc = hw.rsrc(gcount_ptr)
+        r_offs = hw.rsrc(offs_ptr)
+        r_tiles = hw.rsrc(tiles_ptr)
+        r_nt = hw.rsrc(ntiles_ptr)
+        if tid < fx.Int32(E):
+            # Each thread sums the counts before it (E is small; loads hit L2).
+            cnt = fx.Int32(hw.bload(r_gc, tid * 4, T.i32))
+            off = fx.Int32(0)
+            toffs = [fx.Int32(0)] * NBM
+            for e2 in range_constexpr(E):
+                c2 = fx.Int32(hw.bload(r_gc, e2 * 4, T.i32))
+                before = fx.Int32(e2) < tid
+                off = off + before.select(c2, fx.Int32(0))
+                for b in range_constexpr(NBM):
+                    toffs[b] = toffs[b] + before.select((c2 + (bms[b] - 1)) // bms[b], fx.Int32(0))
+            hw.bstore(off, r_offs, tid * 4)
+            for b in range_constexpr(NBM):
+                bm = bms[b]
+                nt = (cnt + (bm - 1)) // bm
+                tb = fx.Int32(0) if b == 0 else max_tiles0
+                for m in range(0, nt, 1):
+                    mi = fx.Int32(m)
+                    v = fx.Vector.from_elements([tid, off + mi * bm, fx.min(cnt - mi * bm, fx.Int32(bm)),
+                                                 fx.Int32(0)], fx.Int32)
+                    hw.bstore(v, r_tiles, (tb + toffs[b] + mi) * 16)
+                if tid == fx.Int32(E - 1):
+                    hw.bstore(toffs[b] + nt, r_nt, b * 4)
+        gpu.barrier()
+
+    @fx.struct
+    class ScatStorage:
+        raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
+
+    @flyc.kernel(name=f"flymoe_plan_scatter_e{E}_k{k}", known_block_size=[TH, 1, 1])
+    def k_scatter(ids_ptr: fx.Int64, w_ptr: fx.Int64, offs_ptr: fx.Int64, cbase_ptr: fx.Int64,
+                  rtok_ptr: fx.Int64, rw_ptr: fx.Int64, inv_ptr: fx.Int64, gcount_ptr: fx.Int64,
+                  n_rows: fx.Int32):
+        tid = fx.Int32(gpu.thread_id("x"))
+        c = fx.Int32(gpu.block_id("x"))
+        base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(ScatStorage).peek().raw.ptr))
+        r_ids = hw.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_w = hw.rsrc(w_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_offs = hw.rsrc(offs_ptr)
+        r_cb = hw.rsrc(cbase_ptr)
+        r_rt = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_rw = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_inv = hw.rsrc(inv_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        if tid < fx.Int32(E):
+            start = fx.Int32(hw.bload(r_offs, tid * 4, T.i32)) + fx.Int32(hw.bload(r_cb, (c * E + tid) * 4, T.i32))
+            hw.lds_store(start, base, tid * 4, align=4)
+        gpu.barrier()
+        for j in range_constexpr(CHUNK // TH):
+            i = c * CHUNK + j * TH + tid
+            if i < n_rows:
+                e = fx.Int32(hw.bload(r_ids, i * 4, T.i32))
+                row = fx.Int32(_lds_atomic_add(base, e * 4, 1))
+                hw.bstore(i // k, r_rt, row * 4)
+                hw.bstore(fx.Float32(hw.bload(r_w, i * 4, T.f32)), r_rw, row * 4)
+                hw.bstore(row, r_inv, i * 4)
+        # CTA 0 re-zeroes the global counters for the next call (hist of this call is done).
+        if c == fx.Int32(0):
+            if tid < fx.Int32(E):
+                hw.bstore(fx.Int32(0), hw.rsrc(gcount_ptr), tid * 4)
+
+    @flyc.jit
+    def launch(ids_ptr: fx.Int64, w_ptr: fx.Int64, rtok_ptr: fx.Int64, rw_ptr: fx.Int64,
+               inv_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64, gcount_ptr: fx.Int64,
+               offs_ptr: fx.Int64, cbase_ptr: fx.Int64, n_rows: fx.Int32, n_cta: fx.Int32,
+               max_tiles0: fx.Int32, stream: fx.Stream = fx.Stream(None)):
+        k_hist(ids_ptr, gcount_ptr, cbase_ptr, n_rows).launch(
+            grid=(n_cta, 1, 1), block=(TH, 1, 1), stream=stream)
+        k_prefix(gcount_ptr, offs_ptr, tiles_ptr, ntiles_ptr, max_tiles0).launch(
+            grid=(1, 1, 1), block=(256, 1, 1), stream=stream)
+        k_scatter(ids_ptr, w_ptr, offs_ptr, cbase_ptr, rtok_ptr, rw_ptr, inv_ptr, gcount_ptr,
+                  n_rows).launch(grid=(n_cta, 1, 1), block=(TH, 1, 1), stream=stream)
+
+    return launch
+
+
+def _global_ptr(addr_i64, byte_off):
+    ptr_ty = fx.PointerType.get(T.i32, fx.AddressSpace.Global, 4)
+    base = fx.inttoptr(fx.PointerType.get(T.i8, fx.AddressSpace.Global, 4), fx.Int64(addr_i64))
+    return fx.to_llvm_ptr(fx.recast_iter(ptr_ty, fx.add_offset(base, fx.Int32(byte_off))))
+
+
 @functools.lru_cache(maxsize=None)
 def build_quant(H: int, threads: int = 256):
     G = H // 32
@@ -175,10 +307,30 @@ def run_quant(x, q, s, stream=None):
     _run(("q", H), build_quant(H), (x.data_ptr(), q.data_ptr(), s.data_ptr(), ng, grid, stream))
 
 
-def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_tiles0, stream=None):
+def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_tiles0, stream=None,
+             scratch=None):
+    """scratch: (gcount [E] int32 zero-initialised once, offs [E], cbase [n_cta*E])."""
     import torch
 
     stream = torch.cuda.current_stream() if stream is None else stream
-    _run(("p", E, k, bms), build_plan(E, k, bms),
+    n = ids_i32.numel()
+    if scratch is None:
+        _run(("p", E, k, bms), build_plan(E, k, bms),
+             (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
+              tiles.data_ptr(), ntiles.data_ptr(), n, max_tiles0, stream))
+        return
+    gcount, offs, cbase = scratch
+    n_cta = (n + CHUNK - 1) // CHUNK
+    _run(("pp", E, k, bms), build_plan_par(E, k, bms),
          (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
-          tiles.data_ptr(), ntiles.data_ptr(), ids_i32.numel(), max_tiles0, stream))
+          tiles.data_ptr(), ntiles.data_ptr(), gcount.data_ptr(), offs.data_ptr(), cbase.data_ptr(),
+          n, n_cta, max_tiles0, stream))
+
+
+def plan_scratch(R, E, device):
+    import torch
+
+    n_cta = (R + CHUNK - 1) // CHUNK
+    return (torch.zeros(E, dtype=torch.int32, device=device),
+            torch.empty(E, dtype=torch.int32, device=device),
+            torch.empty(n_cta * E, dtype=torch.int32, device=device))

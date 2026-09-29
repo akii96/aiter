@@ -1,0 +1,3 @@
+.dump/
+.tune_*.log
+__pycache__/
