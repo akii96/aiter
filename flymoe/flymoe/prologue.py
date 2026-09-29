@@ -247,6 +247,48 @@ def _global_ptr(addr_i64, byte_off):
 
 
 @functools.lru_cache(maxsize=None)
+def build_scale_t(KG: int, threads: int = 256):
+    """a_s [T, KG] bytes (token-major) -> a_s_t [KG/4, R, 4] (K-step-major, compact rows).
+
+    With this layout a tile's A scales for one 128-K step are BM*4 contiguous bytes,
+    so the GEMM fetches them with one 16 B/lane DMA instead of a 4 B-per-row gather.
+    """
+    KS = KG // 4
+
+    @flyc.kernel(name=f"flymoe_scale_t_kg{KG}", known_block_size=[threads, 1, 1])
+    def kern(as_ptr: fx.Int64, rtok_ptr: fx.Int64, ast_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32):
+        b = fx.Int32(gpu.block_id("x"))
+        row = (b % ((n_rows + threads - 1) // threads)) * threads + fx.Int32(gpu.thread_id("x"))
+        s = b // ((n_rows + threads - 1) // threads)
+        r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_as = hw.rsrc(as_ptr, fx.Int64(n_tok) * fx.Int64(KG))
+        r_ast = hw.rsrc(ast_ptr, fx.Int64(n_rows) * fx.Int64(KG))
+        if row < n_rows:
+            t = fx.Int32(hw.bload(r_tok, row * 4, T.i32))
+            v = fx.Int32(hw.bload(r_as, t * KG + s * 4, T.i32))
+            hw.bstore(v, r_ast, (s * n_rows + row) * 4)
+
+    @flyc.jit
+    def launch(as_ptr: fx.Int64, rtok_ptr: fx.Int64, ast_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32,
+               grid: fx.Int32, stream: fx.Stream = fx.Stream(None)):
+        kern(as_ptr, rtok_ptr, ast_ptr, n_rows, n_tok).launch(
+            grid=(grid, 1, 1), block=(threads, 1, 1), stream=stream)
+
+    return launch
+
+
+def run_scale_t(a_s, row_tok, a_s_t, stream=None):
+    import torch
+
+    n_tok, KG = a_s.shape
+    R = row_tok.numel()
+    grid = ((R + 255) // 256) * (KG // 4)
+    stream = torch.cuda.current_stream() if stream is None else stream
+    _run(("st", KG), build_scale_t(KG),
+         (a_s.data_ptr(), row_tok.data_ptr(), a_s_t.data_ptr(), R, n_tok, grid, stream))
+
+
+@functools.lru_cache(maxsize=None)
 def build_quant(H: int, threads: int = 256):
     G = H // 32
 

@@ -45,7 +45,7 @@ def _swz(row, mode=3):
 @functools.lru_cache(maxsize=None)
 def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
                epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
-               GM: int = 1, diag: str = "", WM: int = 1, EF: bool = False,
+               GM: int = 1, diag: str = "", WM: int = 1, EF: bool = False, MV: int = 0, AST: bool = False,
                alpha: float = 1.702, limit: float = 7.0):
     assert stage in (1, 2)
     assert epi in ("rows", "f32atomic", "bf16atomic")
@@ -78,7 +78,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         OFF_B = BM * 64
         OFF_BS = OFF_B + (WN * 4096 if b_lds else 0)
         OFF_AS = OFF_BS + (WN * 256 if b_lds else 0)
-        STAGE = OFF_AS + max(BM, 64) * 4
+        STAGE = OFF_AS + (max(BM * 4, 1024) if AST else max(BM, 64) * 4)
         lds_bytes = NSTG * STAGE
         assert lds_bytes <= 160 * 1024, lds_bytes
     else:
@@ -96,6 +96,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         name += f"_gm{GM}"
     if EF:
         name += "_ef"
+    if MV:
+        name += f"_mv{MV}"
+    if AST:
+        name += "_ast"
     NEG_ALPHA_LOG2E = -alpha * 1.4426950408889634
     if diag:
         name += f"_diag{diag.replace('+', '_')}"
@@ -122,6 +126,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         n_rows: fx.Int32,
         n_out: fx.Int32,
     ):
+        if const_expr(MV):  # keeps MV in the JIT cache key (it only changes compile hints)
+            pass
         tid = fx.Int32(gpu.thread_id("x"))
         bid = fx.Int32(gpu.block_id("x"))
         lane = tid % 64
@@ -160,7 +166,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             nrows = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[2])))
 
             r_a = hw.rsrc(a_ptr, fx.Int64(n_a_rows) * fx.Int64(KH))
-            r_as = hw.rsrc(as_ptr, fx.Int64(n_a_rows) * fx.Int64(KG))
+            r_as = hw.rsrc(as_ptr, fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG))
             r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
             b_exp = fx.Int64(N // 16) * fx.Int64(KS * 1024)
             bs_exp = fx.Int64(N // 64) * fx.Int64(KS * 256)
@@ -197,40 +203,69 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
                     a_dma_voff.append(a_row_of(row) * KH + ((pc * 16) ^ _swz(row, SWZ)))
-                AS_W = (max(BM, 64) // 64)
-                AS_IT = (AS_W + NW - 1) // NW
-                as_dma_voff = [a_row_of((wave + it * NW) * 64 + lane) * KG for it in range_constexpr(AS_IT)]
+                if const_expr(AST):
+                    # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
+                    AS_W = (BM + 255) // 256
+                    AS_IT = (AS_W + NW - 1) // NW
+                    as_dma_voff = [(row_start + (wave + it * NW) * 256 + lane * 4) * 4
+                                   for it in range_constexpr(AS_IT)]
+                else:
+                    AS_W = (max(BM, 64) // 64)
+                    AS_IT = (AS_W + NW - 1) // NW
+                    as_dma_voff = [a_row_of((wave + it * NW) * 64 + lane) * KG for it in range_constexpr(AS_IT)]
 
-                def issue(s):
+                def dma_ops(s):
+                    """This wave's DMA instructions for K step s, as thunks (issue order)."""
                     base = (s % NSTG) * STAGE
-                    for it in range_constexpr(A_IT):
+                    ops = []
+                    for it in range_constexpr(A_IT if "nodmaA" not in DG else 0):
                         if const_expr(A_INSTR % NW == 0):
-                            hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
-                                         a_dma_voff[it], soff=s * 64)
+                            ops.append(lambda it=it: hw.dma_async(
+                                r_a, lds_base, wave * 1024 + (base + it * NW * 1024), a_dma_voff[it], soff=s * 64))
                         else:
-                            if wave + it * NW < fx.Int32(A_INSTR):
-                                hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
-                                             a_dma_voff[it], soff=s * 64)
-                    if const_expr(b_lds):
+                            def _a(it=it):
+                                if wave + it * NW < fx.Int32(A_INSTR):
+                                    hw.dma_async(r_a, lds_base, wave * 1024 + (base + it * NW * 1024),
+                                                 a_dma_voff[it], soff=s * 64)
+                            ops.append(_a)
+                    if const_expr(b_lds and "nodmaB" not in DG):
                         for jj in range_constexpr(4 // WM):
                             if const_expr(WM == 1):
-                                hw.dma_async(r_b, lds_base, wn * 4096 + (base + OFF_B + jj * 1024),
-                                             b_voff[jj], soff=s * 1024, cm=b_cm)
+                                ops.append(lambda jj=jj: hw.dma_async(
+                                    r_b, lds_base, wn * 4096 + (base + OFF_B + jj * 1024), b_voff[jj],
+                                    soff=s * 1024, cm=b_cm))
                             else:
-                                j = wm * (4 // WM) + jj
-                                hw.dma_async(r_b, lds_base, wn * 4096 + j * 1024 + (base + OFF_B),
-                                             b_voff[0] + j * (KS * 1024), soff=s * 1024, cm=b_cm)
+                                def _b(jj=jj):
+                                    j = wm * (4 // WM) + jj
+                                    hw.dma_async(r_b, lds_base, wn * 4096 + j * 1024 + (base + OFF_B),
+                                                 b_voff[0] + j * (KS * 1024), soff=s * 1024, cm=b_cm)
+                                ops.append(_b)
                         if const_expr(WM == 1):
-                            hw.dma_async(r_bs, lds_base, wn * 256 + (base + OFF_BS), bs_voff,
-                                         soff=s * 256, nbytes=4, cm=b_cm)
+                            ops.append(lambda: hw.dma_async(r_bs, lds_base, wn * 256 + (base + OFF_BS), bs_voff,
+                                                            soff=s * 256, nbytes=4, cm=b_cm))
                         else:
-                            if wm == fx.Int32(0):
-                                hw.dma_async(r_bs, lds_base, wn * 256 + (base + OFF_BS), bs_voff,
-                                             soff=s * 256, nbytes=4, cm=b_cm)
+                            def _bs():
+                                if wm == fx.Int32(0):
+                                    hw.dma_async(r_bs, lds_base, wn * 256 + (base + OFF_BS), bs_voff,
+                                                 soff=s * 256, nbytes=4, cm=b_cm)
+                            ops.append(_bs)
                     for it in range_constexpr(AS_IT):
-                        if wave + it * NW < fx.Int32(AS_W):
-                            hw.dma_async(r_as, lds_base, wave * 256 + (base + OFF_AS + it * NW * 256),
-                                         as_dma_voff[it], soff=s * 4, nbytes=4)
+                        if const_expr(AST):
+                            def _as(it=it):
+                                if wave + it * NW < fx.Int32(AS_W):
+                                    hw.dma_async(r_as, lds_base, wave * 1024 + (base + OFF_AS + it * NW * 1024),
+                                                 as_dma_voff[it], soff=n_rows * (s * 4), nbytes=16)
+                        else:
+                            def _as(it=it):
+                                if wave + it * NW < fx.Int32(AS_W):
+                                    hw.dma_async(r_as, lds_base, wave * 256 + (base + OFF_AS + it * NW * 256),
+                                                 as_dma_voff[it], soff=s * 4, nbytes=4)
+                        ops.append(_as)
+                    return ops
+
+                def issue(s):
+                    for op in dma_ops(s):
+                        op()
                     rocdl.asyncmark()
 
                 def issue_b(s):
@@ -264,26 +299,43 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     # phase (DMA issue + LDS operand reads + DMA completion wait).
                     rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 1)))
                     gpu.barrier()
-                    if wm == fx.Int32(1):
-                        gpu.barrier()
+                    if const_expr("nobar" not in DG):
+                        if wm == fx.Int32(1):
+                            gpu.barrier()
+                    IL = "il" in DG  # DMA issue interleaved into the MFMA phase
                     for s in range_constexpr(KS):
-                        if const_expr(s + NSTG - 1 < KS):
+                        dma_now = s + NSTG - 1 < KS and "nodma" not in DG
+                        if const_expr(dma_now and not IL):
                             issue(s + NSTG - 1)
-                        a_ops, sa, bl = read_a(s)
+                        a_ops, sa, bl = read_a(0 if const_expr("nolds" in DG) else s)
                         b_ops, bs = bl
-                        if const_expr(s + 1 < KS):
-                            rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 2 - s)))
+                        if const_expr(s + 1 < KS and "nodma" not in DG):
+                            # IL: this step's DMA has not been issued yet (it goes into the MFMA phase).
+                            pend = min(NSTG - 2, KS - 2 - s) - (1 if IL and dma_now else 0)
+                            rocdl.wait_asyncmark(max(0, pend))
                         rocdl.sched_barrier(0)
-                        gpu.barrier()
+                        if const_expr("nobar" not in DG):
+                            gpu.barrier()
                         rocdl.s_setprio(1)
+                        ops = dma_ops(s + NSTG - 1) if const_expr(IL and dma_now) else []
                         for rb in range_constexpr(MBW):
                             for j in range_constexpr(4):
                                 acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
+                            if const_expr(IL and rb < len(ops)):
+                                rocdl.sched_barrier(0)
+                                ops[rb]()
+                                rocdl.sched_barrier(0)
+                        if const_expr(IL and dma_now):
+                            for k2 in range_constexpr(MBW, len(ops)):
+                                ops[k2]()
+                            rocdl.asyncmark()
                         rocdl.s_setprio(0)
                         rocdl.sched_barrier(0)
-                        gpu.barrier()
-                    if wm == fx.Int32(0):
-                        gpu.barrier()
+                        if const_expr("nobar" not in DG):
+                            gpu.barrier()
+                    if const_expr("nobar" not in DG):
+                        if wm == fx.Int32(0):
+                            gpu.barrier()
                 if const_expr(prefetch):
                     # LDS operands for step s+1 are read while step s's MFMAs run.
                     rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 1)))
@@ -333,14 +385,18 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     a_lds.append(row * 64 + ((lc * 16) ^ _swz(row, SWZ)))
                 as_voff = []
                 for rb in range_constexpr(MB):
-                    as_voff.append(a_row_of(fx.Int32(rb * 16) + l16) * KG + lg)
+                    if const_expr(AST):
+                        as_voff.append((row_start + rb * 16 + l16) * 4 + lg)
+                    else:
+                        as_voff.append(a_row_of(fx.Int32(rb * 16) + l16) * KG + lg)
 
                 def issue_r(s):
                     a = [hw.bload(r_a, a_voff[i], T.i32x4, soff=s * 64) for i in range_constexpr(A_CH)]
                     b = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm)
                          for j in range_constexpr(4)]
                     bs = hw.bload(r_bs, bs_voff, T.i32, soff=s * 256, cm=b_cm)
-                    sa = [fx.Int32(fx.Uint8(hw.bload(r_as, as_voff[rb], T.i8, soff=s * 4)))
+                    sa = [fx.Int32(fx.Uint8(hw.bload(r_as, as_voff[rb], T.i8,
+                                                     soff=(n_rows * (s * 4)) if const_expr(AST) else s * 4)))
                           for rb in range_constexpr(MB)]
                     return a, b, bs, sa
 
@@ -412,7 +468,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         off = valid.select(grow * (INTER // 2) + g * 16 + l16, fx.Int32(0x7FFFFFF0))
                         hw.bstore(fx.Int32(pk).to(fx.Int8), r_o, off)
                         soff_ok = valid & (l16 == fx.Int32(0))
-                        soff = soff_ok.select(grow * (INTER // 32) + g, fx.Int32(0x7FFFFFF0))
+                        hs_off = grow * (INTER // 32) + g
+                        soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
                         hw.bstore(bexp.to(fx.Int8), r_os, soff)
             else:
                 # W2 columns are even/odd interleaved per 32: tiles (0,1) and (2,3) of
@@ -464,6 +521,13 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
              o_ptr, os_ptr, n_a_rows, n_rows, n_out).launch(
             grid=(grid, 1, 1), block=(THREADS, 1, 1), stream=stream)
 
+    if MV:
+        # MV=1: no AGPRs at all (amdgpu-agpr-alloc=0) -> MFMA accumulators in arch VGPRs,
+        #       no AGPR<->VGPR copies; MV=2: same + waves_per_eu=2.
+        launch.compile_hints = {"fn_attrs": {"amdgpu-agpr-alloc": "0"},
+                                "llvm_options": {"amdgpu-mfma-vgpr-form": True}}
+        if MV == 2:
+            launch.compile_hints["waves_per_eu"] = 2
     return launch, NB
 
 
@@ -483,12 +547,12 @@ _runners = {}
 
 
 def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_remap=True,
-             pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, stream=None):
+             pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, MV=0, AST=False, stream=None):
     import torch
 
-    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF)
+    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST)
     if key not in _runners:
-        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF)
+        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST)
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream

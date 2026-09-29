@@ -25,14 +25,18 @@ def kv(s):
     return d
 
 
+GLOBAL = ("AST",)
+
+
 def screen(stage, I, T, cfgs, reps=7, inner=10):
     x, ids, w, W = get_problem(T, I)
     out = []
     for c in cfgs:
         n = "1" if stage == 1 else "2"
-        kw = {f"{k}{n}": v for k, v in c.items()}
+        kw = {(k if k in GLOBAL else f"{k}{n}"): v for k, v in c.items()}
         other = "2" if stage == 1 else "1"
         kw.setdefault(f"BM{other}", c["BM"])
+        kw.setdefault(f"MV{other}", 0)
         kw.setdefault(f"NW{other}", 4 if c["BM"] >= 64 else c.get("NW", 4))
         kw.setdefault(f"pipe{other}", "async")
         run = moe.MoERun(x, ids, w, W, **kw)

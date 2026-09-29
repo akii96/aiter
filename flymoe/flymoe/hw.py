@@ -159,3 +159,81 @@ def row16_max_nonneg_f32(x):
 
 def fast_rcp(x):
     return fx.Float32(rocdl.rcp(T.f32, raw(fx.Float32(x))))
+
+
+def _set_kernel_fn_attrs(module, attrs):
+    """Add LLVM function attributes (llvm.func passthrough) to every kernel llvm.func."""
+    from flydsl._mlir import ir as _ir
+
+    with module.context:
+        items = [_ir.ArrayAttr.get([_ir.StringAttr.get(k), _ir.StringAttr.get(str(v))])
+                 for k, v in attrs.items()]
+        for top in module.body.operations:
+            if top.operation.name != "gpu.module":
+                continue
+            for f in top.regions[0].blocks[0].operations:
+                if f.operation.name == "llvm.func" and "rocdl.kernel" in f.attributes:
+                    old = list(f.attributes["passthrough"]) if "passthrough" in f.attributes else []
+                    f.attributes["passthrough"] = _ir.ArrayAttr.get(old + items)
+
+
+def _install_fn_attr_hint():
+    """compile_hints["fn_attrs"] = {name: value} -> LLVM function attributes on kernels.
+
+    MLIR's gpu->rocdl lowering drops unknown function attributes, so the attributes
+    are attached to the lowered llvm.func right before the gpu-module-to-binary
+    stage (used for "amdgpu-agpr-alloc": MFMA accumulator register class control).
+    """
+    from flydsl.compiler import jit_function as _jf
+    from flydsl.compiler.kernel_function import CompilationContext
+
+    if getattr(_jf, "_flymoe_patched", False):
+        return
+
+    def _attrs():
+        h = CompilationContext.get_compile_hints() or {}
+        return h.get("fn_attrs")
+
+    orig_run_pipeline = _jf._run_pipeline
+
+    def run_pipeline(module, fragments, *, verifier, print_after_all):
+        attrs = _attrs()
+        if not attrs or len(fragments) < 2:
+            return orig_run_pipeline(module, fragments, verifier=verifier, print_after_all=print_after_all)
+        orig_run_pipeline(module, fragments[:-1], verifier=verifier, print_after_all=print_after_all)
+        _set_kernel_fn_attrs(module, attrs)
+        orig_run_pipeline(module, fragments[-1:], verifier=verifier, print_after_all=print_after_all)
+
+    _jf._run_pipeline = run_pipeline
+
+    OrigPM = _jf.PassManager
+
+    class PM:
+        """Per-fragment path (FLYDSL_DUMP_IR): patch before the binary fragment."""
+
+        def __init__(self, pm, text):
+            self._pm, self._text = pm, text
+
+        @staticmethod
+        def parse(text, *a, **k):
+            return PM(OrigPM.parse(text, *a, **k), text)
+
+        def run(self, op):
+            attrs = _attrs()
+            if attrs and "gpu-module-to-binary" in self._text:
+                _set_kernel_fn_attrs(_ModView(op), attrs)
+            return self._pm.run(op)
+
+        def __getattr__(self, n):
+            return getattr(self._pm, n)
+
+    class _ModView:
+        def __init__(self, op):
+            self.context = op.context
+            self.body = op.regions[0].blocks[0]
+
+    _jf.PassManager = PM
+    _jf._flymoe_patched = True
+
+
+_install_fn_attr_hint()

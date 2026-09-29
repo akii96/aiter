@@ -51,7 +51,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST=False):
         T, H = x.shape
         k = topk_ids.shape[1]
         R = T * k
@@ -59,9 +59,10 @@ class MoERun:
         dev = x.device
         self.x, self.W = x, W
         self.T, self.H, self.I, self.k, self.R = T, H, I, k, R
-        self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1, GM=GM1, diag=diag1, WM=WM1, EF=EF1)
-        self.cfg2 = dict(BM=BM2, D=D2, pipe=pipe2, NW=NW2, GM=GM2, diag=diag2, WM=WM2, EF=EF2, epi=epi)
+        self.cfg1 = dict(BM=BM1, D=D1, pipe=pipe1, NW=NW1, GM=GM1, diag=diag1, WM=WM1, EF=EF1, MV=MV1)
+        self.cfg2 = dict(BM=BM2, D=D2, pipe=pipe2, NW=NW2, GM=GM2, diag=diag2, WM=WM2, EF=EF2, MV=MV2, epi=epi)
         self.epi = epi
+        self.AST = bool(AST)
         self.ids = topk_ids.reshape(-1).to(torch.int32).contiguous()
         self.w = topk_w.reshape(-1).to(torch.float32).contiguous()
         self.a_q = torch.empty(T, H // 2, dtype=torch.uint8, device=dev)
@@ -77,6 +78,8 @@ class MoERun:
         self.plan_scratch = prologue.plan_scratch(R, W.E, dev)
         self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
         self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
+        # AST: stage-1 A scales in K-step-major compact-row layout ([H/128, R, 4 B]).
+        self.a_s_t = torch.empty(R * (H // 32), dtype=torch.uint8, device=dev) if AST else None
         self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
         if epi == "rows":
             self.y_rows = torch.empty(R, H, dtype=torch.bfloat16, device=dev)
@@ -95,15 +98,17 @@ class MoERun:
         prologue.run_quant(self.x, self.a_q, self.a_s)
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
                           self.ntiles, self.W.E, self.k, self.bms, self.mt1, scratch=self.plan_scratch)
+        if self.AST:
+            prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
 
     def stage1(self):
         W, c = self.W, self.cfg1
         gemm.run_gemm(
             1, self.H, 2 * self.I, c["BM"],
-            (self.a_q.data_ptr(), self.a_s.data_ptr(), W.b1.data_ptr(), W.bs1.data_ptr(),
+            (self.a_q.data_ptr(), (self.a_s_t if self.AST else self.a_s).data_ptr(), W.b1.data_ptr(), W.bs1.data_ptr(),
              self.tiles.data_ptr(), self.ntiles.data_ptr(), self.row_tok.data_ptr(), self.dummy.data_ptr(),
              self.h_q.data_ptr(), self.h_s.data_ptr(), self.T, self.R, self.T),
-            self.mt1, D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"],
+            self.mt1, D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST,
         )
 
     def stage2(self):
@@ -117,7 +122,7 @@ class MoERun:
             (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
              tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
              dst.data_ptr(), self.dummy.data_ptr(), self.R, self.R, self.T),
-            self.mt2, D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"],
+            self.mt2, D=c["D"], epi=self.epi, pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"],
         )
 
     def combine(self):

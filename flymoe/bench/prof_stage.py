@@ -28,7 +28,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     c = kv(a.cfg)
     n = str(a.stage)
-    kw = {f"{k}{n}": v for k, v in c.items()}
+    kw = {(k if k in ("AST",) else f"{k}{n}"): v for k, v in c.items()}
     x, ids, w, W = get_problem(a.T, a.I)
     run = moe.MoERun(x, ids, w, W, **kw)
     run.prologue()

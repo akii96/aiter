@@ -16,22 +16,28 @@ from bench.bench_moe import get_problem, timeit
 from flymoe import moe
 
 S1 = [
-    dict(BM=16, NW=1, pipe="async", D=4),
-    dict(BM=32, NW=1, pipe="async", D=4),
-    dict(BM=32, NW=2, pipe="async", D=4),
-    dict(BM=64, NW=2, pipe="async", D=3),
-    dict(BM=64, NW=4, pipe="async", D=3),
-    dict(BM=128, NW=4, pipe="async", D=3),
-    dict(BM=256, NW=4, pipe="async", D=3),
+    dict(BM=16, NW=1, pipe="async", D=4, EF=1),
+    dict(BM=32, NW=1, pipe="async", D=4, EF=1),
+    dict(BM=32, NW=2, pipe="async", D=4, EF=1),
+    dict(BM=64, NW=2, pipe="async", D=3, EF=1),
+    dict(BM=64, NW=4, pipe="async", D=3, EF=1),
+    dict(BM=64, NW=4, pipe="hybrid2", D=3, EF=1),
+    dict(BM=128, NW=4, pipe="hybrid2", D=3, EF=1),
+    dict(BM=128, NW=4, pipe="async", D=3, EF=1),
+    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=3, EF=1),
+    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=2, EF=1),
 ]
 S2 = [
     dict(BM=16, NW=1, pipe="async", D=2),
     dict(BM=32, NW=2, pipe="async", D=2),
     dict(BM=64, NW=4, pipe="async", D=2),
     dict(BM=64, NW=4, pipe="regs", D=2),
+    dict(BM=64, NW=4, pipe="hybrid", D=3),
     dict(BM=128, NW=4, pipe="regs", D=2),
     dict(BM=128, NW=4, pipe="async", D=2),
-    dict(BM=256, NW=4, pipe="regs", D=2),
+    dict(BM=128, NW=4, pipe="hybrid", D=3),
+    dict(BM=128, NW=4, pipe="hybrid2", D=4),
+    dict(BM=256, NW=8, WM=2, pipe="pingpong", D=3),
 ]
 BUCKETS = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 
@@ -44,21 +50,23 @@ def tune(I, buckets):
         for c in S1:
             if c["BM"] > 16 * max(1, (T * 5) // 129) * 8 and c["BM"] > 64:
                 continue
-            run = moe.MoERun(x, ids, w, W, BM1=c["BM"], BM2=c["BM"], D1=c["D"], pipe1=c["pipe"], NW1=c["NW"])
+            run = moe.MoERun(x, ids, w, W, BM2=c["BM"], NW2=4 if c["BM"] >= 64 else 1, pipe2="async",
+                             **{f"{k}1": v for k, v in c.items()})
             run.prologue()
             res1.append((timeit(run.stage1), c))
         for c in S2:
             if c["BM"] > 16 * max(1, (T * 5) // 129) * 8 and c["BM"] > 64:
                 continue
-            run = moe.MoERun(x, ids, w, W, BM1=c["BM"], BM2=c["BM"], D2=c["D"], pipe2=c["pipe"], NW2=c["NW"])
+            run = moe.MoERun(x, ids, w, W, BM1=c["BM"], NW1=4 if c["BM"] >= 64 else 1, pipe1="async",
+                             **{f"{k}2": v for k, v in c.items()})
             run.prologue()
             run.stage1()
             res2.append((timeit(run.stage2), c))
         b1 = min(res1, key=lambda r: r[0])
         b2 = min(res2, key=lambda r: r[0])
         c1, c2 = b1[1], b2[1]
-        run = moe.MoERun(x, ids, w, W, BM1=c1["BM"], BM2=c2["BM"], D1=c1["D"], D2=c2["D"],
-                         pipe1=c1["pipe"], pipe2=c2["pipe"], NW1=c1["NW"], NW2=c2["NW"])
+        run = moe.MoERun(x, ids, w, W, **{f"{k}1": v for k, v in c1.items()},
+                         **{f"{k}2": v for k, v in c2.items()})
         tp = timeit(run.prologue)
         run.prologue()
         run.stage1()
@@ -79,7 +87,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     res = tune(a.I, a.T)
     os.makedirs(os.path.join(os.path.dirname(__file__), "..", "configs"), exist_ok=True)
-    path = os.path.join(os.path.dirname(__file__), "..", "configs", f"tiles_I{a.I}.json")
+    path = os.path.join(os.path.dirname(__file__), "..", "configs", f"tiles_v2_I{a.I}.json")
     with open(path, "w") as f:
         json.dump(res, f, indent=1)
     print("wrote", path)
