@@ -78,6 +78,8 @@ def main():
             continue
         runs[n] = r
         diffs[n] = d
+    if "table" not in runs:
+        raise SystemExit("the table arm failed to build; nothing to compare against")
     names = list(runs)
     t = {n: {s: [] for s in STAGES} for n in names}
     for rep in range(a.reps):

@@ -14,7 +14,8 @@ rate (bench/mfma_peak.py, 7.43 PF with constant scales).
 
 These are HBM floors. The 256 MB MALL can serve a re-read whose working set fits, so a
 cell can run above 100% of its floor; cells whose [R, H] bf16 expert rows fit in the MALL
-are flagged "mall". At T <= 256 launch overhead (a few us per kernel) dominates the
+are flagged "mall" (weights and xq are not considered: at small T the touched weights,
+and at any T the quantized activations, can also be MALL-resident). At T <= 256 launch overhead (a few us per kernel) dominates the
 small kernels, so their percentages say little.
 
 Shape: MiniMax-M3 (H=6144, E=129 = 128 routed + 1 shared, k=5 incl. shared).
@@ -96,11 +97,11 @@ def main():
             cur, mini, fits = model(I, T, cfg, a.peak, bwr, bww)
             s2cb = m["stage2"] + m["combine"]
             parts = []
-            for k in ("prologue", "stage1", "stage2", "combine"):
+            for k, lab in (("prologue", "pro"), ("stage1", "s1"), ("stage2", "s2"), ("combine", "cb")):
                 fl, b = cur[k]
                 if fl == 0.0:
                     continue
-                parts.append(f"{k[:3]} {m[k]:7.1f}/{fl:6.1f} {100 * fl / m[k]:3.0f}% {b}")
+                parts.append(f"{lab} {m[k]:7.1f}/{fl:6.1f} {100 * fl / m[k]:3.0f}% {b}")
             cur_tot = sum(v[0] for v in cur.values())
             min_tot = sum(v[0] for v in mini.values())
             print(f"I={I:5d} T={T:6d} total {m['total']:7.1f} us | " + " | ".join(parts) + (" | mall" if fits else ""))
