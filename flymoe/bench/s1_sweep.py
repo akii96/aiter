@@ -49,6 +49,8 @@ def main():
     ap.add_argument("--arms", nargs="+", required=True)
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--notime", action="store_true", help="correctness gate only")
+    ap.add_argument("--knockout", action="store_true",
+                    help="also time gate-rejected arms (diagnostic knock-outs; never shippable)")
     ap.add_argument("--out")
     a = ap.parse_args()
     x, ids, w, wts = make_problem(a.T, a.I)
@@ -79,7 +81,7 @@ def main():
         gate[n] = dict(hq_bad=hq_bad, hs_bad=hs_bad, rel_diff=d, ok=ok)
         print(f"{'OK    ' if ok else 'REJECT'} {n}: h_q mismatched bytes {hq_bad}, h_s {hs_bad}, out rel diff {d:.2e}",
               flush=True)
-        if ok:
+        if ok or a.knockout:
             runs[n] = r
     if a.notime or "table" not in runs:
         return

@@ -63,6 +63,11 @@ def fmed3(x, lo, hi):
                                           [], []))
 
 
+def select_rsrc(cond, a, b):
+    """Uniform select between two buffer resources."""
+    return llvm.SelectOp(raw(cond), a, b).result
+
+
 def rsrc(addr_i64, num_bytes=None):
     """Buffer resource over a raw device address. OOB loads return 0 when num_bytes is set."""
     base = llvm.IntToPtrOp(ir.Type.parse("!llvm.ptr"), raw(fx.Int64(addr_i64))).result

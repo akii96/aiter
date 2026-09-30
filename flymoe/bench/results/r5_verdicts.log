@@ -1,0 +1,45 @@
+Round 5 verdicts. Timing: GPU 0 only, serial, flock /tmp/gpu0_timing.lock, s1_sweep.py (reps 3, median).
+Gate for every shipped arm: stage-1 h_q / h_s byte-identical to the v5 table in (token, slot) order and
+final output rel diff 0 (s1_sweep.py). Percentages are stage-1 time vs the flymoe-v5 table, same run.
+
+== S1-B  pipe=il4 (4 waves 2x2, 256x256 CTA, 128x128/wave, 256 AGPR acc via inline-asm MFMA) ==
+iterations (trace-driven, ATT + WaveScope after each):
+  1-2  plain schedule: acc split VGPR/AGPR, ~1000 accvgpr moves           -> rejected (register chaos)
+  3    half-split operand schedule + asm AGPR MFMA (srcC=0 first step,
+       fenced drain)                                                        -> correct, ~= v5
+  4-5  DMA spread + mid-step barrier (bar8); WaveScope: bursty DMAs
+       stalled 250-315 cyc each on a full TA queue                         -> +1..3%
+  6    S1S: LDS-staged epilogue, 16 B h rows + 2 B scale stores            -> +0.5..1.5%
+  7    epilogue per row block, 8 chains interleaved (multi-chain DPP max)  -> +3.6 / +4.6% (I=1536 / 384, T=32k)
+verdict: SHIP (as the base of S1-C) for T >= 4096. Loses at T <= 2048 (-12..-52%): 256x256 tiles leave
+  < 1 CTA per CU (wave quantization); v5 stays there.
+
+== S1-C  persistent il4 (PERS=1) ==
+  8    tile loop, prologue of tile w+1 before the epilogue of w            -> = non-persistent (hidden cost found:
+       LICM hoisted per-step n_rows offsets / lane math out of the tile loop: 52 SGPR + 52 VGPR spills)
+  9    per-tile opaque n_rows (s_opaque)                                    -> spills gone, still ~= (WaveScope: next-
+       tile prologue serialised tile-load -> token-load -> DMA, ~2.4k cyc exposed per tile)
+  10   next tile's state loaded mid-loop, carried as scf.for iter_args;
+       opaque lane/wave                                                     -> +1%
+  11   prologue DMAs spread across the epilogue (30 back-to-back DMAs had
+       filled the TA queue)                                                 -> +6.2 / +5.9 / +8.7% (T=32k)
+  12   epilogue: packed pair SwiGLU (v_pk_*), med3 clamp, bounded e8m0
+       (4 ops), 8 B scale writes                                            -> +9.6 / +8.4 / +7.6%
+  13   sc2: 2 x 16 B scale DMAs per step per CTA instead of 8 x 4 B         -> +9.7 / +9.7 / +8.6% (T=32k)
+                                                                              +8.9 / +7.4 / +6.3% (T=4096)
+  T sweep (r5_s1_tsweep.log): T=8192 +11.2 / +10.1 / +8.6%, T=16384 +9.6 / +7.6 / +10.2% (I=1536/768/384)
+verdict: SHIP pipe=il4 PERS=1 (default sc2) for stage 1 at T >= 4096, all three widths.
+binding limit (trace + knock-outs, I=1536 T=32768): per tile the K loop is 67.4k cycles at 72.9% MFMA duty,
+  epilogue + next prologue 17.7k (MFMA idle; VALU/trans-bound at 1 wave/SIMD, cannot overlap MFMA: all 256
+  AGPRs hold live accumulators). Knock-outs: no loop DMAs -> -19% s1 time; no B LDS reads -> -2.5%;
+  GM=2/4/8 rasterisation (L2 hit 79.5%) -> no change. The loop is bound by the global->LDS DMA path for the
+  token-gathered A tile: 16 rows x 64 B per instruction runs at 31-34 B/clk/CU (dma_bw.py), so a K step
+  needs ~900 TA cycles vs 1024 MFMA cycles, and in-order issue turns TA back-pressure into MFMA gaps.
+
+rejected / neutral variants (kept as diag flags, off by default):
+  r4   extra A/B ring slot so loop DMAs spread over the whole step      -> -0.9 .. +0.1%
+  bar5 with r4                                                           -> -1.5 .. -2%
+  nopk (scalar SwiGLU)                                                   -> -0.4 .. -5.9% vs packed
+  kob / kod / noepi                                                      -> timing knock-outs only (wrong results)
+not pursued: 2-K-step A DMAs (8 rows x 128 B, g128dma): +17% on the A path in dma_bw.py (36.5 vs 31.2
+  B/clk/CU); would need a 2 x 32 KB A ring and a new swizzle for an estimated few % end to end.

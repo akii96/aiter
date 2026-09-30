@@ -46,7 +46,7 @@ def _swz(row, mode=3):
     return (((row >> 2) ^ row) & 3) * 16
 
 
-def _il4_plan(n_dma, has_next, mbw, bar, dsp=0):
+def _il4_plan(n_dma, has_next, mbw, bar, dsp=0, early=False):
     """il4 issue plan for one K step: per MFMA slot (MFMA i = half i // 32, row block
     (i % 32) // 4, tile 4 * half + i % 4), the (kind, index) ops issued after that MFMA.
       own: this step's B scale / B tiles 4-7 (5 reads, slots 0-4)
@@ -60,9 +60,10 @@ def _il4_plan(n_dma, has_next, mbw, bar, dsp=0):
         slots[k].append(("own", k))
     if has_next:
         slots[bar].append(("bar", 0))
-    step = dsp or max(1, (63 - bar) // max(n_dma, 1))
+    first = 5 if early else bar + 1  # early: the refilled slot is free from step start
+    step = dsp or max(1, (63 - first) // max(n_dma, 1))
     for k in range(n_dma):
-        slots[min(bar + 1 + step * k, 63)].append(("d", k))
+        slots[min(first + step * k, 63)].append(("d", k))
     if has_next:
         for k in range(5):
             slots[31 + k].append(("nb", k))
@@ -118,10 +119,18 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         SB = WN * CG * 4096 if b_lds else 0
         SBS = WN * CG * 256 if b_lds else 0
         SAS = max(BM * 4, 1024) if (AST and BM >= 256) else max(BM, 64) * 4
-        RB = NSTG * SA
-        RBS = RB + NSTG * SB
-        RAS = RBS + NSTG * SBS
-        lds_bytes = RAS + NSTG * SAS
+        # il4 sc2: on even steps each wave issues one 16 B/lane scale DMA (waves 0/1: B / A
+        # scales of step t, waves 2/3: of step t+1), 2 per step per CTA instead of 8 x 4 B.
+        # Step t+1's scales land a step early, hence one more scale ring slot than NSTG.
+        SC2 = pipe == "il4" and "nosc2" not in diag.split("+")
+        # il4 r4: one extra A/B ring slot, so step s+NSTG's slot is free from the start of
+        # step s and its DMAs spread over the whole step, not just after the mid-step barrier.
+        RING = NSTG + 1 if (pipe == "il4" and "r4" in diag.split("+")) else NSTG
+        SCD = (NSTG + 1 + (RING - NSTG)) if SC2 else NSTG
+        RB = RING * SA
+        RBS = RB + RING * SB
+        RAS = RBS + SCD * SBS
+        lds_bytes = RAS + SCD * SAS
         assert lds_bytes <= 160 * 1024, lds_bytes
     else:
         assert A_CH >= 1 and (BM * 4) % THREADS == 0, "regs pipe needs BM*4 >= threads"
@@ -331,6 +340,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     a_dma_voff.append(a_row_of(row, it) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
                 as_uni_voff = as_off(wn * 64 + lane)
                 as4_voff = as_off(wave * (BM // NW) + lane)
+                # sc2: the CTA's 1 KB of B scales / 256 rows x 4 B of A scales for one step
+                bs16_voff4 = (nblk * (WN * CG)) * 256 + lane * 16
+                as16_voff = as_off(lane * 4)
                 AS16 = AST and BM >= 256
                 if const_expr(AS16):
                     # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
@@ -351,8 +363,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
                 def dma_ops(s):
                     """This wave's DMA instructions for K step s, as thunks (issue order)."""
-                    slot = s % NSTG
-                    oA, oB, oBS, oAS = slot * SA, RB + slot * SB, RBS + slot * SBS, RAS + slot * SAS
+                    slot = s % RING
+                    oA, oB = slot * SA, RB + slot * SB
+                    oBS, oAS = RBS + (s % SCD) * SBS, RAS + (s % SCD) * SAS
                     ops = []
                     for it in range_constexpr(A_IT if "nodmaA" not in DG else 0):
                         if const_expr(A_INSTR % NW == 0):
@@ -380,6 +393,18 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             ops.append(lambda q=q: hw.dma_async(
                                 r_b, lds_base, wave * 1024 + (oB + q * NW * 1024),
                                 b4_voff + (q * NW) * (KS * 1024), soff=s * 1024, cm=b_cm))
+                        if const_expr(SC2):
+                            def _sc2():
+                                ts = fx.Int32(s) + (wave >> 1)
+                                isb = (wave & 1) == fx.Int32(0)
+                                sl = ((wave >> 1) == fx.Int32(0)).select(fx.Int32(s % SCD), fx.Int32((s + 1) % SCD))
+                                hw.dma_async(hw.select_rsrc(isb, r_bs, r_as), lds_base,
+                                             isb.select(RBS + sl * SBS, RAS + sl * SAS),
+                                             isb.select(bs16_voff4, as16_voff),
+                                             soff=isb.select(ts * BS_STEP, n_rows * (ts * 4)), cm=b_cm)
+                            if const_expr(s % 2 == 0):
+                                ops.append(_sc2)
+                            return ops
                         for q in range_constexpr((WN * CG) // NW):
                             ops.append(lambda q=q: hw.dma_async(
                                 r_bs, lds_base, wave * 256 + (oBS + q * NW * 256), bs4_voff + (q * NW) * 256,
@@ -469,7 +494,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     every `every` reads, fenced so the scheduler keeps the interleave."""
                     if const_expr(dmas is not None):
                         return read_a_il(s, dmas, every)
-                    slot = s % NSTG
+                    slot = s % RING
                     oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
                     ops = [hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4)
                            for rb in range_constexpr(MBW)]
@@ -484,7 +509,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     return ops, sc, None
 
                 def read_a_il(s, dmas, every):
-                    slot = s % NSTG
+                    slot = s % RING
                     oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
                     thunks = []
                     for rb in range_constexpr(MBW):
@@ -523,8 +548,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     a_rd4 = a_rd + rb0 * 1024
 
                     def offs(s):
-                        slot = s % NSTG
-                        return slot * SA, slot * SB, slot * SBS, slot * SAS
+                        slot = s % RING
+                        return slot * SA, slot * SB, (s % SCD) * SBS, (s % SCD) * SAS
 
                     def rd_bh(s, h):
                         oA, oB, oBS, oAS = offs(s)
@@ -546,15 +571,23 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     for rb in range_constexpr(MBW):
                         a_ops[rb], sa[rb] = [f() for f in rd_a(0, rb)]
                     NMF = MBW * TWN
+                    kob_c = {}
                     if const_expr(mode == "main"):
                         # Tile `nxt`'s state loads, long before its prologue needs them.
                         tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
                     for s in range_constexpr(KS):
                         has_next = s + 1 < KS
-                        dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS) else []
-                        plan = _il4_plan(len(dms), has_next, MBW, IL4_BAR, IL4_DSP)
+                        dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS and "kod" not in DG) else []
+                        plan = _il4_plan(len(dms), has_next, MBW, IL4_BAR, IL4_DSP, early=RING > NSTG)
                         own = rd_bh(s, 1)
                         nb0 = rd_bh(s + 1, 0) if const_expr(has_next) else []
+                        if const_expr("kob" in DG and s > 0):
+                            # timing knock-out (wrong results): B operands never re-read from LDS
+                            own = [lambda k=k: kob_c[(1, k)] for k in range(5)]
+                            nb0 = [lambda k=k: kob_c[(0, k)] for k in range(5)] if const_expr(has_next) else []
+                        elif const_expr("kob" in DG):
+                            own = [lambda k=k, f=f: kob_c.setdefault((1, k), f()) for k, f in enumerate(own)]
+                            nb0 = [lambda k=k, f=f: kob_c.setdefault((0, k), f()) for k, f in enumerate(nb0)]
                         nxt_b, nxt_bs = [None] * 4, None
                         nxt_a, nxt_sa = [None] * MBW, [None] * MBW
                         for i in range_constexpr(NMF):

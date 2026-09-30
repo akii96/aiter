@@ -1,0 +1,21 @@
+Round 5 cycle budgets (rocprofv3 ATT on one CU, GPU 1; bench/att_budget.py; WaveScope summary).
+Stage 1, I=1536, T=32768. MFMA = v_mfma_scale_f32_16x16x128_f8f6f4 (16 cycles).
+
+flymoe-v5 (pingpong, 8 waves, 256x256):
+  per tile: prologue 5.7k, loop 71.4k, epilogue 10.3k cycles; per-SIMD MFMA duty ~69% (2 waves x 34.4%)
+  per K step: 96 KB LDS reads + 34 KB DMA writes ~ 1016 LDS clk vs 1024 MFMA clk (LDS-bound)
+
+il4 non-persistent, iteration 7 (trace il4d):
+  per wave: prologue 6042, loop 65444 (MFMA duty 75.1%), epilogue 13790
+  loop gaps / wave: buffer_load_dwordx4 5802, ds_read_u8 5595, buffer_load_dword 4791, s_barrier 1945
+
+il4 persistent, iteration 12 (trace il4p3, --tile-mfmas 3072):
+  per tile: loop 67422 (MFMA duty 72.9%), between tiles (epilogue + spread next prologue) 17686
+  share: loop 79.4%, between 20.3%
+  loop gaps / tile: buffer_load_dwordx4 6069, buffer_load_dword 5328, ds_read_u8 5225, s_barrier 2195
+  epilogue per tile (before iteration 12): ~14.8k issue cycles; top: ds_write_b8, v_accvgpr_read,
+  v_minimum3, v_max_u32_dpp, v_exp, v_mul, v_rcp, e8m0 VALU (~6 ops/chain)
+  L2 (PMC): TCC hit 79.5%, TCC_REQ 4.96e8, TCC_MISS 1.02e8
+
+DMA path (bench/dma_bw.py, L2-resident source, 1 CTA/CU):
+  contiguous 1 KB/instr 49.0 B/clk/CU; gathered 16 rows x 64 B 31.2; gathered 8 rows x 128 B 36.5
