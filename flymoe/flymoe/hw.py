@@ -111,6 +111,12 @@ def lds_load(base_i32, byte_off, res_ty, elem_ty=None, align=16):
     return llvm.LoadOp(res_ty, lds_llvm_ptr(base_i32, byte_off), alignment=align).result
 
 
+def lds_load_u8(base_i32, byte_off):
+    """ds_read_u8 as an i32 (explicit zext: no v_and 0xff after the load)."""
+    v = llvm.LoadOp(T.i8, lds_llvm_ptr(base_i32, byte_off), alignment=1).result
+    return fx.Int32(llvm.ZExtOp(T.i32, v).result)
+
+
 def lds_store(val, base_i32, byte_off, elem_ty=None, align=16):
     llvm.StoreOp(raw(val), lds_llvm_ptr(base_i32, byte_off), alignment=align)
 
@@ -156,6 +162,32 @@ def mfma_fp4(acc, a, b, sa, sb, opsel_a=0, opsel_b=0):
     )
 
 
+def mfma_fp4_agpr(acc, a, b, sa, sb, opsel_b=0):
+    """mfma_fp4 as inline asm with the accumulator pinned to AGPRs (tied in/out) and A/B/scales
+    in VGPRs; acc=None: srcC is the inline constant 0 (first K step, no zero-init copies).
+    The hazard recognizer does not see inside the asm: finish with mfma_drain(accs)."""
+    sel = f"op_sel:[0,{opsel_b & 1},0] op_sel_hi:[0,{opsel_b >> 1},0]"
+    ops = [raw(a), raw(b), raw(fx.Int32(sa)), raw(fx.Int32(sb))]
+    if acc is None:
+        return llvm.InlineAsmOp(
+            T.f32x4, ops, f"v_mfma_scale_f32_16x16x128_f8f6f4 $0, $1, $2, 0, $3, $4 {sel} cbsz:4 blgp:4",
+            "=&a,v,v,v,v", has_side_effects=False).result
+    return llvm.InlineAsmOp(
+        T.f32x4, ops + [raw(acc)],
+        f"v_mfma_scale_f32_16x16x128_f8f6f4 $0, $1, $2, $0, $3, $4 {sel} cbsz:4 blgp:4",
+        "=a,v,v,v,v,0", has_side_effects=False).result
+
+
+def mfma_drain(accs):
+    """Wait states covering an XDL MFMA result read by VALU / v_accvgpr_read (>= 19), then an
+    empty side-effecting asm re-defining each accumulator, so the compiler's AGPR reads of the
+    results are ordered after the wait states. Returns the fenced accumulators."""
+    for _ in range(3):
+        rocdl.s_nop(7)
+    return [llvm.InlineAsmOp(T.f32x4, [raw(v)], "; acc fence $0", "=a,0", has_side_effects=True).result
+            for v in accs]
+
+
 def dpp_i32(src, ctrl, row_mask=0xF, bank_mask=0xF, bound_ctrl=True):
     """llvm.amdgcn.update.dpp.i32 with old = src (lanes outside the pattern keep src)."""
     v = raw(fx.Int32(src))
@@ -176,6 +208,16 @@ def row16_max_nonneg_f32(x):
         o = dpp_i32(v, ctrl)
         v = (fx.Uint32(o) > fx.Uint32(v)).select(o, v)
     return v.bitcast(fx.Float32)
+
+
+def row16_max_nonneg_f32_multi(xs):
+    """row16_max_nonneg_f32 over several independent values, one DPP level at a time across
+    all of them, so each DPP's VALU-write hazard is covered by the other chains' work."""
+    vs = [fx.Float32(x).bitcast(fx.Int32) for x in xs]
+    for ctrl in (0xB1, 0x4E, 0x141, 0x140):
+        os_ = [dpp_i32(v, ctrl) for v in vs]
+        vs = [(fx.Uint32(o) > fx.Uint32(v)).select(o, v) for o, v in zip(os_, vs)]
+    return [v.bitcast(fx.Float32) for v in vs]
 
 
 def fast_rcp(x):

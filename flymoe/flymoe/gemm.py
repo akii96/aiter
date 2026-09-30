@@ -46,6 +46,31 @@ def _swz(row, mode=3):
     return (((row >> 2) ^ row) & 3) * 16
 
 
+def _il4_plan(n_dma, has_next, mbw, bar, dsp=0):
+    """il4 issue plan for one K step: per MFMA slot (MFMA i = half i // 32, row block
+    (i % 32) // 4, tile 4 * half + i % 4), the (kind, index) ops issued after that MFMA.
+      own: this step's B scale / B tiles 4-7 (5 reads, slots 0-4)
+      bar: DMA wait + barrier (slot `bar`); d: next DMAs, one every `dsp` slots after the
+           barrier (0: spread over the rest of the step; bursts fill the TA queue and stall
+           issue, measured ~300 cycles per DMA at 2 slots)
+      nb:  next step's B scale / B tiles 0-3 (5 reads, after slot 31, their last use)
+      na:  next step's A row block rb + its scale (after slot 35 + 4 rb, its last use)"""
+    slots = [[] for _ in range(32 * 2)]
+    for k in range(5):
+        slots[k].append(("own", k))
+    if has_next:
+        slots[bar].append(("bar", 0))
+    step = dsp or max(1, (63 - bar) // max(n_dma, 1))
+    for k in range(n_dma):
+        slots[min(bar + 1 + step * k, 63)].append(("d", k))
+    if has_next:
+        for k in range(5):
+            slots[31 + k].append(("nb", k))
+        for rb in range(mbw):
+            slots[35 + 4 * rb].append(("na", rb))
+    return slots
+
+
 @functools.lru_cache(maxsize=None)
 def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
                epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
@@ -55,14 +80,19 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     assert stage in (1, 2)
     assert epi in ("rows", "f32atomic", "bf16atomic", "fused")
     assert epi != "fused" or stage == 2
-    assert pipe in ("async", "regs", "hybrid", "hybrid2", "async2", "pingpong")
+    assert pipe in ("async", "regs", "hybrid", "hybrid2", "async2", "pingpong", "il4")
     assert NW in (1, 2, 4, 8) and WM in (1, 2, 4) and NW % WM == 0
     WN = NW // WM  # waves along N; WM wave-rows share each B slice through LDS
-    BN = 64 * WN
+    # il4: one wave per SIMD owning 128 output columns (two 64-column groups, 8 n16 tiles)
+    CG = 2 if pipe == "il4" else 1
+    TWN = 4 * CG  # n16 tiles per wave
+    BN = 64 * WN * CG
     THREADS = 64 * NW
     assert K % 128 == 0 and N % BN == 0 and BM % (16 * WM) == 0
-    assert WM == 1 or pipe in ("async", "async2", "pingpong"), "WM > 1 needs B staged in LDS"
+    assert WM == 1 or pipe in ("async", "async2", "pingpong", "il4"), "WM > 1 needs B staged in LDS"
     assert pipe != "pingpong" or WM == 2, "pingpong alternates the two wave-rows (WM=2)"
+    assert pipe != "il4" or (NW == 4 and stage == 1 and not HT and AST and BM == 256 and WM == 2), \
+        "il4: 4 waves as 2x2 (256x256 CTA), stage 1, step-major A scales, non-HT h"
     KS = K // 128
     MB = BM // 16
     MBW = MB // WM  # row blocks per wave
@@ -76,17 +106,17 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     b_cm = hw.NT if b_nt else 0
 
     SLOT = BM * 64
-    if pipe in ("async", "hybrid", "hybrid2", "async2", "pingpong"):
+    if pipe in ("async", "hybrid", "hybrid2", "async2", "pingpong", "il4"):
         prefetch = pipe in ("hybrid2", "async2")
-        NSTG = max(3 if pipe in ("hybrid2", "async2", "pingpong") else 2, min(D, KS + 1))
+        NSTG = max(3 if pipe in ("hybrid2", "async2", "pingpong", "il4") else 2, min(D, KS + 1))
         DB = min(D, KS) if pipe in ("hybrid", "hybrid2") else min(3, KS)
-        b_lds = pipe in ("async", "async2", "pingpong")
+        b_lds = pipe in ("async", "async2", "pingpong", "il4")
         # LDS is laid out per buffer kind across ring slots ([A x NSTG][B x NSTG][BS][AS]) so
         # every LDS read is (one hoisted base VGPR per kind) + an immediate offset < 64 KB:
         # no per-read address VALU, which would queue behind the partner wave's MFMAs.
         SA = BM * 64
-        SB = WN * 4096 if b_lds else 0
-        SBS = WN * 256 if b_lds else 0
+        SB = WN * CG * 4096 if b_lds else 0
+        SBS = WN * CG * 256 if b_lds else 0
         SAS = max(BM * 4, 1024) if (AST and BM >= 256) else max(BM, 64) * 4
         RB = NSTG * SA
         RBS = RB + NSTG * SB
@@ -126,6 +156,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     name += "_" + hw.SRC_HASH
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
     SKIP = "skip" in DG
+    IL4_BAR = next((int(t[3:]) for t in DG if t.startswith("bar") and t[3:].isdigit()), 5)
+    IL4_DSP = next((int(t[3:]) for t in DG if t.startswith("dsp") and t[3:].isdigit()), 0)
+    IL4_ASM = pipe == "il4" and "noasm" not in DG
     SE = "se" in DG  # "even" e8m0 scale rule (checkpoint / runtime quant), else ceil_pow2(amax/6)
     HTA = HT and stage == 2   # stage-2 A (= h) is K-step-major: h_t[I/128][R][64 B]
     HTW = HT and stage == 1   # stage-1 epilogue writes h_t + step-major h scales
@@ -144,6 +177,16 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         lds_bytes = max(lds_bytes, NW * ROWS_W * 128)
     if HT and stage == 1:
         lds_bytes = max(lds_bytes, NW * max(ROWS_W, 64) * 16)
+    # S1S: stage-1 non-HT epilogue staged per wave in a private LDS region past the ring (no
+    # barrier): ROWS_W rows x CG*16 B of h, then ROWS_W x CG scale bytes; written back as
+    # 16 B/lane h rows and CG-byte scale runs instead of one global byte store per value.
+    S1S = stage == 1 and not HT and pipe == "il4" and "nos1s" not in DG
+    S1S_H = ROWS_W * CG * 16
+    S1S_W = S1S_H + ROWS_W * CG
+    S1S_BASE = lds_bytes
+    if S1S:
+        lds_bytes = S1S_BASE + NW * S1S_W
+        assert lds_bytes <= 160 * 1024, lds_bytes
 
     @fx.struct
     class SharedStorage:
@@ -237,6 +280,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             else:
                 bs_voff = (nblk * WN + wn) * (KS * 256) + lane * 4
                 BS_STEP = 256
+            b4_voff = (nblk * (WN * TWN) + wave) * (KS * 1024) + lane * 16
+            bs4_voff = (nblk * (WN * CG) + wave) * 256 + lane * 4
             # One 16 B/lane DMA covers the CTA's 4 B-scale blocks (1 KB) for a step.
             BS1 = WN == 4 and stage == 1
             bs16_voff = (nblk * WN) * 256 + lane * 16
@@ -246,7 +291,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
             )
             zero = hw.raw(fx.Vector.filled(4, 0.0, fx.Float32))
-            acc = [[zero] * 4 for _ in range(MBW)]
+            acc = [[zero] * TWN for _ in range(MBW)]
 
             if const_expr(pipe != "regs"):
                 # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
@@ -256,6 +301,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     row = (wave + it * NW) * 16 + lane // 4
                     a_dma_voff.append(a_row_of(row) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
                 as_uni_voff = as_off(wn * 64 + lane)
+                as4_voff = as_off(wave * (BM // NW) + lane)
                 AS16 = AST and BM >= 256
                 if const_expr(AS16):
                     # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
@@ -297,7 +343,22 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             else:
                                 hw.dma_async(r_as, lds_base, wn * 256 + oAS, as_uni_voff,
                                              soff=n_rows * (s * 4), nbytes=4)
-                    if const_expr(b_lds and "nodmaB" not in DG):
+                    if const_expr(pipe == "il4"):
+                        # Branch-free: every wave issues the same DMA mix. B: WN*TWN 1 KB tiles
+                        # dealt round-robin; B scales: WN*CG 256 B blocks (4 B/lane); A scales:
+                        # BM/NW rows of 4 B per wave (4 B/lane).
+                        for q in range_constexpr((WN * TWN) // NW):
+                            ops.append(lambda q=q: hw.dma_async(
+                                r_b, lds_base, wave * 1024 + (oB + q * NW * 1024),
+                                b4_voff + (q * NW) * (KS * 1024), soff=s * 1024, cm=b_cm))
+                        for q in range_constexpr((WN * CG) // NW):
+                            ops.append(lambda q=q: hw.dma_async(
+                                r_bs, lds_base, wave * 256 + (oBS + q * NW * 256), bs4_voff + (q * NW) * 256,
+                                soff=s * BS_STEP, nbytes=4, cm=b_cm))
+                        ops.append(lambda: hw.dma_async(r_as, lds_base, wave * 256 + oAS, as4_voff,
+                                                        soff=n_rows * (s * 4), nbytes=4))
+                        return ops
+                    elif const_expr(b_lds and "nodmaB" not in DG):
                         for jj in range_constexpr(4 // WM):
                             if const_expr(WM == 1):
                                 ops.append(lambda jj=jj: hw.dma_async(
@@ -358,7 +419,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 if const_expr(not b_lds):
                     for p in range_constexpr(DB):
                         breg[p] = issue_b(p)
-                for p in range_constexpr(min(NSTG - 1, KS)):
+                for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS)):
                     issue(p)
 
                 # Per-kind LDS read bases (lane-varying part + region start), computed once.
@@ -412,6 +473,93 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     bsv = vals[MBW + 4]
                     sc = [fx.Int32(fx.Uint8(v)) for v in vals[MBW + 5:]]
                     return ops, sc, (bo, bsv)
+
+                if const_expr(pipe == "il4"):
+                    # One wave per SIMD, 128x128 per wave, no operand double buffer. A step is
+                    # two halves: half h runs every row block against B tiles 4h..4h+3, so B
+                    # tiles 0-3 of step s+1 load during half 1 of step s, tiles 4-7 of step s
+                    # at the start of step s (used from half 1), and each A row block reloads
+                    # right after its last use. Mid-step barrier: step s+1 has landed and step
+                    # s's slot is no longer read, so step s+NSTG's DMAs refill it right away.
+                    b_rd4 = lane * 16 + wn * (TWN * 1024) + RB
+                    bs_rd4 = lane * 4 + wn * (CG * 256) + RBS
+                    a_rd4 = a_rd + rb0 * 1024
+
+                    def offs(s):
+                        slot = s % NSTG
+                        return slot * SA, slot * SB, slot * SBS, slot * SAS
+
+                    def rd_bh(s, h):
+                        oA, oB, oBS, oAS = offs(s)
+                        return ([lambda: hw.lds_load(lds_base, bs_rd4 + (oBS + h * 256), T.i32, align=4)]
+                                + [lambda j=j: hw.lds_load(lds_base, b_rd4 + (oB + (4 * h + j) * 1024), T.i32x4)
+                                   for j in range_constexpr(4)])
+
+                    def rd_a(s, rb):
+                        oA, oB, oBS, oAS = offs(s)
+                        return [lambda: hw.lds_load(lds_base, a_rd4 + (oA + rb * 1024), T.i32x4),
+                                lambda: hw.lds_load_u8(lds_base, as_rd + (oAS + rb * 64))]
+
+                    rocdl.wait_asyncmark(max(0, min(NSTG, KS) - 1))
+                    gpu.barrier()
+                    v = [f() for f in rd_bh(0, 0)]
+                    bsv = [v[0], None]
+                    b_ops = v[1:] + [None] * 4
+                    a_ops, sa = [None] * MBW, [None] * MBW
+                    for rb in range_constexpr(MBW):
+                        a_ops[rb], sa[rb] = [f() for f in rd_a(0, rb)]
+                    NMF = MBW * TWN
+                    for s in range_constexpr(KS):
+                        has_next = s + 1 < KS
+                        dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS) else []
+                        plan = _il4_plan(len(dms), has_next, MBW, IL4_BAR, IL4_DSP)
+                        own = rd_bh(s, 1)
+                        nb0 = rd_bh(s + 1, 0) if const_expr(has_next) else []
+                        nxt_b, nxt_bs = [None] * 4, None
+                        nxt_a, nxt_sa = [None] * MBW, [None] * MBW
+                        for i in range_constexpr(NMF):
+                            h, rb, j = i // 32, (i % 32) // 4, i % 4
+                            t = 4 * h + j
+                            if const_expr(IL4_ASM):
+                                acc[rb][t] = hw.mfma_fp4_agpr(acc[rb][t] if const_expr(s > 0) else None,
+                                                              a_ops[rb], b_ops[t], sa[rb], bsv[h], j)
+                            else:
+                                acc[rb][t] = hw.mfma_fp4(acc[rb][t], a_ops[rb], b_ops[t], sa[rb], bsv[h], 0, j)
+                            for k2 in range_constexpr(len(plan[i])):
+                                kind, idx = plan[i][k2]
+                                rocdl.sched_barrier(0)
+                                if const_expr(kind == "own"):
+                                    val = own[idx]()
+                                    if const_expr(idx == 0):
+                                        bsv[1] = val
+                                    else:
+                                        b_ops[4 + idx - 1] = val
+                                elif const_expr(kind == "bar"):
+                                    last = min(s - 1 + NSTG, KS - 1)
+                                    rocdl.wait_asyncmark(max(0, last - (s + 1)))
+                                    gpu.barrier()
+                                elif const_expr(kind == "d"):
+                                    dms[idx]()
+                                    if const_expr(idx == len(dms) - 1):
+                                        rocdl.asyncmark()
+                                elif const_expr(kind == "nb"):
+                                    val = nb0[idx]()
+                                    if const_expr(idx == 0):
+                                        nxt_bs = val
+                                    else:
+                                        nxt_b[idx - 1] = val
+                                else:
+                                    nxt_a[idx], nxt_sa[idx] = [f() for f in rd_a(s + 1, idx)]
+                                rocdl.sched_barrier(0)
+                        if const_expr(has_next):
+                            bsv = [nxt_bs, None]
+                            b_ops = nxt_b + [None] * 4
+                            a_ops, sa = nxt_a, nxt_sa
+                    if const_expr(IL4_ASM):
+                        rocdl.sched_barrier(0)
+                        fenced = hw.mfma_drain([acc[rb][t] for rb in range_constexpr(MBW) for t in range_constexpr(TWN)])
+                        acc = [fenced[rb * TWN:(rb + 1) * TWN] for rb in range_constexpr(MBW)]
+                        rocdl.sched_barrier(0)
 
                 if const_expr(pipe == "pingpong"):
                     # Ping-pong: wave-row 1 runs one barrier behind wave-row 0, so on every
@@ -500,7 +648,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             if const_expr(s + NSTG - 1 < KS and "nodma" not in DG):
                                 issue(s + NSTG - 1)
                             cur = cur0 if const_expr("nolds" in DG) else read_a(s + 1)
-                for s in range_constexpr(KS if not (prefetch or pipe == "pingpong") else 0):
+                for s in range_constexpr(KS if not (prefetch or pipe in ("pingpong", "il4")) else 0):
                     rocdl.wait_asyncmark(min(NSTG - 2, KS - 1 - s))
                     gpu.barrier()
                     if const_expr(s + NSTG - 1 < KS):
@@ -566,22 +714,68 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             if const_expr("noepi" in DG):
                 tot = fx.Float32(0.0)
                 for rb in range_constexpr(MBW):
-                    for j in range_constexpr(4):
+                    for j in range_constexpr(TWN):
                         tot = tot + fx.Float32(fx.Vector(acc[rb][j])[0])
                 hw.bstore(tot, hw.rsrc(o_ptr, 4), fx.Int32(0) * tid)
             elif const_expr(stage == 1):
-                g = nblk * WN + wn
                 r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
                 if const_expr(HTW):
                     gpu.barrier()  # all waves done with the LDS ring
                     hwb = wave * (max(ROWS_W, 64) * 16)
                 r_os = hw.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
                 lim = fx.Float32(limit)
-                for rb in range_constexpr(MBW):
-                    vg_e = fx.Vector(acc[rb][0])
-                    vg_o = fx.Vector(acc[rb][1])
-                    vu_e = fx.Vector(acc[rb][2])
-                    vu_o = fx.Vector(acc[rb][3])
+
+                def swiglu(gv, uv):
+                    gg = fx.min(fx.Float32(gv), lim)
+                    uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
+                    if const_expr(EF):
+                        sig = hw.fast_rcp(fx.Float32(1.0) + hw.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E)))
+                    else:
+                        sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
+                    return gg * sig * (uu + fx.Float32(1.0))
+
+                for rb in range_constexpr(MBW if S1S else 0):
+                    # All CG*4 (group, row) chains of a row block at once: the DPP row-max
+                    # levels interleave across chains instead of stalling on DPP hazards.
+                    sw = S1S_BASE + wave * S1S_W
+                    ch = []
+                    for gi in range_constexpr(CG):
+                        vg_e = fx.Vector(acc[rb][4 * gi + 0])
+                        vg_o = fx.Vector(acc[rb][4 * gi + 1])
+                        vu_e = fx.Vector(acc[rb][4 * gi + 2])
+                        vu_o = fx.Vector(acc[rb][4 * gi + 3])
+                        for v in range_constexpr(4):
+                            ch.append((gi, v, swiglu(vg_e[v], vu_e[v]), swiglu(vg_o[v], vu_o[v])))
+                    ms = [fx.max(fmath.absf(h0), fmath.absf(h1)) for _, _, h0, h1 in ch]
+                    if const_expr(EF):
+                        ms = hw.row16_max_nonneg_f32_multi(ms)
+                    else:
+                        for k in range_constexpr(len(ms)):
+                            for off in (1, 2, 4, 8):
+                                ms[k] = fx.max(ms[k], ms[k].shuffle_xor(fx.Int32(off), fx.Int32(64)))
+                    for k in range_constexpr(len(ch)):
+                        gi, v, h0, h1 = ch[k]
+                        if const_expr(SE):
+                            bexp = hw.e8m0_even(ms[k])
+                        else:
+                            bits = (ms[k] * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
+                            bexp = fx.min(((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF),
+                                          fx.Int32(254))
+                        qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+                        pk = rocdl.cvt_scalef32_pk_fp4_f32(
+                            T.i32, hw.raw(fx.Int32(0)), hw.raw(h0), hw.raw(h1), hw.raw(qs), 0)
+                        rl = fx.Int32(rb * 16) + lg * 4 + v
+                        hw.lds_store(fx.Int32(pk).to(fx.Int8), lds_base, sw + rl * (CG * 16) + (gi * 16) + l16,
+                                     align=1)
+                        # the 16 lanes of a row hold the same scale: same byte, same address
+                        hw.lds_store(bexp.to(fx.Int8), lds_base, sw + S1S_H + rl * CG + gi, align=1)
+                for rbg in range_constexpr(MBW * CG if not S1S else 0):
+                    rb, gi = rbg // CG, rbg % CG
+                    g = (nblk * WN + wn) * CG + gi
+                    vg_e = fx.Vector(acc[rb][4 * gi + 0])
+                    vg_o = fx.Vector(acc[rb][4 * gi + 1])
+                    vu_e = fx.Vector(acc[rb][4 * gi + 2])
+                    vu_o = fx.Vector(acc[rb][4 * gi + 3])
                     for v in range_constexpr(4):
                         row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v
                         hs = []
@@ -625,6 +819,25 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             hs_off = grow * (INTER // 32) + g
                         soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
                         hw.bstore(bexp.to(fx.Int8), r_os, soff)
+                if const_expr(S1S):
+                    # h[row][g0*16 .. g0*16 + CG*16): CG*16 B per row, 16 B per lane
+                    sw = S1S_BASE + wave * S1S_W
+                    g0 = (nblk * WN + wn) * CG
+                    LPR = CG  # lanes per row
+                    for it in range_constexpr((ROWS_W * LPR) // 64):
+                        rl = fx.Int32(it * (64 // LPR)) + lane // LPR
+                        part = lane % LPR
+                        v16 = hw.lds_load(lds_base, sw + rl * (CG * 16) + part * 16, T.i32x4)
+                        row = rb0 * 16 + rl
+                        off = (row_start + row) * (INTER // 2) + g0 * 16 + part * 16
+                        hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFFF0)))
+                    # scales: CG bytes per row at h_s[row][g0 .. g0 + CG)
+                    for it in range_constexpr((ROWS_W + 63) // 64):
+                        rl = fx.Int32(it * 64) + lane
+                        row = rb0 * 16 + rl
+                        sv = hw.lds_load(lds_base, sw + S1S_H + rl * CG, T.i16, align=2)
+                        off = (row_start + row) * (INTER // 32) + g0
+                        hw.bstore(sv, r_os, ((row < nrows) & (rl < fx.Int32(ROWS_W))).select(off, fx.Int32(0x7FFFFFF0)))
                 if const_expr(HTW):
                     # h_t[g//4][row][64 B]: this wave's 16 B column group of each row
                     for it in range_constexpr((ROWS_W + 63) // 64):
