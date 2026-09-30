@@ -23,17 +23,21 @@ def swiglu_oai(g, u, alpha=ALPHA, limit=LIMIT):
 
 
 def moe_ref(x, topk_ids, topk_w, w_gate, s_gate, w_up, s_up, w_down, s_down,
-            requant_h=True, x_quant=None):
+            requant_h=True, x_quant=None, even=True, quant_x=True):
     """x [T, H] bf16; topk_ids [T, k] int; topk_w [T, k] f32; weights fp4x2 + e8m0.
 
     Returns (y [T, H] f32, a_q, a_s, h dict for debugging).
     """
     T, H = x.shape
-    if x_quant is None:
-        a_q, a_s = mx.quant(x.float())
+    if not quant_x:
+        a_q = a_s = None
+        a = x.float()
     else:
-        a_q, a_s = x_quant
-    a = mx.dequant(a_q, a_s)
+        if x_quant is None:
+            a_q, a_s = mx.quant(x.float(), even)
+        else:
+            a_q, a_s = x_quant
+        a = mx.dequant(a_q, a_s)
     y = torch.zeros(T, w_down.shape[1], dtype=torch.float32, device=x.device)
     E = w_gate.shape[0]
     flat_ids = topk_ids.reshape(-1)
@@ -46,7 +50,7 @@ def moe_ref(x, topk_ids, topk_w, w_gate, s_gate, w_up, s_up, w_down, s_down,
         u = a[tok] @ mx.dequant(w_up[e], s_up[e]).T
         h = swiglu_oai(g, u)
         if requant_h:
-            hq, hs = mx.quant(h)
+            hq, hs = mx.quant(h, even)
             h = mx.dequant(hq, hs)
         o = h @ mx.dequant(w_down[e], s_down[e]).T
         y.index_add_(0, tok, o * topk_w.reshape(-1)[sel].unsqueeze(-1))

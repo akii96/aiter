@@ -70,11 +70,18 @@ def _round_to_fp4_codes(x: torch.Tensor) -> torch.Tensor:
     return (code | (sign.long() << 3)).to(torch.uint8)
 
 
-def quant(x: torch.Tensor):
+def _e8m0_even(amax: torch.Tensor) -> torch.Tensor:
+    """Bit-exact mirror of hw.e8m0_even (AITER runtime / checkpoint "even" rule)."""
+    bits = amax.float().contiguous().view(torch.int32)
+    e = (((bits + 0x200000) >> 23) & 0xFF) - 2
+    return torch.clamp(e, 0, 254).to(torch.uint8)
+
+
+def quant(x: torch.Tensor, even: bool = False):
     """x [..., K] float -> (packed [..., K/2] uint8, scales [..., K/32] uint8)."""
     xs = x.float().unflatten(-1, (-1, 32))
     amax = xs.abs().amax(dim=-1)
-    e = _e8m0_roundup(amax)
+    e = _e8m0_even(amax) if even else _e8m0_roundup(amax)
     scale = e8m0_to_f32(e).unsqueeze(-1)
     codes = _round_to_fp4_codes(xs / scale).flatten(-2)
     return pack_fp4(codes), e

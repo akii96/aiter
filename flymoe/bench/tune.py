@@ -1,6 +1,9 @@
 """Per-bucket tile selection for stage 1 and stage 2 (independent kernels).
 
-Writes configs/tiles_I{I}.json: {token_bucket: {"s1": cfg, "s2": cfg, "us": {...}}}.
+Writes a *candidate* table configs/tiles_v4_I{I}.cand.json, never the curated
+tiles_v4_I{I}.json: picks come from warm timings on uniform routing and must be confirmed
+with a serial bench/compare.py A/B before they are merged. Every pick is checked against
+the torch reference; configs that disagree are rejected.
 """
 
 import argparse
@@ -12,8 +15,10 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bench.bench_moe import get_problem, timeit
-from flymoe import moe
+from bench.bench_moe import timeit
+from tests.test_moe import make_problem
+from flymoe import moe, ref
+from tests.test_options import worst_row
 
 S1 = [
     dict(BM=16, NW=1, pipe="async", D=4, EF=1, MV=1),
@@ -36,6 +41,7 @@ S2 = [
     dict(BM=128, NW=4, pipe="async", D=2, diag="s2nt"),
     dict(BM=128, NW=4, pipe="hybrid2", D=4),
     dict(BM=128, NW=4, pipe="hybrid2", D=4, diag="nos2w"),
+    dict(BM=128, NW=4, pipe="hybrid2", D=4, diag="nos2w+wpe3"),
 ]
 GLOBALS = [dict(), dict(HT=True), dict(FC=True), dict(HT=True, FC=True)]
 BUCKETS = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
@@ -44,7 +50,8 @@ BUCKETS = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 def tune(I, buckets):
     out = {}
     for T in buckets:
-        x, ids, w, W = get_problem(T, I)
+        x, ids, w, wts = make_problem(T, I)
+        W = moe.MoEWeights(*wts)
         res1, res2 = [], []
         for c in S1:
             if c["BM"] > 16 * max(1, (T * 5) // 129) * 8 and c["BM"] > 64:
@@ -66,6 +73,7 @@ def tune(I, buckets):
         c1, c2 = b1[1], b2[1]
         # Global layout/fusion switches (HT: stage-1 h layout, FC: fused combine) change both
         # stages, so pick them on the full forward time with the chosen per-stage configs.
+        y_ref = ref.moe_ref(x, ids, w, *wts)[0]
         best = None
         for g in GLOBALS:
             try:
@@ -74,9 +82,16 @@ def tune(I, buckets):
                 parts = {n: timeit(getattr(run, n)) for n in ("prologue", "stage1", "stage2", "combine")}
             except AssertionError:
                 continue
+            y = run.forward()
+            torch.cuda.synchronize()
+            if not (ref.rel_l2(y, y_ref) < 1e-2 and worst_row(y, y_ref) < 3e-2):
+                print(f"I={I} T={T} REJECTED (wrong output): {c1} {c2} {g}", flush=True)
+                continue
             tot = sum(parts.values())
             if best is None or tot < best[0]:
                 best = (tot, g, parts)
+        if best is None:
+            raise RuntimeError(f"I={I} T={T}: no valid configuration for s1={c1} s2={c2}")
         tot, g, parts = best
         out[T] = {"s1": c1, "s2": c2, "global": {k: (1 if v is True else v) for k, v in g.items()},
                   "us": {**parts, "total": tot}}
@@ -93,7 +108,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     res = tune(a.I, a.T)
     os.makedirs(os.path.join(os.path.dirname(__file__), "..", "configs"), exist_ok=True)
-    path = os.path.join(os.path.dirname(__file__), "..", "configs", f"tiles_v4_I{a.I}.json")
+    path = os.path.join(os.path.dirname(__file__), "..", "configs", f"tiles_v4_I{a.I}.cand.json")
     with open(path, "w") as f:
         json.dump(res, f, indent=1)
     print("wrote", path)

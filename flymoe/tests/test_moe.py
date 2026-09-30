@@ -51,15 +51,18 @@ def check_quant(T=37, H=6144):
     from flymoe import prologue
     g = torch.Generator(device="cuda").manual_seed(1)
     x = (torch.randn(T, H, device="cuda", generator=g) * 3).to(torch.bfloat16)
-    q = torch.empty(T, H // 2, dtype=torch.uint8, device="cuda")
-    s = torch.empty(T, H // 32, dtype=torch.uint8, device="cuda")
-    prologue.run_quant(x, q, s)
-    torch.cuda.synchronize()
-    q_ref, s_ref = mx.quant(x.float())
-    ok_s = torch.equal(s, s_ref)
-    mism = (q != q_ref).float().mean().item()
-    print(f"quant: scales_equal={ok_s} code_byte_mismatch={mism:.2e}")
-    return ok_s and mism == 0.0
+    ok = True
+    for even in (False, True):
+        q = torch.empty(T, H // 2, dtype=torch.uint8, device="cuda")
+        s = torch.empty(T, H // 32, dtype=torch.uint8, device="cuda")
+        prologue.run_quant(x, q, s, even=even)
+        torch.cuda.synchronize()
+        q_ref, s_ref = mx.quant(x.float(), even)
+        ok_s = torch.equal(s, s_ref)
+        mism = (q != q_ref).float().mean().item()
+        print(f"quant even={even}: scales_equal={ok_s} code_byte_mismatch={mism:.2e}")
+        ok &= ok_s and mism == 0.0
+    return ok
 
 
 if __name__ == "__main__":

@@ -24,13 +24,15 @@ Target shape (MiniMax-M3-MXFP4, with the shared expert fused):
   - **`diag=skip` skips MFMAs row block by row block** (16-row granules, wave-uniform), so waste drops to under one 16-row block per tile. It measures −5 to −10% at T=4096–8192 and 0 to +2% at T=32768, where tail tiles are rare, so it is chosen per bucket.
   - **A separate small-tile launch for the tails (`TB`) was measured slower everywhere.** The tail kernel is far less efficient per row, and it runs after the main kernel.
 
-  In the streaming band (32–256 tokens) the kernel is limited by HBM, so idle MFMA lanes cost little there.
+  In the streaming band (32–256 tokens) the kernel is limited by HBM, so idle MFMA lanes cost little there. Masked rows move no bytes, but they still take MFMA slots and still issue their (out-of-range) DMA instructions. At BM=16 and T=32, about 90% of stage-1 MFMA rows are masked.
 
-## Pipeline (all FlyDSL kernels, no host sync)
+## Pipeline (all FlyDSL kernels)
+
+`forward()` allocates nothing and never syncs with the host. `MoERun(..., validate=True)` runs host-side routing checks once, at construction.
 
 | Kernel | File | What it does |
 |---|---|---|
-| K0 quant | `prologue.py` | bf16 to MX fp4. Bit-exact with `mx.quant`. |
+| K0 quant | `prologue.py` | bf16 to MX fp4. Bit-exact with `mx.quant`. With the default `SR="even"` it is also byte-identical to AITER's runtime `dynamic_mxfp4_quant`. |
 | K0 plan | `prologue.py` | Parallel counting sort in 3 launches (histogram with atomic CTA bases, prefix plus tile lists, scatter). Produces compact rows, per-BM tile lists and the inverse map. |
 | K1 | `gemm.py` stage 1 | Gathered-A gate/up GEMM. SwiGLU and fp4 requantization of h happen in registers; the W13 column interleave puts gate and up for two adjacent columns in each lane. |
 | K2 | `gemm.py` stage 2 | Down GEMM. The topk weight is applied in the epilogue, and output is bf16 per compact row. |
@@ -48,19 +50,27 @@ GEMM template knobs:
 | `D` | integer | pipeline depth |
 | XCD remap | on/off | keeps each XCD's work contiguous so an expert's weights stay in one L2 |
 
-`configs/tiles_I{384,768,1536}.json` holds the per-bucket choices from `bench/tune.py`.
+`flymoe.configs.select_cfg(I, T)` returns `MoERun` kwargs for any T: the smallest tuned power-of-two bucket ≥ T, clamped to 32–32768. It reads `configs/tiles_v4_I{384,768,1536}.json`. Those tables started from `bench/tune.py` picks and were then curated by serial A/B, and `tests/test_tables.py` checks every cell. Older tables (`tiles_I*`, `tiles_v2_*`, `tiles_v3_*`) are kept for the frozen comparisons.
 
 ## Correctness
 
-- `tests/test_moe.py` checks against our own torch reference (`ref.py`).
-  - With the fp32-atomic epilogue, `rel_l2` is about 1e-8. The bf16 output paths give 2.3e-3, which is bf16 rounding alone.
-  - Shapes covered: I = 384 / 768 / 1536; T = 1, 7, 33, 256, 1000, 5000; and all tokens routed to one expert.
-- `tests/test_variants.py` covers every BM / NW / pipe variant, including mixed BM between the two stages.
-- `tests/probe_mfma.py` pins down the scaled fp4 MFMA lane, scale and opsel layout.
+Every test compares against our own torch reference (`ref.py`), which quantizes exactly like the kernels. With `SR="even"` it quantizes the way the checkpoint and AITER's runtime do. Each test checks both the whole-tensor `rel_l2` and the worst single row, so a few corrupt rows can't hide.
 
-## Performance (MI355X, one GPU, median of 7 x 10 launches)
+- **`tests/test_moe.py`:**
+  - quant is bit-exact under both scale rules;
+  - T = 1, 7, 256, 1000 by default (others via `--T`), all three epilogues, plus all tokens routed to one expert;
+  - `rel_l2` is about 1e-8 with the fp32-atomic epilogue, and 2.3e-3 on the bf16 output paths (bf16 rounding).
+- **`tests/test_variants.py`:** `async` / `regs` pipes, BM 16–256, NW 1–4, mixed BM between stages.
+- **`tests/test_options.py`:** every tunable option at T = 5, 300, 4097, all three widths: `pingpong`, `hybrid2`, `skip`, `ilm0`, `uni`, `nos2w`, `wpe3`, `s2nt`, HT, FC, HT+FC, TB1/TB2 tails, QAST, PERS, BM1 ≠ BM2.
+- **`tests/test_tables.py`:** every shipped table cell, selected via `select_cfg`, at the bucket T, one below it and a ragged T inside the bucket, plus skewed routing.
+- **`tests/test_large.py`:** T=40000 (R·H·2 > 2³¹), including HT+FC.
+- **`tests/probe_mfma.py`:** pins down the scaled fp4 MFMA lane, scale and opsel layout.
 
-Times are in µs and exclude the prologue, which is reported separately. They cover K1 + K2 + combine. AITER numbers come from AITER's own tuned CSV (`minimax_m3_fp4_tuned_fmoe.csv`) for 384/768 and from `FLYDSL_MOE_REQUIREMENTS.md` for 512 and 1536. They were not re-timed in this session.
+Not covered yet: real checkpoint weights end to end, CUDA/HIP graph capture and replay, and k ≠ 5 or E ≠ 129.
+
+## Round 1 performance (historical: v1 code, v1 configs)
+
+MI355X, one GPU, median of 7 × 10 launches. Times are in µs and exclude the prologue, which is reported separately. It's unknown whether AITER's CSV times include its sort and quant, so the AITER columns below may not be like-for-like. They cover K1 + K2 + combine. AITER numbers come from AITER's own tuned CSV (`minimax_m3_fp4_tuned_fmoe.csv`) for 384/768 and from `FLYDSL_MOE_REQUIREMENTS.md` for 512 and 1536. They were not re-timed in this session.
 
 | T | I=384 flymoe | AITER@384 (raw rows) | AITER@512 (what vLLM dispatches for TP8) |
 |---:|---:|---:|---:|
@@ -82,7 +92,7 @@ Times are in µs and exclude the prologue, which is reported separately. They co
 
 Prologue (quant + plan): about 21 µs at T=32, 40 µs at 4096 and 119 µs at 32768.
 
-## Where it stands, and what is next
+## Where it stood after round 1 (historical)
 
 - **TP8.** Parity with AITER's raw-384 rows (which vLLM never reaches today). About 10–15% faster than the 512-padded path vLLM actually runs.
 - **TP4 and TP2.** 10–20% behind AITER at large T.
@@ -146,7 +156,16 @@ The next structural levers: pre-gather A into compact step-major rows (halves th
 
 ## Round 3 (v4, `configs/tiles_v4_I*.json`) vs v3 and v1
 
-Measured with `bench/compare.py`: serial on GPU 0, round-robin arms, a null arm, prologue included. Output matches the reference to within `rel_diff` ≤ 1e-6 in every cell. The fused-combine cells differ only in summation order; all others are bit-identical.
+Measured with `bench/compare.py`: serial on GPU 0, round-robin arms, a null arm, prologue included.
+
+- **Correctness:** `compare.py` compares against v3's *output*, not the torch reference. Under the old `SR="ceil"` rule, v4 matched v3 to `rel_diff` ≤ 1e-6 in every cell; the fused-combine cells differ only in summation order and all others are bit-identical. Correctness against the torch reference comes from `tests/test_tables.py`.
+- **Default scale rule:** the default is now `SR="even"`, so outputs differ from v3 by the change of rule (see "Scale rule" below).
+- **Curation:** the tables started from `bench/tune.py` picks, and 16 of 33 cells were then changed by hand; each carries a `note` field.
+  - **12 cells (T ≤ 256, all widths):** the tuner's pick only matched v3 within noise while adding prologue work and launches, so they went back to v3 configs.
+  - **3 cells (I=384, T = 1024, 2048, 4096):** the tuner's pick lost a serial A/B against v3, so they went back to v3 configs.
+  - **1 cell (I=384, T=8192):** hand-set to the `wpe3` config.
+
+  The tuner works from warm timings on uniform routing, which is not enough on its own.
 
 Final table: fixed code, one process on GPU 0, node otherwise idle. A cell counts as a win or loss when the change exceeds max(2×|ref − ref_null|, 2%).
 
@@ -189,7 +208,7 @@ For I=1536 that's down from 2462 µs in v1.
 
 ### Small T is MALL-inflated
 
-A 512 MB flush between launches (`--flush`) shows serving-like small-T times are about 2× the warm numbers: I=384 at T=32 is 85 µs warm versus 177 µs flushed. v4 is within noise of v3 either way.
+A 512 MB flush between launches (`--flush`) shows serving-like small-T times are about 2× the warm numbers: I=384 at T=32 is 85 µs warm versus 177 µs flushed. With the shipped tables, every flushed cell (T = 32–256, all widths, 12 cells) is within noise of v3 (−1.2% to +0.4%).
 
 ### What round 3 measured
 
@@ -215,6 +234,33 @@ A 512 MB flush between launches (`--flush`) shows serving-like small-T times are
 
 **Infeasible:** `op_sel`-packed A scales. Tiles start at unaligned compact rows, so no global layout lines up with tile-relative row blocks.
 
+### Scale rule (`SR`, default `"even"`)
+
+Activations and `h` are quantized per 32-element group with an e8m0 scale. Up to round 3 the scale was `ceil_pow2(amax/6)` ("ceil").
+
+- **What changed:** the checkpoint's quantization config (`scale_calculation_mode: even`) and AITER's runtime quantizer use a different rule. It rounds amax to a power of two with the rounding threshold at mantissa 1.75, then subtracts 2 from the exponent. For about a fifth of groups it picks a scale half the size.
+- **Default:** `SR="even"` now applies that rule in the quant kernel and in the stage-1 epilogue. The quant kernel's output is byte-identical to AITER's `dynamic_mxfp4_quant` (checked at two activation scales).
+- **Accuracy:** `bench/scale_rule_accuracy.py` measures the error of the full MoE output against an unquantized-activation reference (fp32 x and h, same fp4 weights).
+
+  | Activation scale | `even` | `ceil` |
+  |---|---|---|
+  | normal | 0.217–0.218 | 0.226 |
+  | 0.05× | 0.179 | 0.190 |
+
+  That's 4–6% less quantization error under `even`, at every width and at T = 1024 and 4096.
+- **Cost:** timing A/B against the old rule (T = 64, 4096, 32768, all widths) is within noise everywhere (−1.1% to +0.4%).
+
+`SR="ceil"` remains available.
+
+### Integration gaps (standalone package today)
+
+- **No per-call engine API.** `MoERun` is built per (T, weights) and owns about 2.7 GB of workspace at T=32768, I=1536 (`y_rows` alone is R·H·2). `forward(x, topk_ids, topk_w)` can re-bind inputs of the same shape without allocating. Still missing: a workspace shared across layers and T, a `run(ws, x, ids, w, W, out, n_tokens)` entry point, and a `y_rows` sized to routed rows only when FC is on.
+- **Expert-parallel `-1` ids are not supported.** `validate=True` rejects them at construction. Without validation, the plan kernels clamp out-of-range ids (so they never corrupt memory) rather than drop them.
+- **FC requires the shared expert exactly once per token** (expert E−1). This is checked at construction when `validate=True`, and `select_cfg` drops FC for other (E, k).
+- **Launch overhead:** 7–9 kernel launches per forward. At T ≤ 256 eager mode is roughly CPU-bound, so CUDA/HIP graphs are needed. Grids are capacity-based and `forward()` never syncs with the host, but graph capture and replay isn't tested yet.
+- **Not validated:** no loader or end-to-end test for real checkpoint weights, and no AITER dispatcher naming, CSV rows or shape gates.
+- **Thread safety and devices:** kernel runner caches are per process, and their keys don't include the device.
+
 ### Correctness and robustness fixes
 
 - 64-bit per-tile and per-row descriptor bases for `y_rows` and the combine. The T=40000 test passes with R·H·2 > 2³¹.
@@ -222,5 +268,7 @@ A 512 MB flush between launches (`--flush`) shows serving-like small-T times are
 - `gcount` is re-zeroed inside the single-CTA prefix kernel.
 - The global `amdgpu-mfma-vgpr-form` option is dropped.
 - JIT cache keys now include each kernel's full name string. FlyDSL's disk cache ignores list- and set-typed closure values, which served stale kernels twice.
+
+**Known small cost of the bounds fixes:** in I=384's HT cells (T ≥ 16384), stage 2 is about 2% slower than before the review fixes (612 → 628 µs at T=32768), which is −0.9% of total and inside the noise threshold. The likely cause is the out-of-range-offset select on HT reads, but it isn't isolated yet.
 
 **A regression found and fixed:** sizing the `y_rows` store descriptor to exactly the tile's rows made stage-2 stores about 30% slower. The record count now spans the remaining rows. It was found by bisecting across the round's commits.

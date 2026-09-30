@@ -126,6 +126,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     name += "_" + hw.SRC_HASH
     DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
     SKIP = "skip" in DG
+    SE = "se" in DG  # "even" e8m0 scale rule (checkpoint / runtime quant), else ceil_pow2(amax/6)
     HTA = HT and stage == 2   # stage-2 A (= h) is K-step-major: h_t[I/128][R][64 B]
     HTW = HT and stage == 1   # stage-1 epilogue writes h_t + step-major h scales
     # Uniform scale DMAs for the 2x4 ping-pong tile: every wave issues exactly one 256 B
@@ -600,9 +601,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         else:
                             for off in (1, 2, 4, 8):
                                 m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
-                        bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
-                        bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
-                        bexp = fx.min(bexp, fx.Int32(254))
+                        if const_expr(SE):
+                            bexp = hw.e8m0_even(m)
+                        else:
+                            bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
+                            bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
+                            bexp = fx.min(bexp, fx.Int32(254))
                         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
                         pk = rocdl.cvt_scalef32_pk_fp4_f32(
                             T.i32, hw.raw(fx.Int32(0)), hw.raw(hs[0]), hw.raw(hs[1]), hw.raw(qs), 0

@@ -30,12 +30,12 @@ def _lds_atomic_add(base_i32, byte_off, val):
     ).result
 
 
-@functools.lru_cache(maxsize=None)
 def _clamp_e(e, E):
     # Out-of-range expert ids must not index the per-expert LDS counters.
     return fx.max(fx.min(e, fx.Int32(E - 1)), fx.Int32(0))
 
 
+@functools.lru_cache(maxsize=None)
 def build_plan(E: int, k: int, bms: tuple):
     NBM = len(bms)
     # LDS: counts[E], cursor[E], offs[E], tile_off[NBM][E]
@@ -477,11 +477,11 @@ def run_scale_t(a_s, row_tok, a_s_t, stream=None):
 
 
 @functools.lru_cache(maxsize=None)
-def build_quant(H: int, threads: int = 256, k: int = 0):
+def build_quant(H: int, threads: int = 256, k: int = 0, even: bool = False):
     """k > 0: also write K-step-major compact A scales ([H/128][R][4 B]) for the token's k
     compact rows (via inv, so the plan must run first); replaces the scale_t kernel."""
     G = H // 32
-    name = f"flymoe_quant_h{H}" + (f"_ast{k}" if k else "") + f"_{hw.SRC_HASH}"
+    name = f"flymoe_quant_h{H}" + (f"_ast{k}" if k else "") + ("_se" if even else "") + f"_{hw.SRC_HASH}"
 
     @flyc.kernel(name=name, known_block_size=[threads, 1, 1])
     def kern(x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64, n_groups: fx.Int32,
@@ -500,9 +500,12 @@ def build_quant(H: int, threads: int = 256, k: int = 0):
         m = fmath.absf(vals[0])
         for i in range_constexpr(1, 32):
             m = fx.max(m, fmath.absf(vals[i]))
-        bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
-        bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
-        bexp = fx.min(bexp, fx.Int32(254))
+        if const_expr(even):
+            bexp = hw.e8m0_even(m)
+        else:
+            bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
+            bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
+            bexp = fx.min(bexp, fx.Int32(254))
         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
         words = []
         for wi in range_constexpr(4):
@@ -551,7 +554,7 @@ def _run(key, launch, args):
         _cf[key](*args)
 
 
-def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0):
+def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0, even=False):
     import torch
 
     Tn, H = x.shape
@@ -561,7 +564,7 @@ def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0):
     stream = torch.cuda.current_stream() if stream is None else stream
     kk = k if a_s_t is not None else 0
     R = inv.numel() if inv is not None else 0
-    _run(("q", H, kk), build_quant(H, 256, kk),
+    _run(("q", H, kk, even), build_quant(H, 256, kk, even),
          (x.data_ptr(), q.data_ptr(), s.data_ptr(), ng,
           (inv if kk else s).data_ptr(), (a_s_t if kk else s).data_ptr(), R, grid, stream))
 

@@ -58,9 +58,20 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0, SR="even", validate=True):
         T, H = x.shape
         k = topk_ids.shape[1]
+        assert x.dtype == torch.bfloat16 and x.is_contiguous(), "x must be contiguous bf16"
+        assert H == W.H, f"x has H={H}, weights have H={W.H}"
+        assert topk_ids.shape == topk_w.shape == (T, k)
+        # SR: e8m0 scale rule for the activation and h quant. "even" = the checkpoint's
+        # scale_calculation_mode (AITER runtime quant); "ceil" = ceil_pow2(amax / 6).
+        assert SR in ("ceil", "even")
+        self.SE = SR == "even"
+        if validate:
+            # Host sync, construction only. Ids outside [0, E) (e.g. expert-parallel -1) are
+            # not supported: the plan kernels clamp them into range rather than drop them.
+            assert bool(((topk_ids >= 0) & (topk_ids < W.E)).all()), "expert ids must be in [0, E)"
         R = T * k
         I = W.I
         dev = x.device
@@ -102,7 +113,7 @@ class MoERun:
         self.FC = bool(FC)
         if self.FC:
             assert epi == "rows" and not TB2, "FC needs the rows epilogue and no stage-2 tail split"
-            assert bool(((topk_ids == W.E - 1).sum(1) == 1).all()), \
+            assert not validate or bool(((topk_ids == W.E - 1).sum(1) == 1).all()), \
                 "FC needs the shared expert (E-1) exactly once per token"
             assert T * H * 2 < 2**31, "the fused epilogue stores out with 32-bit offsets"
             self.launches2 = [(spec((BM2, -2)), self.cfg2), (spec((BM2, -3)), dict(self.cfg2, epi="fused"))]
@@ -142,11 +153,12 @@ class MoERun:
                           self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch,
                           shared_last=self.FC)
         if self.AST and self.QAST:
-            prologue.run_quant(self.x, self.a_q, self.a_s, inv=self.inv, a_s_t=self.a_s_t, k=self.k)
+            prologue.run_quant(self.x, self.a_q, self.a_s, inv=self.inv, a_s_t=self.a_s_t, k=self.k,
+                               even=self.SE)
         else:
             # Separate transpose measured faster than quant-side strided scale stores
             # (32k: 170 vs 194 us prologue).
-            prologue.run_quant(self.x, self.a_q, self.a_s)
+            prologue.run_quant(self.x, self.a_q, self.a_s, even=self.SE)
             if self.AST:
                 prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
 
@@ -160,7 +172,8 @@ class MoERun:
                 (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
                  tp, ntp, self.row_tok.data_ptr(), self.dummy.data_ptr(),
                  self.h_q.data_ptr(), self.h_s.data_ptr(), self.dummy.data_ptr(), self.T, self.R, self.T),
-                self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"],
+                self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
+                diag="+".join(t for t in (c["diag"], "se" if self.SE else "") if t),
                 WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT, PERS=c.get("PERS", 0),
             )
 
@@ -184,7 +197,16 @@ class MoERun:
         if self.epi == "rows" and not self.FC:
             combine.run_combine(self.y_rows, self.inv, self.out, self.k)
 
-    def forward(self):
+    def forward(self, x=None, topk_ids=None, topk_w=None):
+        """Optional new inputs of the construction shapes: x is re-bound (no copy), routing is
+        copied into the run's int32 / fp32 buffers (graph-safe, no host sync)."""
+        if x is not None:
+            assert x.shape == self.x.shape and x.dtype == torch.bfloat16 and x.is_contiguous()
+            self.x = x
+        if topk_ids is not None:
+            self.ids.copy_(topk_ids.reshape(-1))
+        if topk_w is not None:
+            self.w.copy_(topk_w.reshape(-1))
         self.prologue()
         self.stage1()
         self.stage2()
