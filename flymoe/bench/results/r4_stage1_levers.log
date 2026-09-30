@@ -29,3 +29,14 @@ B4 K-step 256: budget does not close, not prototyped.
 What the bounds point at instead: the remaining stage-1 gap is DMA exposure (379 us) plus the exposed
 epilogue (171 us), not TA instruction count. Overlapping the epilogue with the next tile's main loop
 is the next stage-1 target.
+
+Corrections (review round 1):
+- Only B1 and B3 were rejected by measured bounds. B2 and B4 were rejected by register/LDS budget
+  arithmetic from the compiled kernel (r4_s1_budget.log), not by measurement.
+- B3: the tighter bound here (<= ~20 us, ~1% of stage 1) replaces the round-3 README estimate of
+  2-3%, which applied the +16% to a coarser estimate of the A-path share.
+- The 32 / 20 cyc/KB figures (gathered A / contiguous B) are from the round-2 DMA benchmark quoted in
+  the README; that run was not archived.
+- The knock-outs are not additive and do not decompose the gap. Stage 1 is 1697 us against an 859 us
+  MFMA floor (838 us gap); removing all DMA saves 379 us and removing the epilogue saves 171 us,
+  each measured alone. They say where exposed time is, not how much a fix would recover.

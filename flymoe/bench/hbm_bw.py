@@ -141,7 +141,8 @@ def routing_rows(T_, k=5, E=129, seed=0, order="expert"):
     tok = tok[key.argsort()]
     R = tok.numel()
     Rp = (R + BM - 1) // BM * BM
-    tok = torch.cat([tok, tok[-1:].repeat(Rp - R)])  # pad rows repeat the last token (tiny)
+    # pad rows repeat the last token, so the atomic modes' sum check only holds when R % BM == 0
+    tok = torch.cat([tok, tok[-1:].repeat(Rp - R)])
     return tok.to(torch.int32).cuda(), R, Rp
 
 
