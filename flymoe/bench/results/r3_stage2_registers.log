@@ -1,0 +1,6 @@
+flymoe_s2_k384_n6144_bm128_w4_hybrid24_rows_xcd_diagnos2w_1ae4a468 vgpr=178 agpr=  0 lds= 34816 spill=0 | waves/SIMD=2 CTAs/CU=2 (regs) | mfma=96 barrier=3 waitcnt=50
+flymoe_s2_k384_n6144_bm128_w4_hybrid24_rows_xcd_diagnos2w_wpe3_1ae4a468 vgpr=164 agpr= 80 lds= 34816 spill=0 | waves/SIMD=3 CTAs/CU=3 (regs) | mfma=96 barrier=3 waitcnt=47
+flymoe_s2_k768_n6144_bm128_w4_hybrid24_rows_xcd_diagnos2w_1ae4a468 vgpr=234 agpr=  0 lds= 34816 spill=0 | waves/SIMD=2 CTAs/CU=2 (regs) | mfma=192 barrier=6 waitcnt=61
+flymoe_s2_k768_n6144_bm128_w4_hybrid24_rows_xcd_diagnos2w_wpe3_1ae4a468 vgpr=168 agpr= 84 lds= 34816 spill=364 | waves/SIMD=3 CTAs/CU=3 (regs) | mfma=192 barrier=6 waitcnt=142
+flymoe_s2_k1536_n6144_bm128_w4_hybrid24_rows_xcd_diagnos2w_1ae4a468 vgpr=316 agpr= 60 lds= 34816 spill=0 | waves/SIMD=1 CTAs/CU=1 (regs) | mfma=384 barrier=12 waitcnt=98
+flymoe_s2_k1536_n6144_bm128_w4_hybrid24_rows_xcd_diagnos2w_wpe3_1ae4a468 vgpr=168 agpr= 84 lds= 34816 spill=766 | waves/SIMD=3 CTAs/CU=3 (regs) | mfma=384 barrier=12 waitcnt=323

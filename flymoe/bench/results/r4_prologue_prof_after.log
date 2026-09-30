@@ -1,0 +1,17 @@
+== T=32
+"flymoe_quant_h6144_se",21,3068.571429
+"flymoe_plan_prefix_e129_16",21,2577.190476
+"flymoe_plan_hist_e129",21,1946.714286
+"flymoe_plan_scatter_e129_k5",21,1885.714286
+== T=4096
+"flymoe_quant_h6144_se",21,11522.000000
+"flymoe_plan_scatter_e129_k5",21,7817.142857
+"flymoe_plan_hist_e129",21,3916.190476
+"flymoe_scale_t_kg192",21,3824.761905
+"flymoe_plan_prefix_e129_256_64",21,3653.333333
+== T=32768
+"flymoe_quant_h6144_se",21,92800.666667
+"flymoe_plan_scatter_e129_k5",21,11843.904762
+"flymoe_scale_t_kg192",21,10826.714286
+"flymoe_plan_prefix_e129_256_128",21,5979.047619
+"flymoe_plan_hist_e129",21,4674.380952

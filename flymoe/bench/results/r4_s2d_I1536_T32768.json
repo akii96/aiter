@@ -1,0 +1,211 @@
+[
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 128.0406951904297,
+   "stage1": 1667.8937911987305,
+   "stage2": 1417.684268951416,
+   "combine": 480.95078468322754
+  },
+  "total": 3694.5695400238037,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt"
+  },
+  "median_us": {
+   "prologue": 127.69670486450195,
+   "stage1": 1701.0295867919922,
+   "stage2": 1229.9389839172363,
+   "combine": 479.4107913970947
+  },
+  "total": 3538.076066970825,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 128.3007025718689,
+   "stage1": 1702.3059844970703,
+   "stage2": 1638.521385192871,
+   "combine": 1.3319999910891056
+  },
+  "total": 3470.4600722528994,
+  "rel_diff": 7.915370474620431e-07,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 127.4886965751648,
+   "stage1": 1666.3936614990234,
+   "stage2": 2596.9831466674805,
+   "combine": 480.706787109375
+  },
+  "total": 4871.572291851044,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1,
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 127.24469900131226,
+   "stage1": 1708.4260940551758,
+   "stage2": 2980.2656173706055,
+   "combine": 1.4240000396966934
+  },
+  "total": 4817.36041046679,
+  "rel_diff": 7.915370474620431e-07,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe3+s2nt"
+  },
+  "median_us": {
+   "prologue": 129.1206955909729,
+   "stage1": 1714.9417877197266,
+   "stage2": 1519.9007987976074,
+   "combine": 480.01880645751953
+  },
+  "total": 3843.9820885658264,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2",
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 127.86879539489746,
+   "stage1": 1701.4379501342773,
+   "stage2": 1680.8456420898438,
+   "combine": 2.1400000900030136
+  },
+  "total": 3512.2923877090216,
+  "rel_diff": 7.915370474620431e-07,
+  "gated": true,
+  "src_hash": "0785ea12"
+ }
+]

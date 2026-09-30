@@ -1,0 +1,67 @@
+peak 7.20 PF, read 5.87 TB/s, write 5.14 TB/s
+I=  384 T=    32 total    85.8 us | pro    20.4/   0.1   0% mem | sta    37.7/  35.4  94% mem | sta    20.7/  18.0  87% mem | com     7.1/   0.4   6% mem
+                floor current    53.9 ( 63%)  minimal    53.2 ( 62%) | s1 minimal   35.3 ( 94%) | s2+cb minimal   17.7 mem ( 64% of 27.7)
+I=  384 T=    64 total   100.1 us | pro    20.3/   0.2   1% mem | sta    46.4/  48.1 104% mem | sta    26.3/  24.7  94% mem | com     7.1/   0.8  12% mem
+                floor current    73.9 ( 74%)  minimal    72.3 ( 72%) | s1 minimal   48.0 (103%) | s2+cb minimal   24.1 mem ( 72% of 33.4)
+I=  384 T=   128 total   112.1 us | pro    20.1/   0.3   2% mem | sta    55.8/  54.5  98% mem | sta    29.2/  28.6  98% mem | com     7.0/   1.6  24% mem
+                floor current    85.2 ( 76%)  minimal    82.0 ( 73%) | s1 minimal   54.3 ( 97%) | s2+cb minimal   27.4 mem ( 76% of 36.2)
+I=  384 T=   256 total   118.8 us | pro    20.3/   0.7   3% mem | sta    59.8/  55.9  93% mem | sta    31.6/  30.7  97% mem | com     7.1/   3.3  46% mem
+                floor current    90.5 ( 76%)  minimal    84.2 ( 71%) | s1 minimal   55.3 ( 93%) | s2+cb minimal   28.2 mem ( 73% of 38.8)
+I=  384 T=   512 total   126.7 us | pro    19.9/   1.4   7% mem | sta    65.6/  56.6  86% mem | sta    33.6/  33.8 100% mem | com     7.5/   6.6  87% mem
+                floor current    98.4 ( 78%)  minimal    85.8 ( 68%) | s1 minimal   55.5 ( 85%) | s2+cb minimal   28.9 mem ( 70% of 41.2)
+I=  384 T=  1024 total   144.0 us | pro    19.8/   2.8  14% mem | sta    69.1/  58.2  84% mem | sta    42.0/  40.0  95% mem | com    13.1/  13.2 100% mem
+                floor current   114.1 ( 79%)  minimal    88.9 ( 62%) | s1 minimal   55.9 ( 81%) | s2+cb minimal   30.2 mem ( 55% of 55.1)
+I=  384 T=  2048 total   190.0 us | pro    26.2/   5.6  21% mem | sta    77.7/  61.2  79% mem | sta    61.4/  52.4  85% mem | com    24.7/  26.3 107% mem
+                floor current   145.5 ( 77%)  minimal    95.0 ( 50%) | s1 minimal   56.7 ( 73%) | s2+cb minimal   32.8 mem ( 38% of 86.1)
+I=  384 T=  4096 total   257.3 us | pro    30.9/  11.2  36% mem | sta    96.1/  67.3  70% mem | sta    77.6/  77.2 100% mem | com    52.8/  52.7 100% mem
+                floor current   208.4 ( 81%)  minimal   107.4 ( 42%) | s1 minimal   58.2 ( 61%) | s2+cb minimal   38.1 mem ( 29% of 130.4)
+I=  384 T=  8192 total   438.6 us | pro    40.2/  22.4  56% mem | sta   145.6/  79.5  55% mem | sta   131.4/ 126.9  97% mem | com   121.4/ 105.4  87% mem
+                floor current   334.1 ( 76%)  minimal   132.2 ( 30%) | s1 minimal   61.3 ( 42%) | s2+cb minimal   48.6 mem ( 19% of 252.8)
+I=  384 T= 16384 total   794.2 us | pro    66.3/  44.7  67% mem | sta   244.6/ 107.4  44% mfma | sta   243.3/ 226.3  93% mem | com   240.0/ 210.7  88% mem
+                floor current   589.1 ( 74%)  minimal   221.7 ( 28%) | s1 minimal  107.4 ( 44%) | s2+cb minimal   69.6 mem ( 14% of 483.3)
+I=  384 T= 32768 total  1533.1 us | pro   128.8/  89.4  69% mem | sta   450.8/ 214.7  48% mfma | sta   474.9/ 425.0  89% mem | com   478.6/ 421.4  88% mem
+                floor current  1150.6 ( 75%)  minimal   415.8 ( 27%) | s1 minimal  214.7 ( 48%) | s2+cb minimal  111.6 mem ( 12% of 953.5)
+I=  768 T=    32 total   134.6 us | pro    18.6/   0.1   0% mem | sta    77.1/  70.7  92% mem | sta    32.2/  35.7 111% mem | com     6.7/   0.4   6% mem
+                floor current   106.9 ( 79%)  minimal   106.1 ( 79%) | s1 minimal   70.7 ( 92%) | s2+cb minimal   35.4 mem ( 91% of 38.9)
+I=  768 T=    64 total   170.6 us | pro    18.8/   0.2   1% mem | sta    97.8/  96.1  98% mem | sta    47.1/  48.7 103% mem | com     6.9/   0.8  12% mem
+                floor current   145.8 ( 85%)  minimal   144.2 ( 85%) | s1 minimal   95.9 ( 98%) | s2+cb minimal   48.1 mem ( 89% of 54.0)
+I=  768 T=   128 total   197.2 us | pro    18.9/   0.3   2% mem | sta   112.1/ 108.7  97% mem | sta    59.1/  55.7  94% mem | com     7.0/   1.6  24% mem
+                floor current   166.5 ( 84%)  minimal   163.3 ( 83%) | s1 minimal  108.5 ( 97%) | s2+cb minimal   54.5 mem ( 82% of 66.1)
+I=  768 T=   256 total   211.6 us | pro    19.0/   0.7   4% mem | sta   115.8/ 111.0  96% mem | sta    69.8/  58.2  83% mem | com     6.9/   3.3  48% mem
+                floor current   173.2 ( 82%)  minimal   166.9 ( 79%) | s1 minimal  110.4 ( 95%) | s2+cb minimal   55.8 mem ( 73% of 76.8)
+I=  768 T=   512 total   221.1 us | pro    18.7/   1.4   7% mem | sta   120.9/ 111.8  92% mem | sta    74.2/  61.4  83% mem | com     7.2/   6.6  92% mem
+                floor current   181.2 ( 82%)  minimal   168.6 ( 76%) | s1 minimal  110.7 ( 92%) | s2+cb minimal   56.5 mem ( 69% of 81.4)
+I=  768 T=  1024 total   243.8 us | pro    18.5/   2.8  15% mem | sta   128.9/ 113.5  88% mem | sta    83.3/  67.7  81% mem | com    13.2/  13.2 100% mem
+                floor current   197.1 ( 81%)  minimal   171.9 ( 70%) | s1 minimal  111.2 ( 86%) | s2+cb minimal   57.9 mem ( 60% of 96.5)
+I=  768 T=  2048 total   304.1 us | pro    26.0/   5.6  22% mem | sta   148.6/ 116.7  79% mem | sta   104.7/  80.3  77% mem | com    24.8/  26.3 106% mem
+                floor current   229.0 ( 75%)  minimal   178.5 ( 59%) | s1 minimal  112.2 ( 76%) | s2+cb minimal   60.7 mem ( 47% of 129.5)
+I=  768 T=  4096 total   414.7 us | pro    30.5/  11.2  37% mem | sta   184.9/ 123.2  67% mem | sta   150.7/ 105.5  70% mem | com    48.5/  52.7 109% mem
+                floor current   292.6 ( 71%)  minimal   191.6 ( 46%) | s1 minimal  114.1 ( 62%) | s2+cb minimal   66.3 mem ( 33% of 199.3)
+I=  768 T=  8192 total   696.3 us | pro    39.8/  22.4  56% mem | sta   295.7/ 136.2  46% mem | sta   240.4/ 155.9  65% mem | com   120.4/ 105.4  88% mem
+                floor current   419.9 ( 60%)  minimal   217.9 ( 31%) | s1 minimal  118.0 ( 40%) | s2+cb minimal   77.5 mem ( 21% of 360.8)
+I=  768 T= 16384 total  1184.4 us | pro    64.9/  44.7  69% mem | sta   454.6/ 214.7  47% mfma | sta   425.2/ 256.7  60% mem | com   239.6/ 210.7  88% mem
+                floor current   726.8 ( 61%)  minimal   366.8 ( 31%) | s1 minimal  214.7 ( 47%) | s2+cb minimal  107.4 mfma ( 16% of 664.9)
+I=  768 T= 32768 total  2250.5 us | pro   126.8/  89.4  71% mem | sta   855.0/ 429.5  50% mfma | sta  1267.5/ 732.7  58% mem
+                floor current  1251.6 ( 56%)  minimal   733.7 ( 33%) | s1 minimal  429.5 ( 50%) | s2+cb minimal  214.7 mfma ( 17% of 1268.7)
+I= 1536 T=    32 total   250.0 us | pro    19.2/   0.1   0% mem | sta   144.4/ 141.4  98% mem | sta    79.6/  71.0  89% mem | com     6.9/   0.4   6% mem
+                floor current   212.9 ( 85%)  minimal   212.1 ( 85%) | s1 minimal  141.3 ( 98%) | s2+cb minimal   70.7 mem ( 82% of 86.4)
+I= 1536 T=    64 total   328.2 us | pro    19.1/   0.2   1% mem | sta   194.4/ 192.0  99% mem | sta   107.8/  96.7  90% mem | com     7.0/   0.8  12% mem
+                floor current   289.7 ( 88%)  minimal   288.1 ( 88%) | s1 minimal  191.8 ( 99%) | s2+cb minimal   96.1 mem ( 84% of 114.7)
+I= 1536 T=   128 total   360.9 us | pro    18.9/   0.3   2% mem | sta   214.4/ 217.1 101% mem | sta   120.6/ 110.0  91% mem | com     7.0/   1.6  24% mem
+                floor current   329.1 ( 91%)  minimal   325.9 ( 90%) | s1 minimal  216.8 (101%) | s2+cb minimal  108.7 mem ( 85% of 127.5)
+I= 1536 T=   256 total   378.0 us | pro    20.8/   0.7   3% mem | sta   220.6/ 221.3 100% mem | sta   128.9/ 113.4  88% mem | com     7.7/   3.3  43% mem
+                floor current   338.7 ( 90%)  minimal   332.4 ( 88%) | s1 minimal  220.7 (100%) | s2+cb minimal  111.0 mem ( 81% of 136.6)
+I= 1536 T=   512 total   386.6 us | pro    19.2/   1.4   7% mem | sta   229.1/ 222.3  97% mem | sta   130.9/ 116.7  89% mem | com     7.4/   6.6  89% mem
+                floor current   346.9 ( 90%)  minimal   334.3 ( 86%) | s1 minimal  221.1 ( 97%) | s2+cb minimal  111.8 mem ( 81% of 138.3)
+I= 1536 T=  1024 total   424.8 us | pro    19.1/   2.8  15% mem | sta   248.5/ 224.1  90% mem | sta   144.3/ 123.2  85% mem | com    13.0/  13.2 101% mem
+                floor current   363.2 ( 86%)  minimal   338.0 ( 80%) | s1 minimal  221.8 ( 89%) | s2+cb minimal  113.4 mem ( 72% of 157.3)
+I= 1536 T=  2048 total   476.7 us | pro    27.7/   5.6  20% mem | sta   264.1/ 227.8  86% mem | sta   160.1/ 136.1  85% mem | com    24.8/  26.3 106% mem
+                floor current   395.8 ( 83%)  minimal   345.3 ( 72%) | s1 minimal  223.2 ( 84%) | s2+cb minimal  116.5 mem ( 63% of 184.9)
+I= 1536 T=  4096 total   657.4 us | pro    30.7/  11.2  36% mem | sta   355.8/ 235.1  66% mem | sta   219.5/ 162.0  74% mem | com    51.4/  52.7 103% mem
+                floor current   461.0 ( 70%)  minimal   360.0 ( 55%) | s1 minimal  226.0 ( 64%) | s2+cb minimal  122.9 mem ( 45% of 270.9)
+I= 1536 T=  8192 total  1101.1 us | pro    40.2/  22.4  56% mem | sta   571.9/ 249.7  44% mem | sta   487.9/ 282.5  58% mem
+                floor current   554.5 ( 50%)  minimal   389.3 ( 35%) | s1 minimal  231.5 ( 40%) | s2+cb minimal  135.5 mem ( 28% of 489.0)
+I= 1536 T= 16384 total  1902.7 us | pro    65.8/  44.7  68% mem | sta   963.6/ 429.5  45% mfma | sta   872.5/ 454.7  52% mem
+                floor current   928.9 ( 49%)  minimal   689.0 ( 36%) | s1 minimal  429.5 ( 45%) | s2+cb minimal  214.7 mfma ( 25% of 873.3)
+I= 1536 T= 32768 total  3477.7 us | pro   127.3/  89.4  70% mem | sta  1711.1/ 859.0  50% mfma | sta  1638.3/ 799.2  49% mem
+                floor current  1747.6 ( 50%)  minimal  1377.9 ( 40%) | s1 minimal  859.0 ( 50%) | s2+cb minimal  429.5 mfma ( 26% of 1639.4)

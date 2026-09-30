@@ -1,0 +1,5 @@
+x*3: scales==aiter True scales==mx True | groups compared 196606, code mismatches 0 | e8m0-254 groups (not compared) 2 OK
+x*0.02: scales==aiter True scales==mx True | groups compared 196606, code mismatches 0 | e8m0-254 groups (not compared) 2 OK
+x*1e-38: scales==aiter True scales==mx True | groups compared 196606, code mismatches 0 | e8m0-254 groups (not compared) 2 OK
+x*3e+38: scales==aiter True scales==mx True | groups compared 194, code mismatches 0 | e8m0-254 groups (not compared) 196414 OK
+ALL OK

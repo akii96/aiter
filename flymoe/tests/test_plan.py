@@ -2,7 +2,9 @@
 
 Covers every tile-spec kind (plain BM, full-only -1, routed-only -2, shared-only -3, remainder
 after P-row tiles), both shared_last settings, uniform and one-hot-skewed routing, and T from 1 to
-32768. Compares expert offsets (via row_tok / row_w / inv), every spec's tile list and tile count.
+32768, E from 2 to 256. Checks the expert offsets exactly (parallel path), ties every row to its
+expert and its (token, slot) via inv, and compares every spec's tile list and tile count exactly.
+Outputs are re-poisoned before the second call, so it cannot pass on the first call's results.
 
 usage: python tests/test_plan.py   (needs /workspace/flymoe_v4_pkg or FLYMOE_V4_PATH)
 """
@@ -44,9 +46,12 @@ def run(mod, ids, w, E, k, bms, shared_last):
     )
     scratch = mod.plan_scratch(R, E, dev)
     for _ in range(2):  # second call checks the counters were re-zeroed
+        for v in out.values():
+            v.fill_(-7)
         mod.run_plan(ids, w, out["row_tok"], out["row_w"], out["inv"], out["tiles"], out["ntiles"],
                      E, k, bms, MAXT, scratch=scratch, shared_last=shared_last)
     torch.cuda.synchronize()
+    out["offs"] = scratch[1].clone() if R > mod.SMALL_PLAN_MAX_ROWS else None
     nt = out["ntiles"].tolist()
     out["tiles_used"] = [out["tiles"][b * MAXT: b * MAXT + nt[b]].clone() for b in range(len(bms))]
     return out
@@ -54,11 +59,17 @@ def run(mod, ids, w, E, k, bms, shared_last):
 
 def rows_equivalent(a, b, ids, w, E, k):
     """Row order inside an expert comes from LDS atomics (nondeterministic across waves), so
-    rows are compared as a set per expert segment; inv must map each (token, slot) to its row."""
-    counts = torch.bincount(ids.long(), minlength=E).tolist()
+    rows are compared as a set per expert segment; inv must map each (token, slot) to a row of
+    that slot's expert holding its token and weight, and the offsets must be the exact prefix sum."""
+    cnt = torch.bincount(ids.long(), minlength=E)
+    counts = cnt.tolist()
+    seg = torch.repeat_interleave(torch.arange(E, device=ids.device, dtype=torch.int32), cnt)
     tok = torch.arange(ids.numel(), device=ids.device, dtype=torch.int32) // k
     for o in (a, b):
-        if not (torch.equal(o["row_tok"][o["inv"].long()], tok) and torch.equal(o["row_w"][o["inv"].long()], w)):
+        iv = o["inv"].long()
+        if not (torch.equal(o["row_tok"][iv], tok) and torch.equal(o["row_w"][iv], w) and torch.equal(seg[iv], ids)):
+            return False
+        if o["offs"] is not None and not torch.equal(o["offs"], (torch.cumsum(cnt, 0) - cnt).to(torch.int32)):
             return False
     s = 0
     for c in counts:
@@ -94,7 +105,7 @@ def main():
     import argparse
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--E", type=int, nargs="+", default=[129, 9], help="129 -> k=5, 9 -> k=2")
+    ap.add_argument("--E", type=int, nargs="+", default=[129, 9, 256, 2], help="k: 129 -> 5, 256 -> 8, else 2")
     ap.add_argument("--T", type=int, nargs="+", default=[1, 5, 32, 300, 4097, 32768])
     ap.add_argument("--scale-t-only", action="store_true")
     a_ = ap.parse_args()
@@ -102,7 +113,7 @@ def main():
     if a_.scale_t_only:
         sys.exit(0 if ok else 1)
     n = 0
-    for E, k in [(E, 5 if E == 129 else 2) for E in a_.E]:
+    for E, k in [(E, {129: 5, 256: 8}.get(E, 2)) for E in a_.E]:
         for T in a_.T:
             for skew in (False, True):
                 g = torch.Generator(device="cuda").manual_seed(T * 7 + E)

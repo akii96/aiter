@@ -41,6 +41,7 @@ def parse_isa(path):
     spill = grab("vgpr_spill_count") + grab("sgpr_spill_count")
     scratch = grab("private_segment_fixed_size")
     return dict(vgpr=vgpr, agpr=agpr, lds=lds, spill=spill, scratch=scratch,
+                vspill=grab("vgpr_spill_count"), sspill=grab("sgpr_spill_count"),
                 mfma=txt.count("v_mfma"), barrier=txt.count("s_barrier"), waitcnt=txt.count("s_waitcnt"))
 
 

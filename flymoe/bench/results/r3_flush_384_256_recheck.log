@@ -1,0 +1,4 @@
+I=  384 T=   256 | v3    230.4 null    231.0 cand    230.9us | pro   24.4->  25.0 s1   120.9->  120.6 s2    71.0->   71.6 cb   14.1->  13.7 | gain  -0.2% noise  0.3% noise | diff 1.3e-01
+ceil:I=  384 T=   256 | v3    230.0 null    232.2 cand    230.4us | pro   24.0->  26.4 s1   120.5->  119.6 s2    71.2->   70.6 cb   14.4->  13.8 | gain  -0.2% noise  1.0% noise | diff 0.0e+0
+I=  384 T=   256 | v3    228.6 null    229.8 cand    231.4us | pro   23.5->  26.2 s1   120.5->  120.3 s2    70.6->   71.1 cb   14.1->  13.8 | gain  -1.2% noise  0.5% noise | diff 1.3e-01
+ceil:I=  384 T=   256 | v3    231.0 null    230.6 cand    231.6us | pro   24.0->  26.0 s1   121.8->  120.8 s2    71.0->   71.1 cb   14.2->  13.7 | gain  -0.3% noise  0.1% noise | diff 0.0e+0

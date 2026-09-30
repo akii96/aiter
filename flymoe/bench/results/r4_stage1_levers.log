@@ -1,0 +1,31 @@
+Round 4, Phase 3: stage-1 memory-phase levers, decided by measured upper bounds (I=1536, T=32768).
+
+Decomposition (bench/s2_sweep.py --nogate, r4_s1_decomp_1536.log; stage 1 = 1697 us, MFMA floor 859 us):
+  nodmaA  1550 us  (-147 us)   upper bound of every A-path lever
+  nodmaB  1457 us  (-240 us)
+  nodma   1318 us  (-379 us)
+  nolds   1704 us  (   0)      LDS operand reads fully hidden
+  noepi   1526 us  (-171 us)   SwiGLU + quant + h store epilogue is exposed
+
+B1 pre-gathered step-major A: rejected, not built.
+  Best case moves gathered A (32 cyc/KB) to contiguous (20 cyc/KB): <= 147 * (1 - 20/32) = ~55 us.
+  Cost: the quant kernel writes R rows instead of T rows, +(R - T) * H/2 * (1 + 1/16) = 428 MB
+  at 5.14 TB/s = ~83 us, plus the same bytes re-read by stage 1 instead of the gathered rows.
+  Net loss at I=1536; the saving scales with I and the cost does not, so it loses by more at 768/384.
+
+B3 128 B A granule: rejected, not built.
+  Measured +16% A-path throughput (dma_bw.py, round 3) -> <= 147 * 0.14 = ~20 us (~1% of stage 1).
+
+B2 3-4 phase groups: budget does not close, not prototyped.
+  Stage 1 today (r4_s1_budget.log): 236 VGPR (128 accumulator), 136 KB LDS, 2 waves/SIMD, 1 CTA/CU.
+  3 groups = 3 waves/SIMD -> <= 168 registers/wave; 128 accumulators + >= 48 operand registers alone
+  exceed it. Only a smaller per-wave tile fits, which raises LDS reads per MFMA >= 1.5x (a new kernel,
+  not this lever).
+
+B4 K-step 256: budget does not close, not prototyped.
+  Operand registers double (A 32 -> 64, B 16 -> 32): ~236 + 48 = ~284 > 256 -> 1 wave/SIMD, which
+  breaks the 2-wave ping-pong; per-stage LDS doubles (34 -> 68 KB), forcing ring depth 2.
+
+What the bounds point at instead: the remaining stage-1 gap is DMA exposure (379 us) plus the exposed
+epilogue (171 us), not TA instruction count. Overlapping the epilogue with the next tile's main loop
+is the next stage-1 target.

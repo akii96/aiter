@@ -1,0 +1,177 @@
+[
+ {
+  "I": 384,
+  "T": 4096,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid",
+   "D2": 3,
+   "diag2": "nos2w"
+  },
+  "median_us": {
+   "prologue": 30.27609884738922,
+   "stage1": 94.01649832725525,
+   "stage2": 103.01660299301147,
+   "combine": 47.584301233291626
+  },
+  "total": 274.89350140094757,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 384,
+  "T": 4096,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe3+s2nt"
+  },
+  "median_us": {
+   "prologue": 30.452099442481995,
+   "stage1": 95.1324999332428,
+   "stage2": 79.43649888038635,
+   "combine": 52.552300691604614
+  },
+  "total": 257.57339894771576,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 384,
+  "T": 4096,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "wpe3+s2nt"
+  },
+  "median_us": {
+   "prologue": 31.31220042705536,
+   "stage1": 97.39649891853333,
+   "stage2": 76.89639925956726,
+   "combine": 52.27230191230774
+  },
+  "total": 257.8774005174637,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 384,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt"
+  },
+  "median_us": {
+   "prologue": 30.74820041656494,
+   "stage1": 95.44849991798401,
+   "stage2": 90.71249961853027,
+   "combine": 52.096301317214966
+  },
+  "total": 269.0055012702942,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 384,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 30.156201124191284,
+   "stage1": 93.7125027179718,
+   "stage2": 115.58870077133179,
+   "combine": 50.49229860305786
+  },
+  "total": 289.94970321655273,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 384,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2"
+  },
+  "median_us": {
+   "prologue": 30.544200539588928,
+   "stage1": 95.50049901008606,
+   "stage2": 117.70069599151611,
+   "combine": 47.320300340652466
+  },
+  "total": 291.06569588184357,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ }
+]

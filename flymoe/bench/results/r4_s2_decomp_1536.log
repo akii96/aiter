@@ -1,0 +1,9 @@
+I= 1536 T= 32768 table                                                                  s1  1721.8 s2  1419.1 cb  481.8 total  3793.8 | s2+cb  +0.0% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2                           s1  1710.9 s2  1380.1 cb  480.4 total  3742.5 | s2+cb  +2.1% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+noepi                     s1  1707.9 s2   925.8 cb  477.4 total  3280.9 | s2+cb +26.2% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+nob                       s1  1718.0 s2  1086.6 cb  481.1 total  3456.7 | s2+cb +17.5% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+nodma                     s1  1718.4 s2  1229.7 cb  481.8 total  3601.3 | s2+cb +10.0% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+nolds                     s1  1713.2 s2  1315.8 cb  480.9 total  3681.4 | s2+cb  +5.5% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+nobar                     s1  1717.9 s2  1422.0 cb  482.4 total  3791.8 | s2+cb  -0.2% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+noepi+nob+nodma           s1  1713.0 s2   638.2 cb  478.8 total  3001.0 | s2+cb +41.2% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+noepi+nob+nodma+nolds     s1  1722.3 s2   486.6 cb  480.4 total  2860.7 | s2+cb +49.1% vs table

@@ -1,0 +1,21 @@
+# SR=ceil code at 074c72db4-era; stage-2 override pipe2=hybrid2 BM2=128 NW2=4 D2=4 diag2=nos2w+wpe3 vs the v4 table (v4pre). Killed during I=1536.
+I=  384 T=    64 | v4pre     98.5 null     97.9 cand    114.6us | pro   18.9->  22.6 s1    46.8->   46.9 s2    26.1->   38.5 cb    6.7->   6.7 | gain -16.4% noise  0.6% LOSS | diff 0.0e+00
+I=  384 T=   256 | v4pre    116.1 null    115.7 cand    135.2us | pro   18.5->  23.8 s1    59.2->   59.3 s2    31.4->   45.0 cb    6.9->   7.1 | gain -16.5% noise  0.3% LOSS | diff 0.0e+00
+I=  384 T=   512 | v4pre    131.8 null    131.7 cand    144.4us | pro   26.8->  26.3 s1    64.2->   64.6 s2    33.7->   46.4 cb    7.1->   7.0 | gain  -9.5% noise  0.1% LOSS | diff 0.0e+00
+I=  384 T=  1024 | v4pre    144.0 null    144.4 cand    162.9us | pro   21.0->  29.9 s1    68.7->   69.3 s2    41.3->   50.6 cb   13.1->  13.0 | gain -13.1% noise  0.2% LOSS | diff 0.0e+00
+I=  384 T=  2048 | v4pre    201.4 null    198.5 cand    197.5us | pro   38.3->  28.3 s1    77.9->   78.0 s2    61.0->   67.1 cb   24.3->  24.0 | gain  +2.0% noise  1.5% noise | diff 0.0e+00
+I=  384 T=  4096 | v4pre    297.3 null    297.2 cand    300.6us | pro   49.6->  49.8 s1    97.8->   96.8 s2   102.0->  106.3 cb   47.9->  47.6 | gain  -1.1% noise  0.0% noise | diff 0.0e+00
+I=  384 T=  8192 | v4pre    519.0 null    518.7 cand    501.5us | pro   61.6->  61.8 s1   145.2->  145.6 s2   191.4->  171.2 cb  120.8-> 123.0 | gain  +3.4% noise  0.1% WIN | diff 0.0e+00
+I=  384 T= 16384 | v4pre    910.2 null    915.5 cand    902.1us | pro   94.9->  95.0 s1   242.0->  242.4 s2   333.9->  321.1 cb  239.4-> 243.6 | gain  +0.9% noise  0.6% noise | diff 0.0e+00
+I=  384 T= 32768 | v4pre   1722.0 null   1720.7 cand   1720.9us | pro  170.6-> 170.5 s1   454.7->  449.0 s2   617.5->  618.5 cb  479.2-> 483.0 | gain  +0.1% noise  0.1% noise | diff 0.0e+00
+I=  768 T=    64 | v4pre    172.7 null    171.6 cand    522.2us | pro   18.8->  22.7 s1    99.8->   97.1 s2    47.2->  395.5 cb    6.8->   6.8 | gain -202.4% noise  0.6% LOSS | diff 0.0e+00
+I=  768 T=   256 | v4pre    213.8 null    212.4 cand    599.7us | pro   19.1->  23.9 s1   118.0->  116.3 s2    69.6->  452.2 cb    7.2->   7.2 | gain -180.5% noise  0.6% LOSS | diff 0.0e+00
+I=  768 T=   512 | v4pre    221.5 null    222.1 cand    617.7us | pro   19.2->  27.0 s1   121.2->  120.7 s2    74.2->  463.1 cb    6.9->   7.0 | gain -178.8% noise  0.3% LOSS | diff 0.0e+00
+I=  768 T=  1024 | v4pre    247.6 null    245.5 cand    663.6us | pro   20.4->  29.9 s1   131.0->  129.1 s2    83.0->  491.7 cb   13.2->  13.0 | gain -168.0% noise  0.9% LOSS | diff 0.0e+00
+I=  768 T=  2048 | v4pre    310.7 null    311.7 cand    732.7us | pro   37.8->  29.5 s1   148.3->  148.6 s2   123.6->  553.5 cb    1.1->   1.1 | gain -135.8% noise  0.3% LOSS | diff 0.0e+00
+I=  768 T=  4096 | v4pre    437.4 null    437.4 cand   1127.1us | pro   47.8->  50.9 s1   189.0->  189.5 s2   152.8->  834.9 cb   47.8->  51.7 | gain -157.7% noise  0.0% LOSS | diff 0.0e+00
+I=  768 T=  8192 | v4pre    734.7 null    724.6 cand   1660.7us | pro   60.4->  61.4 s1   295.2->  290.0 s2   377.9-> 1308.1 cb    1.2->   1.1 | gain -126.0% noise  1.4% LOSS | diff 0.0e+00
+I=  768 T= 16384 | v4pre   1230.6 null   1220.4 cand   2788.5us | pro   92.4->  90.8 s1   463.4->  453.8 s2   673.8-> 2243.0 cb    1.1->   1.0 | gain -126.6% noise  0.8% LOSS | diff 0.0e+00
+I=  768 T= 32768 | v4pre   2315.2 null   2297.4 cand   5052.9us | pro  168.9-> 169.1 s1   870.8->  847.0 s2  1274.4-> 4035.8 cb    1.1->   1.1 | gain -118.2% noise  0.8% LOSS | diff 0.0e+00
+I= 1536 T=    64 | v4pre    331.2 null    329.1 cand   1177.6us | pro   18.9->  22.9 s1   197.5->  196.8 s2   107.8->  951.1 cb    6.9->   6.9 | gain -255.6% noise  0.6% LOSS | diff 0.0e+00
+I= 1536 T=   256 | v4pre    376.7 null    375.7 cand   1318.1us | pro   19.5->  25.1 s1   221.8->  219.7 s2   128.6-> 1066.3 cb    6.9->   7.0 | gain -249.9% noise  0.3% LOSS | diff 0.0e+00

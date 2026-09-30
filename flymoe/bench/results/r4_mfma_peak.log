@@ -1,0 +1,8 @@
+atom 16 chains  8 vary_scale 0 ctas/CU-wave 2: 7.43 PFLOPS
+atom 16 chains 32 vary_scale 0 ctas/CU-wave 1: 7.23 PFLOPS
+atom 16 chains 32 vary_scale 1 ctas/CU-wave 1: 7.01 PFLOPS
+atom 16 chains 32 vary_scale 1 ctas/CU-wave 2: 7.20 PFLOPS
+atom 16 chains  8 vary_scale 1 ctas/CU-wave 1: 6.80 PFLOPS
+atom 32 chains  8 vary_scale 0 ctas/CU-wave 1: 6.54 PFLOPS
+atom 32 chains  8 vary_scale 1 ctas/CU-wave 1: 6.15 PFLOPS
+atom 32 chains 16 vary_scale 1 ctas/CU-wave 1: 6.18 PFLOPS

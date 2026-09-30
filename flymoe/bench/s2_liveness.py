@@ -106,7 +106,7 @@ def main():
             p = profile(isa[0])
             b = p["cls"].get("global B/scale load", 0)
             print(f"I={I:5d} {os.path.basename(d)[:64]:64s} vgpr={info['vgpr']:3d} agpr={info['agpr']:3d} "
-                  f"spill={info['spill']} | ISA peak live={p['peak']} at #{p['at']}/{p['n']} ({p['op']}) "
+                  f"spill v{info['vspill']}/s{info['sspill']} scratch={info['scratch']} | ISA peak live={p['peak']} at #{p['at']}/{p['n']} ({p['op']}) "
                   f"| global-load regs live={b} (~{b / 16:.1f} B steps) | {dict(p['cls'])} "
                   f"| dwordx4 VGPR loads={p['b_x4_loads']}", flush=True)
 

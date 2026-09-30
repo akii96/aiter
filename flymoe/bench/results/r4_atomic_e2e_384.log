@@ -1,0 +1,4 @@
+I=  384 T= 32768 table                                                                  s1   477.7 s2   635.6 cb  479.7 total  1764.1 | s2+cb  +0.0% vs table
+I=  384 T= 32768 BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt                             s1   459.4 s2   484.7 cb  479.7 total  1600.1 | s2+cb +13.5% vs table
+I=  384 T= 32768 BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt,epi=bf16atomic              s1   454.2 s2  1663.1 cb    1.2 total  2294.2 | s2+cb -49.2% vs table
+I=  384 T= 32768 BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt,epi=f32atomic               s1   466.0 s2  6198.1 cb    1.1 total  6840.9 | s2+cb -455.8% vs table

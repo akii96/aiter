@@ -122,7 +122,7 @@ def compare(ref, ref_moe, ref_path, I, T, cand_cfg, reps=5, inner=10, do_flush=F
               f"s2 {m['ref']['stage2']:7.1f}->{m['cand']['stage2']:7.1f} "
               f"cb {m['ref']['combine']:6.1f}->{m['cand']['combine']:6.1f} | "
               f"gain {gain * 100:+5.1f}% noise {noise * 100:4.1f}% {flag} | diff {diff:.1e}", flush=True)
-    return {"I": I, "T": T, "ref": ref, "cand_cfg": cand_cfg, "rel_diff_vs_ref": diff, "median_us": med,
+    return {"I": I, "T": T, "ref": ref, "cand_cfg": cand_cfg, "ref_cfg": ref_cfg, "rel_diff_vs_ref": diff, "median_us": med,
             "gain": gain, "noise": noise, "flag": flag}
 
 

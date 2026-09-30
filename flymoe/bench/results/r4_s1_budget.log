@@ -1,0 +1,1 @@
+flymoe_s1_k6144_n3072_bm256_w8x2_pingpong4_xcd_ef_mv1_ast_diagse_1ae4a468 vgpr=236 agpr=  0 lds=139264 spill=0 | waves/SIMD=2 CTAs/CU=1 (regs) | mfma=1536 barrier=99 waitcnt=56

@@ -1,0 +1,19 @@
+stream read :   5.87 TB/s (   366.0 us for 2.15 GB)
+stream write:   5.14 TB/s (   417.8 us for 2.15 GB)
+stream copy :   5.12 TB/s (   838.9 us for 4.29 GB)
+epi T=  4096 expert rows:     45.8 us   5.50 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 expert f32 :    785.8 us   0.32 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 expert bf16:    201.4 us   1.25 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 expert bf16xl:    209.4 us   1.20 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 win4   f32 :    785.1 us   0.32 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 win4   bf16:    200.8 us   1.25 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 win16  f32 :    785.4 us   0.32 TB/s(bf16-row equiv)  sum_ok=True
+epi T=  4096 win16  bf16:    199.8 us   1.26 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 expert rows:    384.7 us   5.23 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 expert f32 :   6209.6 us   0.32 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 expert bf16:   1562.2 us   1.29 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 expert bf16xl:   1542.3 us   1.31 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 win4   f32 :   6194.6 us   0.33 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 win4   bf16:   1543.5 us   1.30 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 win16  f32 :   6195.1 us   0.32 TB/s(bf16-row equiv)  sum_ok=True
+epi T= 32768 win16  bf16:   1525.7 us   1.32 TB/s(bf16-row equiv)  sum_ok=True

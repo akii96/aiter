@@ -1,0 +1,218 @@
+[
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid",
+   "D2": 3,
+   "HT": 1,
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 31.264200806617737,
+   "stage1": 351.35440826416016,
+   "stage2": 285.973596572876,
+   "combine": 1.1680000461637974
+  },
+  "total": 669.7602056898177,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt"
+  },
+  "median_us": {
+   "prologue": 30.99609911441803,
+   "stage1": 351.9623041152954,
+   "stage2": 221.4452028274536,
+   "combine": 51.23239755630493
+  },
+  "total": 655.636003613472,
+  "rel_diff": 3.643047669088517e-12,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 31.70819878578186,
+   "stage1": 353.5979986190796,
+   "stage2": 303.0018091201782,
+   "combine": 1.2079999782145023
+  },
+  "total": 689.5160065032542,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 30.72820007801056,
+   "stage1": 350.8780002593994,
+   "stage2": 544.359016418457,
+   "combine": 51.74030065536499
+  },
+  "total": 977.705517411232,
+  "rel_diff": 3.643047669088517e-12,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1,
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 31.088200211524963,
+   "stage1": 352.5343894958496,
+   "stage2": 614.6280765533447,
+   "combine": 1.3441000133752823
+  },
+  "total": 999.5947662740946,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe3+s2nt"
+  },
+  "median_us": {
+   "prologue": 30.88819980621338,
+   "stage1": 366.5024995803833,
+   "stage2": 253.69770526885986,
+   "combine": 52.69629955291748
+  },
+  "total": 703.784704208374,
+  "rel_diff": 3.643047669088517e-12,
+  "gated": true,
+  "src_hash": "0785ea12"
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2",
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 33.04019868373871,
+   "stage1": 359.7820043563843,
+   "stage2": 307.82999992370605,
+   "combine": 1.1680000461637974
+  },
+  "total": 701.8202030099928,
+  "rel_diff": 0.0,
+  "gated": true,
+  "src_hash": "0785ea12"
+ }
+]

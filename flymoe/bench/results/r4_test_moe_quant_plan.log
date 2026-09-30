@@ -1,0 +1,57 @@
+quant even=False: scales_equal=True code_byte_mismatch=0.00e+00
+quant even=True: scales_equal=True code_byte_mismatch=0.00e+00
+T=     1 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.377e-03 OK
+T=     1 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=5.745e-08 OK
+T=     1 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.503e-03 OK
+T=     7 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.356e-03 OK
+T=     7 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.811e-08 OK
+T=     7 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.288e-03 OK
+T=   256 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.354e-03 OK
+T=   256 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.099e-08 OK
+T=   256 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.173e-03 OK
+T=  1000 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.351e-03 OK
+T=  1000 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.332e-08 OK
+T=  1000 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.220e-03 OK
+T=    64 I=  384 BM=128 skew=one_expert epi=rows      : rel_l2=2.352e-03 OK
+T=    64 I=  384 BM=128 skew=one_expert epi=f32atomic : rel_l2=5.421e-08 OK
+T=    64 I=  384 BM=128 skew=one_expert epi=bf16atomic: rel_l2=3.394e-03 OK
+T=     1 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.323e-03 OK
+T=     1 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=5.189e-08 OK
+T=     1 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.478e-03 OK
+T=     7 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.344e-03 OK
+T=     7 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=4.547e-08 OK
+T=     7 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.189e-03 OK
+T=   256 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.352e-03 OK
+T=   256 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=4.227e-08 OK
+T=   256 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.164e-03 OK
+T=  1000 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.352e-03 OK
+T=  1000 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=4.458e-08 OK
+T=  1000 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.225e-03 OK
+T=    64 I=  768 BM=128 skew=one_expert epi=rows      : rel_l2=2.350e-03 OK
+T=    64 I=  768 BM=128 skew=one_expert epi=f32atomic : rel_l2=5.249e-08 OK
+T=    64 I=  768 BM=128 skew=one_expert epi=bf16atomic: rel_l2=3.419e-03 OK
+T=     1 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.374e-03 OK
+T=     1 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.654e-08 OK
+T=     1 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.369e-03 OK
+T=     7 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.352e-03 OK
+T=     7 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.531e-08 OK
+T=     7 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.197e-03 OK
+T=   256 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.354e-03 OK
+T=   256 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.100e-08 OK
+T=   256 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.169e-03 OK
+T=  1000 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.351e-03 OK
+T=  1000 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.501e-08 OK
+T=  1000 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.218e-03 OK
+T=    64 I= 1536 BM=128 skew=one_expert epi=rows      : rel_l2=2.355e-03 OK
+T=    64 I= 1536 BM=128 skew=one_expert epi=f32atomic : rel_l2=5.650e-08 OK
+T=    64 I= 1536 BM=128 skew=one_expert epi=bf16atomic: rel_l2=3.277e-03 OK
+ALL OK
+[aiter] WARNING: NUMA balancing is enabled, which may cause errors. It is recommended to disable NUMA balancing by running "sudo sh -c 'echo 0 > /proc/sys/kernel/numa_balancing'" for more details: https://rocm.docs.amd.com/en/latest/how-to/system-optimization/mi300x.html#disable-numa-auto-balancing
+[aiter] import [module_aiter_core] under /workspace/aiter_main/aiter/jit/module_aiter_core.so
+x*3: scales==aiter True scales==mx True | groups compared 196606, code mismatches 0 | e8m0-254 groups (not compared) 2 OK
+x*0.02: scales==aiter True scales==mx True | groups compared 196606, code mismatches 0 | e8m0-254 groups (not compared) 2 OK
+x*1e-38: scales==aiter True scales==mx True | groups compared 196606, code mismatches 0 | e8m0-254 groups (not compared) 2 OK
+x*3e+38: scales==aiter True scales==mx True | groups compared 194, code mismatches 0 | e8m0-254 groups (not compared) 196414 OK
+ALL OK
+scale_t: OK
+48 plan cases: OK

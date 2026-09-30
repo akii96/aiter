@@ -1,0 +1,14 @@
+SRC_HASH 0785ea12
+f3ef9719eb55adae0f0747e3b7d777c8144e03a5  configs/tiles_v5_I1536.json
+d01af7dd0107b43e044847728351d70133b15517  configs/tiles_v5_I384.json
+8b27a5cb6b470666c1c59c0bc16acb150ffbb046  configs/tiles_v5_I768.json
+552d3e0d079580249758e5103bb32c03a1c2d5d5  flymoe/__init__.py
+3838e6e71967c518e5ad314f2e81498a0ea65810  flymoe/combine.py
+8f51e848753bfc6eff78879dbfbcf70c3809d77e  flymoe/configs.py
+7344c858ae430964ca931cedefff7b84c5b793d8  flymoe/gemm.py
+a328b6a0b68c585c331ca9fdf00dcfe6fd403747  flymoe/hw.py
+dc5d0b46c99797622c7d93a1a20646802165e8e8  flymoe/layout.py
+6cb689cc297fbd821093cbc3f26d324913c1b960  flymoe/moe.py
+4ebc65d37067fd84184d8fe35c0e74749d525438  flymoe/mx.py
+4a66e2623fe44e2e693f5d452bdcdc16b5eae5f2  flymoe/prologue.py
+b9d6b8785b8cd66e565e3ac477b8162d7bb026e1  flymoe/ref.py

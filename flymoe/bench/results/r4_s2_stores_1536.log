@@ -1,0 +1,6 @@
+SKIP BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2,PERS2=2: TypeError: MoERun.__init__() got an unexpected keyword argument 'PERS22'
+I= 1536 T= 32768 table                                                                  s1  1701.7 s2  1413.7 cb  480.9 total  3767.0 | s2+cb  +0.0% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2                           s1  1702.1 s2  1384.7 cb  480.1 total  3737.7 | s2+cb  +1.6% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2                                 s1  1712.1 s2  1265.2 cb  480.0 total  3627.5 | s2+cb  +7.9% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt                            s1  1709.3 s2  1215.7 cb  478.3 total  3574.1 | s2+cb +10.6% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2+s2nt                      s1  1708.5 s2  1382.6 cb  481.6 total  3743.8 | s2+cb  +1.6% vs table

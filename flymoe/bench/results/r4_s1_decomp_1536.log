@@ -1,0 +1,6 @@
+I= 1536 T= 32768 table                                                                  s1  1697.3 s2  1418.3 cb  480.6 total  3766.7 | s2+cb  +0.0% vs table
+I= 1536 T= 32768 diag1=nodmaA                                                           s1  1549.5 s2  1418.7 cb  481.3 total  3619.5 | s2+cb  -0.1% vs table
+I= 1536 T= 32768 diag1=nodmaB                                                           s1  1457.4 s2  1405.4 cb  482.1 total  3514.4 | s2+cb  +0.6% vs table
+I= 1536 T= 32768 diag1=nodma                                                            s1  1318.3 s2  1407.4 cb  481.8 total  3377.7 | s2+cb  +0.5% vs table
+I= 1536 T= 32768 diag1=nolds                                                            s1  1704.0 s2  1418.2 cb  481.2 total  3773.7 | s2+cb  -0.0% vs table
+I= 1536 T= 32768 diag1=noepi                                                            s1  1526.2 s2  1413.2 cb  480.0 total  3589.7 | s2+cb  +0.3% vs table

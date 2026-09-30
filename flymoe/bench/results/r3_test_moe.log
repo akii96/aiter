@@ -1,0 +1,48 @@
+quant even=False: scales_equal=True code_byte_mismatch=0.00e+00
+quant even=True: scales_equal=True code_byte_mismatch=0.00e+00
+T=     1 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.377e-03 OK
+T=     1 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.612e-08 OK
+T=     1 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.452e-03 OK
+T=     7 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.356e-03 OK
+T=     7 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.126e-08 OK
+T=     7 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.233e-03 OK
+T=   256 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.354e-03 OK
+T=   256 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.128e-08 OK
+T=   256 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.177e-03 OK
+T=  1000 I=  384 BM=128 skew=None epi=rows      : rel_l2=2.351e-03 OK
+T=  1000 I=  384 BM=128 skew=None epi=f32atomic : rel_l2=4.436e-08 OK
+T=  1000 I=  384 BM=128 skew=None epi=bf16atomic: rel_l2=3.218e-03 OK
+T=    64 I=  384 BM=128 skew=one_expert epi=rows      : rel_l2=2.352e-03 OK
+T=    64 I=  384 BM=128 skew=one_expert epi=f32atomic : rel_l2=4.907e-08 OK
+T=    64 I=  384 BM=128 skew=one_expert epi=bf16atomic: rel_l2=3.354e-03 OK
+T=     1 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.323e-03 OK
+T=     1 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=3.965e-08 OK
+T=     1 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.502e-03 OK
+T=     7 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.344e-03 OK
+T=     7 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=4.359e-08 OK
+T=     7 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.157e-03 OK
+T=   256 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.352e-03 OK
+T=   256 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=4.189e-08 OK
+T=   256 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.166e-03 OK
+T=  1000 I=  768 BM=128 skew=None epi=rows      : rel_l2=2.352e-03 OK
+T=  1000 I=  768 BM=128 skew=None epi=f32atomic : rel_l2=4.487e-08 OK
+T=  1000 I=  768 BM=128 skew=None epi=bf16atomic: rel_l2=3.225e-03 OK
+T=    64 I=  768 BM=128 skew=one_expert epi=rows      : rel_l2=2.350e-03 OK
+T=    64 I=  768 BM=128 skew=one_expert epi=f32atomic : rel_l2=4.719e-08 OK
+T=    64 I=  768 BM=128 skew=one_expert epi=bf16atomic: rel_l2=3.282e-03 OK
+T=     1 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.374e-03 OK
+T=     1 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.489e-08 OK
+T=     1 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.333e-03 OK
+T=     7 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.352e-03 OK
+T=     7 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.566e-08 OK
+T=     7 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.224e-03 OK
+T=   256 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.354e-03 OK
+T=   256 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.110e-08 OK
+T=   256 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.167e-03 OK
+T=  1000 I= 1536 BM=128 skew=None epi=rows      : rel_l2=2.351e-03 OK
+T=  1000 I= 1536 BM=128 skew=None epi=f32atomic : rel_l2=4.519e-08 OK
+T=  1000 I= 1536 BM=128 skew=None epi=bf16atomic: rel_l2=3.219e-03 OK
+T=    64 I= 1536 BM=128 skew=one_expert epi=rows      : rel_l2=2.355e-03 OK
+T=    64 I= 1536 BM=128 skew=one_expert epi=f32atomic : rel_l2=4.935e-08 OK
+T=    64 I= 1536 BM=128 skew=one_expert epi=bf16atomic: rel_l2=3.268e-03 OK
+ALL OK

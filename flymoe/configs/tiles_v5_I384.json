@@ -165,20 +165,20 @@
    "MV": 1
   },
   "s2": {
-   "BM": 128,
+   "BM": 64,
    "NW": 4,
    "pipe": "hybrid2",
-   "D": 2,
-   "diag": "wpe2+s2nt"
+   "D": 3,
+   "diag": "wpe3+s2nt"
   },
   "global": {},
   "us": {
-   "prologue": 28.616198897361755,
-   "stage1": 77.43250131607056,
-   "stage2": 60.29239892959595,
-   "combine": 24.528099596500397
+   "prologue": 24.99620020389557,
+   "stage1": 78.01240086555481,
+   "stage2": 51.908302307128906,
+   "combine": 24.67609941959381
   },
-  "note": "r4: stage-2 arm 'BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt' from r4_s2_sweep_I384_T2048.json, +4.8% vs the v4 cell in-run"
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt' from r4_s2d_I384_T2048.json, +4.1% vs the v4 cell in-run"
  },
  "4096": {
   "s1": {
@@ -194,17 +194,17 @@
    "BM": 64,
    "NW": 4,
    "pipe": "hybrid2",
-   "D": 3,
+   "D": 2,
    "diag": "wpe3+s2nt"
   },
   "global": {},
   "us": {
-   "prologue": 30.30419945716858,
-   "stage1": 94.53669786453247,
-   "stage2": 76.22050046920776,
-   "combine": 51.116400957107544
+   "prologue": 30.452099442481995,
+   "stage1": 95.1324999332428,
+   "stage2": 79.43649888038635,
+   "combine": 52.552300691604614
   },
-  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt' from r4_s2b_I384_T4096.json, +9.7% vs the v4 cell in-run"
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2d_I384_T4096.json, +6.3% vs the v4 cell in-run"
  },
  "8192": {
   "s1": {
@@ -225,12 +225,12 @@
   },
   "global": {},
   "us": {
-   "prologue": 63.24840188026428,
-   "stage1": 145.20100355148315,
-   "stage2": 130.79290390014648,
-   "combine": 120.46079635620117
+   "prologue": 40.22020101547241,
+   "stage1": 142.91280508041382,
+   "stage2": 131.72869682312012,
+   "combine": 120.7245945930481
   },
-  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2_sweep_I384_T8192.json, +9.7% vs the v4 cell in-run"
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2d_I384_T8192.json, +9.0% vs the v4 cell in-run"
  },
  "16384": {
   "s1": {
@@ -246,17 +246,17 @@
    "BM": 64,
    "NW": 4,
    "pipe": "hybrid2",
-   "D": 2,
+   "D": 3,
    "diag": "wpe3+s2nt"
   },
   "global": {},
   "us": {
-   "prologue": 97.22869992256165,
-   "stage1": 245.46570777893066,
-   "stage2": 246.99769020080566,
-   "combine": 240.70560932159424
+   "prologue": 66.35640263557434,
+   "stage1": 248.36549758911133,
+   "stage2": 238.7334108352661,
+   "combine": 239.60940837860107
   },
-  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2_sweep_I384_T16384.json, +10.2% vs the v4 cell in-run"
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt' from r4_s2d_I384_T16384.json, +10.2% vs the v4 cell in-run"
  },
  "32768": {
   "s1": {
@@ -277,11 +277,11 @@
   },
   "global": {},
   "us": {
-   "prologue": 177.54919528961182,
-   "stage1": 455.0631046295166,
-   "stage2": 481.0671806335449,
-   "combine": 478.23920249938965
+   "prologue": 129.60870265960693,
+   "stage1": 449.7224807739258,
+   "stage2": 480.58271408081055,
+   "combine": 479.04272079467773
   },
-  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2_sweep_I384_T32768.json, +7.8% vs the v4 cell in-run"
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2d_I384_T32768.json, +8.7% vs the v4 cell in-run"
  }
 }

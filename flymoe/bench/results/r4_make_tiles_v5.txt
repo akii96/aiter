@@ -1,0 +1,33 @@
+I=  384 T=    32 keep v4
+I=  384 T=    64 keep v4
+I=  384 T=   128 keep v4
+I=  384 T=   256 keep v4
+I=  384 T=   512 keep v4 (best -0.2% BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt)
+I=  384 T=  1024 keep v4 (best +0.5% BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt)
+I=  384 T=  2048  +4.1%  BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt
+I=  384 T=  4096  +6.3%  BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt
+I=  384 T=  8192  +9.0%  BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt
+I=  384 T= 16384 +10.2%  BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt
+I=  384 T= 32768  +8.7%  BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt
+I=  768 T=    32 keep v4
+I=  768 T=    64 keep v4
+I=  768 T=   128 keep v4
+I=  768 T=   256 keep v4
+I=  768 T=   512 keep v4 (best -1.1% BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt)
+I=  768 T=  1024 keep v4 (best -0.2% BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt)
+I=  768 T=  2048 keep v4 (best -0.7% BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt)
+I=  768 T=  4096 keep v4 (best +0.5% BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1)
+I=  768 T=  8192  +1.5%  BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt
+I=  768 T= 16384 keep v4 (best +1.5% BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1)
+I=  768 T= 32768 keep v4 (best +0.1% BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1)
+I= 1536 T=    32 keep v4
+I= 1536 T=    64 keep v4
+I= 1536 T=   128 keep v4
+I= 1536 T=   256 keep v4
+I= 1536 T=   512 keep v4 (best -1.7% BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt)
+I= 1536 T=  1024 keep v4 (best +0.9% BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt)
+I= 1536 T=  2048  +3.7%  BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt
+I= 1536 T=  4096  +2.1%  BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt
+I= 1536 T=  8192  +3.5%  BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1
+I= 1536 T= 16384  +5.1%  BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1
+I= 1536 T= 32768  +6.1%  BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1

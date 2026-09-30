@@ -1,0 +1,5 @@
+I=384 T=8192 v3           stage2    166.5us (min   165.4) diff_vs_v3 0.0e+00
+I=384 T=8192 c7f24        stage2    165.2us (min   164.5) diff_vs_v3 0.0e+00
+I=384 T=8192 c5db0        stage2    185.7us (min   184.6) diff_vs_v3 0.0e+00
+I=384 T=8192 head_nos2w   stage2    187.6us (min   186.7) diff_vs_v3 1.2e-01
+I=384 T=8192 head_nos2w_wpe3 stage2    166.7us (min   165.7) diff_vs_v3 1.2e-01
