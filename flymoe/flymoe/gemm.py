@@ -643,8 +643,6 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 elif const_expr(epi == "bf16atomic"):
                     r_o = hw.rsrc(o_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
                 else:
-                    # Per-tile 64-bit base: offsets stay < BM*N*2 and rows past nrows fall
-                    # outside the descriptor (dropped), for any number of rows.
                     # 64-bit per-tile base (no 32-bit offset overflow for any R). The record
                     # count spans all remaining rows: a tile-sized count measured ~30% slower.
                     r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),

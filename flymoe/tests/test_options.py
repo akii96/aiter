@@ -57,7 +57,28 @@ def main():
                 ok &= good
                 print(f"I={I} T={T} {cfg}: rel_l2={e:.2e} worst_row={wr:.2e} {'OK' if good else 'FAIL'}",
                       flush=True)
+    ok &= check_rebind()
     print("ALL OK" if ok else "SOME FAILED")
+
+
+def check_rebind(I=384, T=300):
+    """forward(x, topk_ids, topk_w) with new inputs; the caller's tensors stay untouched."""
+    x, ids, w, wts = make_problem(T, I, seed=0)
+    x2, ids2, w2, _ = make_problem(T, I, seed=1)
+    ids2 = ids2.to(torch.int32)
+    ids_c, w_c = ids.clone(), w.clone()
+    W = moe.MoEWeights(*wts)
+    run = moe.MoERun(x, ids.to(torch.int32), w, W, **dict(PP, **H2))
+    run.forward()
+    y = run.forward(x2, ids2, w2).clone()
+    torch.cuda.synchronize()
+    y_ref, _, _ = ref.moe_ref(x2, ids2, w2, *wts)
+    e, wr = ref.rel_l2(y, y_ref), worst_row(y, y_ref)
+    untouched = torch.equal(ids, ids_c) and torch.equal(w, w_c)
+    good = e < 1e-2 and wr < 3e-2 and untouched
+    print(f"rebind I={I} T={T}: rel_l2={e:.2e} worst_row={wr:.2e} caller_untouched={untouched} "
+          f"{'OK' if good else 'FAIL'}", flush=True)
+    return good
 
 
 if __name__ == "__main__":

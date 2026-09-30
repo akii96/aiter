@@ -32,7 +32,7 @@ Target shape (MiniMax-M3-MXFP4, with the shared expert fused):
 
 | Kernel | File | What it does |
 |---|---|---|
-| K0 quant | `prologue.py` | bf16 to MX fp4. Bit-exact with `mx.quant`. With the default `SR="even"` it is also byte-identical to AITER's runtime `dynamic_mxfp4_quant`. |
+| K0 quant | `prologue.py` | bf16 to MX fp4. Bit-exact with `mx.quant`. With the default `SR="even"` it matches AITER's runtime `dynamic_mxfp4_quant` (see "Scale rule"). |
 | K0 plan | `prologue.py` | Parallel counting sort in 3 launches (histogram with atomic CTA bases, prefix plus tile lists, scatter). Produces compact rows, per-BM tile lists and the inverse map. |
 | K1 | `gemm.py` stage 1 | Gathered-A gate/up GEMM. SwiGLU and fp4 requantization of h happen in registers; the W13 column interleave puts gate and up for two adjacent columns in each lane. |
 | K2 | `gemm.py` stage 2 | Down GEMM. The topk weight is applied in the epilogue, and output is bf16 per compact row. |
@@ -167,48 +167,54 @@ Measured with `bench/compare.py`: serial on GPU 0, round-robin arms, a null arm,
 
   The tuner works from warm timings on uniform routing, which is not enough on its own.
 
-Final table: fixed code, one process on GPU 0, node otherwise idle. A cell counts as a win or loss when the change exceeds max(2×|ref − ref_null|, 2%).
+Final table: final code with the shipped default (`SR="even"`), one process on GPU 0, node otherwise idle. The script is `bench/results/run_r3_timing.sh`; the commit is in `r3_timing_commit.txt`; raw output is `r3_final_vs_v3.log` plus per-width JSON. A cell counts as a win or loss when the change exceeds max(2×|ref − ref_null|, 2%).
 
 | T | I=384 vs v3 | I=768 vs v3 | I=1536 vs v3 |
 |---:|---:|---:|---:|
-| 32–256 | noise (−1.1 to −0.5%) | noise | noise |
-| 512 | +2.3% | noise (+0.8%) | +2.4% |
-| 1024 | noise | noise (+1.7%) | noise (+1.9%) |
-| 2048 | noise (+0.7%) | +3.1% | +3.0% |
-| 4096 | noise (+0.3%) | +6.1% | +4.1% |
-| 8192 | noise (+1.2%) | +4.5% | +8.1% |
-| 16384 | +3.2% | +10.1% | +2.6% |
-| 32768 | noise (+1.0%) | +7.5% | noise (+1.2%) |
+| 32–256 | noise (−1.5 to +1.3%) | noise (−1.0 to 0%) | noise (−0.9 to −0.4%) |
+| 512 | noise (+1.5%) | noise (+0.8%) | +2.4% |
+| 1024 | noise (−0.1%) | noise (+1.6%) | noise (+2.0%) |
+| 2048 | noise (+0.9%) | +2.6% | +3.5% |
+| 4096 | noise (−0.1%) | +4.5% | +4.2% |
+| 8192 | noise (+0.8%) | +5.4% | +7.6% |
+| 16384 | noise (+1.9%) | +10.3% | +2.6% |
+| 32768 | noise (+0.6%) | +7.1% | noise (+1.0%) |
 
-**vs v1**, measured before the review fixes (which A/B'd neutral against the pre-fix code):
+No cell loses to v3.
 
-| T | I=384 | I=768 | I=1536 |
-|---:|---:|---:|---:|
-| 4096 | +5.1% | +10.0% | +12.3% |
-| 32768 | +12.8% | +15.4% | +15.1% |
+- **I=384:** v4 ties v3 everywhere. At T ≥ 16384 its faster stage 1 (288 → 247 µs and 470 → 450 µs) is mostly offset by a slower stage 2 (320 → 345 µs and 619 → 632 µs, the async + NT + HT pick against v3's `hybrid2`).
+- **Against v1** (`r3_vs_v1.log`, same run):
+
+  | T | I=384 | I=768 | I=1536 |
+  |---:|---:|---:|---:|
+  | 4096 | +8.9% | +10.2% | +13.0% |
+  | 32768 | +11.6% | +15.4% | +14.8% |
 
 ### Stage-2 occupancy cliff
 
-A regression at I=384 found and fixed: stage 2 on `hybrid2` with the old store path went from 165 µs (v3) to 187 µs at T=8192.
+A regression at I=384 found and fixed: stage 2 on `hybrid2` with the old store path went from 166.5 µs (v3) to 187.6 µs at T=8192. The per-commit bisect is in `bench/results/r3_stage2_bisect.log`: v3 166.5, `7f2480433` 165.2, `5db00ad2b` 185.7, head 187.6, head + `wpe3` 166.7 µs. Register counts are in `r3_stage2_registers.log`.
 
-- **Cause:** bisected to `5db00ad2b`. Its 64-bit per-tile descriptor math pushed the kernel from 168 to 178 VGPRs. That crosses the 170-register limit for three waves per SIMD, dropping occupancy from 3 to 2 waves.
-- **Fix:** `diag=wpe3` (`--amdgpu-waves-per-eu=3`) compiles it at 164 VGPRs + 80 AGPRs with no spills, and stage 2 returns to 166 µs. It's used for I=384 T=8192.
-- **Limit:** the same kernel's registers grow with K: 234 VGPRs at I=768 (2 waves) and 316 VGPRs + 60 AGPRs at I=1536 (1 wave). There `wpe3` spills (364 and 766 registers) and stage 2 gets 2–3× slower.
+- **Cause:** bisected to `5db00ad2b`. Its 64-bit per-tile descriptor math pushed the kernel from 168 to 178 registers. That crosses the 168-register limit for three waves per SIMD (512/3, rounded down to the 8-register granule), dropping occupancy from 3 to 2 waves.
+- **Fix:** `diag=wpe3` (`--amdgpu-waves-per-eu=3`) compiles it at 164 registers in total (84 VGPR + 80 AGPR) with no spills, restoring 3 waves. It's used for I=384 T=8192.
+- **Limit:** the same kernel's registers grow with K: 234 at I=768 (2 waves) and 316 at I=1536 (256 VGPR + 60 AGPR, 1 wave). There `wpe3` spills (364 and 766 registers) and stage 2 gets 3–9× slower (I=768: 8.4× at T=64 down to 3.2× at T=32768; I=1536: 8.3–8.8× at T = 64 and 256). Log: `bench/results/r3_wpe3_sweep.log`.
 - **Next target:** a stage-2 K loop whose live state doesn't scale with K.
 
-**Stage 1 at T=32768:**
+**Stage 1 at T=32768** (`r3_final_vs_v3.log`):
 
-| Width | Time | Rate | Share of the measured ~6.5–7.3 PF MFMA peak |
-|---|---|---|---|
-| I=384 | 450 µs | 3.4 PF | about 50% |
-| I=768 | 865 µs | 3.6 PF | about 52% |
-| I=1536 | 1682 µs | 3.7 PF | about 54% |
+| Width | Time | Rate |
+|---|---|---|
+| I=384 | 450 µs | 3.4 PF |
+| I=768 | 875 µs | 3.5 PF |
+| I=1536 | 1709 µs | 3.6 PF |
 
-For I=1536 that's down from 2462 µs in v1.
+That's roughly half of the 6.5–7.3 PF MFMA peak measured with `bench/mfma_peak.py`; that measurement isn't archived. For I=1536, v1 was 2457 µs in the same session (`r3_vs_v1.log`).
 
 ### Small T is MALL-inflated
 
-A 512 MB flush between launches (`--flush`) shows serving-like small-T times are about 2× the warm numbers: I=384 at T=32 is 85 µs warm versus 177 µs flushed. With the shipped tables, every flushed cell (T = 32–256, all widths, 12 cells) is within noise of v3 (−1.2% to +0.4%).
+A 512 MB flush between launches (`--flush`) shows serving-like small-T times are about 2× the warm numbers: I=384 at T=32 is 84 µs warm versus 179 µs flushed (`r3_final_vs_v3.log`, `r3_flush_vs_v3.log`).
+
+- **Against v3, flushed:** 11 of 12 cells are within noise. The 12th (I=384 T=256, −3.7%) didn't reproduce in four re-runs of 11 repetitions each: −0.2% to −1.2% under both rules (`r3_flush_384_256_recheck.log`).
+- **Consistent small cost:** the flushed prologue is 1.5–2.5 µs slower than v3's, which is about 1% of total at these sizes.
 
 ### What round 3 measured
 
@@ -218,7 +224,7 @@ A 512 MB flush between launches (`--flush`) shows serving-like small-T times are
 |---|---|---|
 | LDS reads interleaved with DMA issue in the ping-pong memory phase | stage 1 −2 to −7% | default |
 | Raw `v_exp_f32` in the SwiGLU epilogue | stage 1 about −2% | |
-| Row-block tail skipping (`diag=skip`) | −5 to −10% at T=4k–8k | chosen per bucket |
+| Row-block tail skipping (`diag=skip`) | stage 1 −5 to −10% at T=4k–8k (0 to +2% at 32k) | chosen per bucket |
 | K-step-major stage-1 B scales, one DMA per step | −0.5 to −1.5% | |
 | Stage-2 LDS-staged 16 B stores (+ non-temporal) | e.g. I=768 stage 2 942 -> 811 µs with `hybrid2`; I=384 615 -> 574 µs with async + NT | chosen per bucket |
 | HT layout (`h_t`) and fused combine (FC) | wins at I=768 T ≥ 8k (FC) and some I=1536/384 cells (HT) | per-bucket global switches, chosen on total time |
@@ -239,16 +245,17 @@ A 512 MB flush between launches (`--flush`) shows serving-like small-T times are
 Activations and `h` are quantized per 32-element group with an e8m0 scale. Up to round 3 the scale was `ceil_pow2(amax/6)` ("ceil").
 
 - **What changed:** the checkpoint's quantization config (`scale_calculation_mode: even`) and AITER's runtime quantizer use a different rule. It rounds amax to a power of two with the rounding threshold at mantissa 1.75, then subtracts 2 from the exponent. For about a fifth of groups it picks a scale half the size.
-- **Default:** `SR="even"` now applies that rule in the quant kernel and in the stage-1 epilogue. The quant kernel's output is byte-identical to AITER's `dynamic_mxfp4_quant` (checked at two activation scales).
-- **Accuracy:** `bench/scale_rule_accuracy.py` measures the error of the full MoE output against an unquantized-activation reference (fp32 x and h, same fp4 weights).
+- **Default:** `SR="even"` now applies that rule in the quant kernel and in the stage-1 epilogue.
+- **Match with AITER** (`tests/test_aiter_quant.py`, log `r3_test_aiter_quant.log`): scales are byte-identical to AITER's `dynamic_mxfp4_quant` everywhere, including zero, tiny, near-bf16-max and inf groups. fp4 codes are byte-identical in every finite group with scale below 2^127. At scale 2^127 (e8m0 254), AITER multiplies by the subnormal reciprocal 2^-127, which gets flushed, so its codes there are not a reference.
+- **Accuracy** (`bench/scale_rule_accuracy.py`, log `r3_scale_rule_accuracy.log`, synthetic data): the full MoE output's error against an unquantized-activation reference (fp32 x and h, same fp4 weights).
 
   | Activation scale | `even` | `ceil` |
   |---|---|---|
-  | normal | 0.217–0.218 | 0.226 |
-  | 0.05× | 0.179 | 0.190 |
+  | normal | 0.2170–0.2176 | 0.2260–0.2263 |
+  | 0.05× | 0.1791–0.1794 | 0.1902–0.1907 |
 
-  That's 4–6% less quantization error under `even`, at every width and at T = 1024 and 4096.
-- **Cost:** timing A/B against the old rule (T = 64, 4096, 32768, all widths) is within noise everywhere (−1.1% to +0.4%).
+  That's 3.8–4.0% and 5.8–6.0% less quantization error under `even`, at every width and at T = 1024 and 4096. It hasn't been checked on real checkpoint activations.
+- **Cost:** the final table above is timed with `even`.
 
 `SR="ceil"` remains available.
 
@@ -269,6 +276,6 @@ Activations and `h` are quantized per 32-element group with an e8m0 scale. Up to
 - The global `amdgpu-mfma-vgpr-form` option is dropped.
 - JIT cache keys now include each kernel's full name string. FlyDSL's disk cache ignores list- and set-typed closure values, which served stale kernels twice.
 
-**Known small cost of the bounds fixes:** in I=384's HT cells (T ≥ 16384), stage 2 is about 2% slower than before the review fixes (612 → 628 µs at T=32768), which is −0.9% of total and inside the noise threshold. The likely cause is the out-of-range-offset select on HT reads, but it isn't isolated yet.
+**Known small cost of the bounds fixes:** in I=384's HT cells (T = 512, 16384, 32768), stage 2 measured about 2% slower than the pre-fix code in an unarchived A/B, which is under 1% of total. The likely cause is the out-of-range-offset select on HT reads, but it isn't isolated yet.
 
 **A regression found and fixed:** sizing the `y_rows` store descriptor to exactly the tile's rows made stage-2 stores about 30% slower. The record count now spans the remaining rows. It was found by bisecting across the round's commits.

@@ -43,7 +43,9 @@ def e8m0_even(amax):
     """Biased e8m0 exponent under the OCP "even" rule (AITER runtime / checkpoint quant):
     floor(log2(amax rounded at mantissa 1.75)) - 2, clamped to [0, 254]."""
     bits = fx.Float32(amax).bitcast(fx.Int32)
-    e = ((bits + fx.Int32(0x200000)).shrui(fx.Int32(23)) & fx.Int32(0xFF)) - fx.Int32(2)
+    f = (bits + fx.Int32(0x200000)).shrui(fx.Int32(23)) & fx.Int32(0xFF)
+    # field 255 (inf / amax >= 1.75 * 2^127): AITER's log2 -> inf, clamped to 254
+    e = (f == fx.Int32(255)).select(fx.Int32(256), f) - fx.Int32(2)
     return fx.max(fx.min(e, fx.Int32(254)), fx.Int32(0))
 
 

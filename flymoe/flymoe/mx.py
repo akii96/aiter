@@ -73,7 +73,8 @@ def _round_to_fp4_codes(x: torch.Tensor) -> torch.Tensor:
 def _e8m0_even(amax: torch.Tensor) -> torch.Tensor:
     """Bit-exact mirror of hw.e8m0_even (AITER runtime / checkpoint "even" rule)."""
     bits = amax.float().contiguous().view(torch.int32)
-    e = (((bits + 0x200000) >> 23) & 0xFF) - 2
+    f = ((bits + 0x200000) >> 23) & 0xFF
+    e = torch.where(f == 255, torch.full_like(f, 256), f) - 2
     return torch.clamp(e, 0, 254).to(torch.uint8)
 
 

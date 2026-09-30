@@ -87,8 +87,9 @@ class MoERun:
         # stage 2's A and A-scale fetches are contiguous 1 KB DMAs.
         self.HT = bool(HT)
         self.QAST = bool(QAST)
-        self.ids = topk_ids.reshape(-1).to(torch.int32).contiguous()
-        self.w = topk_w.reshape(-1).to(torch.float32).contiguous()
+        # Private copies: the run never aliases (or later writes into) the caller's routing.
+        self.ids = torch.empty(R, dtype=torch.int32, device=dev).copy_(topk_ids.reshape(-1))
+        self.w = torch.empty(R, dtype=torch.float32, device=dev).copy_(topk_w.reshape(-1))
         self.a_q = torch.empty(T, H // 2, dtype=torch.uint8, device=dev)
         self.a_s = torch.empty(T, H // 32, dtype=torch.uint8, device=dev)
         self.row_tok = torch.empty(R, dtype=torch.int32, device=dev)
@@ -147,8 +148,8 @@ class MoERun:
         return self.tiles.data_ptr() + b * self.MAXT * 16, self.ntiles.data_ptr() + b * 4
 
     def prologue(self):
-        # Plan first (needs only the routing ids); quant then writes the step-major compact A
-        # scales for stage 1 directly (no separate scale-transpose launch).
+        # Plan first (needs only the routing ids). With QAST, quant also writes the step-major
+        # compact A scales; otherwise a separate scale_t launch does (the default, faster).
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
                           self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch,
                           shared_last=self.FC)
@@ -204,8 +205,10 @@ class MoERun:
             assert x.shape == self.x.shape and x.dtype == torch.bfloat16 and x.is_contiguous()
             self.x = x
         if topk_ids is not None:
+            assert topk_ids.shape == (self.T, self.k)
             self.ids.copy_(topk_ids.reshape(-1))
         if topk_w is not None:
+            assert topk_w.shape == (self.T, self.k)
             self.w.copy_(topk_w.reshape(-1))
         self.prologue()
         self.stage1()

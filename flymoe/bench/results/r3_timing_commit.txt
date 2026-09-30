@@ -1,0 +1,21 @@
+timing run on: df0524839d45b074097872bdcd021780eaaf647f (df0524839) + the uncommitted working-tree changes committed right after this run:
+ M flymoe/flymoe/configs.py
+ M flymoe/flymoe/gemm.py
+ M flymoe/flymoe/hw.py
+ M flymoe/flymoe/moe.py
+ M flymoe/flymoe/mx.py
+configs/tiles_v4_I*.json sha1:
+59f98cac8871ea41daf62afb8a1b3168b5c2dd8c  flymoe/configs/tiles_v4_I1536.json
+afbc4904d7d5fd85511b4e36dcb5dff45ab4f7dd  flymoe/configs/tiles_v4_I384.json
+39d463d422d5871142699e899fb6450279b67842  flymoe/configs/tiles_v4_I768.json
+flymoe/*.py sha1 (hw.SRC_HASH covers hw/gemm/prologue/combine; kernel names in the registers log end _1ae4a468):
+3838e6e71967c518e5ad314f2e81498a0ea65810  flymoe/flymoe/combine.py
+5e4056d6f912957dfc51069b7689d77a24f01aec  flymoe/flymoe/configs.py
+7344c858ae430964ca931cedefff7b84c5b793d8  flymoe/flymoe/gemm.py
+a328b6a0b68c585c331ca9fdf00dcfe6fd403747  flymoe/flymoe/hw.py
+552d3e0d079580249758e5103bb32c03a1c2d5d5  flymoe/flymoe/__init__.py
+dc5d0b46c99797622c7d93a1a20646802165e8e8  flymoe/flymoe/layout.py
+6cb689cc297fbd821093cbc3f26d324913c1b960  flymoe/flymoe/moe.py
+4ebc65d37067fd84184d8fe35c0e74749d525438  flymoe/flymoe/mx.py
+e27d89ecac6146e9cda693da552d6fc89b681d88  flymoe/flymoe/prologue.py
+b9d6b8785b8cd66e565e3ac477b8162d7bb026e1  flymoe/flymoe/ref.py

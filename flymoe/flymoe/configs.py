@@ -33,8 +33,8 @@ def cfg_kwargs(c: dict) -> dict:
 
 def select_cfg(I: int, T: int, E: int = 129, k: int = 5, table: str = TABLE) -> dict:
     """MoERun kwargs for I, T. FC (fused combine) needs the shared expert once per token
-    (E-1 in every row of topk_ids); it is dropped for other routing shapes."""
+    (E-1 in every row of topk_ids) and T*H*2 < 2^31; it is dropped otherwise."""
     kw = cfg_kwargs(load_table(I, table)[bucket(I, T, table)])
-    if (E, k) != (129, 5):
+    if (E, k) != (129, 5) or T * 6144 * 2 >= 2**31:
         kw.pop("FC", None)
     return kw
