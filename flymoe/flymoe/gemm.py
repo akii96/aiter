@@ -181,6 +181,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     # barrier): ROWS_W rows x CG*16 B of h, then ROWS_W x CG scale bytes; written back as
     # 16 B/lane h rows and CG-byte scale runs instead of one global byte store per value.
     S1S = stage == 1 and not HT and pipe == "il4" and "nos1s" not in DG
+    assert not S1S or CG == 2
     S1S_H = ROWS_W * CG * 16
     S1S_W = S1S_H + ROWS_W * CG
     S1S_BASE = lds_bytes
@@ -785,6 +786,20 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
                     return gg * sig * (uu + fx.Float32(1.0))
 
+                def swiglu2(g0, g1, u0, u1):
+                    """swiglu of an (even, odd) pair: same operations and order, the
+                    elementwise mul/add as packed v_pk_*_f32. EF only."""
+                    gg = fx.Vector.from_elements([fx.min(fx.Float32(g0), lim), fx.min(fx.Float32(g1), lim)],
+                                                 fx.Float32)
+                    uu = fx.Vector.from_elements([hw.fmed3(u0, -lim, lim), hw.fmed3(u1, -lim, lim)], fx.Float32)
+                    t = gg * fx.Vector.filled(2, NEG_ALPHA_LOG2E, fx.Float32)
+                    den = fx.Vector.from_elements([hw.exp2_raw(t[0]), hw.exp2_raw(t[1])], fx.Float32) \
+                        + fx.Vector.filled(2, 1.0, fx.Float32)
+                    sig = fx.Vector.from_elements([hw.fast_rcp(den[0]), hw.fast_rcp(den[1])], fx.Float32)
+                    h = gg * sig * (uu + fx.Vector.filled(2, 1.0, fx.Float32))
+                    return fx.Float32(h[0]), fx.Float32(h[1])
+
+                PK = EF and "nopk" not in DG
                 for rb in range_constexpr(MBW if S1S else 0):
                     # All CG*4 (group, row) chains of a row block at once: the DPP row-max
                     # levels interleave across chains instead of stalling on DPP hazards.
@@ -801,7 +816,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         vu_e = fx.Vector(acc[rb][4 * gi + 2])
                         vu_o = fx.Vector(acc[rb][4 * gi + 3])
                         for v in range_constexpr(4):
-                            ch.append((gi, v, swiglu(vg_e[v], vu_e[v]), swiglu(vg_o[v], vu_o[v])))
+                            if const_expr(PK):
+                                ch.append((gi, v) + swiglu2(vg_e[v], vg_o[v], vu_e[v], vu_o[v]))
+                            else:
+                                ch.append((gi, v, swiglu(vg_e[v], vu_e[v]), swiglu(vg_o[v], vu_o[v])))
                     ms = [fx.max(fmath.absf(h0), fmath.absf(h1)) for _, _, h0, h1 in ch]
                     if const_expr(EF):
                         ms = hw.row16_max_nonneg_f32_multi(ms)
@@ -809,10 +827,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         for k in range_constexpr(len(ms)):
                             for off in (1, 2, 4, 8):
                                 ms[k] = fx.max(ms[k], ms[k].shuffle_xor(fx.Int32(off), fx.Int32(64)))
+                    bx = {}
                     for k in range_constexpr(len(ch)):
                         gi, v, h0, h1 = ch[k]
                         if const_expr(SE):
-                            bexp = hw.e8m0_even(ms[k])
+                            # |h| <= limit * (limit + 1): the bounded form is exact
+                            bexp = hw.e8m0_even_small(ms[k])
                         else:
                             bits = (ms[k] * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
                             bexp = fx.min(((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF),
@@ -823,8 +843,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         rl = fx.Int32(rb * 16) + lg * 4 + v
                         hw.lds_store(fx.Int32(pk).to(fx.Int8), lds_base, sw + rl * (CG * 16) + (gi * 16) + l16,
                                      align=1)
-                        # the 16 lanes of a row hold the same scale: same byte, same address
-                        hw.lds_store(bexp.to(fx.Int8), lds_base, sw + S1S_H + rl * CG + gi, align=1)
+                        bx[(v, gi)] = bexp
+                    # The row block's scales for this lane's 4 rows x CG groups are 8 contiguous
+                    # bytes (row-major, CG == 2): one 8 B write. The 16 lanes of a row group
+                    # write the same bytes to the same address.
+                    sd = [bx[(2 * q, 0)] | (bx[(2 * q, 1)] << fx.Int32(8)) | (bx[(2 * q + 1, 0)] << fx.Int32(16))
+                          | (bx[(2 * q + 1, 1)] << fx.Int32(24)) for q in range_constexpr(2)]
+                    hw.lds_store(fx.Vector.from_elements(sd, fx.Int32), lds_base,
+                                 sw + S1S_H + (fx.Int32(rb * 16) + lg * 4) * CG, align=8)
                 if const_expr(not S1S):
                     for op in pro_ops:
                         op()

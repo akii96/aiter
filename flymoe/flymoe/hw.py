@@ -49,6 +49,20 @@ def e8m0_even(amax):
     return fx.max(fx.min(e, fx.Int32(254)), fx.Int32(0))
 
 
+def e8m0_even_small(amax):
+    """e8m0_even for 0 <= amax < 1.75 * 2^125 (bounded, finite: e.g. clamped SwiGLU output):
+    the field-255 case and the upper clamp cannot occur; 4 VALU ops instead of 7."""
+    bits = fx.Float32(amax).bitcast(fx.Int32)
+    return fx.max((bits + fx.Int32(0x200000)).shrui(fx.Int32(23)) - fx.Int32(2), fx.Int32(0))
+
+
+def fmed3(x, lo, hi):
+    """v_med3_f32: equals max(min(x, hi), lo) for non-NaN x when lo <= hi."""
+    return fx.Float32(llvm.call_intrinsic(T.f32, "llvm.amdgcn.fmed3.f32",
+                                          [raw(fx.Float32(x)), raw(fx.Float32(lo)), raw(fx.Float32(hi))],
+                                          [], []))
+
+
 def rsrc(addr_i64, num_bytes=None):
     """Buffer resource over a raw device address. OOB loads return 0 when num_bytes is set."""
     base = llvm.IntToPtrOp(ir.Type.parse("!llvm.ptr"), raw(fx.Int64(addr_i64))).result
