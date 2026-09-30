@@ -1,6 +1,6 @@
 """Tuned tile configs: MoERun kwargs for any (I, T).
 
-Tables (configs/tiles_v4_I{I}.json) hold one config per power-of-two T bucket, tuned
+Tables (configs/tiles_v5_I{I}.json) hold one config per power-of-two T bucket, tuned
 for MiniMax-M3 routing (E=129 incl. the shared expert, k=5). Any T uses the smallest
 bucket >= T, clamped to the table's range; every config is correct for any T.
 """
@@ -9,7 +9,7 @@ import json
 import os
 
 TABLE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "configs")
-TABLE = "tiles_v4_I{I}.json"
+TABLE = "tiles_v5_I{I}.json"
 
 
 @functools.lru_cache(maxsize=None)

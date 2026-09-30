@@ -1,0 +1,169 @@
+[
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid",
+   "D2": 3,
+   "HT": 1,
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 33.35619866847992,
+   "stage1": 350.49850940704346,
+   "stage2": 288.4460926055908,
+   "combine": 1.688000001013279
+  },
+  "total": 673.9888006821275
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt"
+  },
+  "median_us": {
+   "prologue": 32.87630081176758,
+   "stage1": 354.05850410461426,
+   "stage2": 220.72958946228027,
+   "combine": 52.152299880981445
+  },
+  "total": 659.8166942596436
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 32.38820135593414,
+   "stage1": 351.99060440063477,
+   "stage2": 302.33819484710693,
+   "combine": 1.8640000373125076
+  },
+  "total": 688.5810006409883
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 30.608201026916504,
+   "stage1": 346.74251079559326,
+   "stage2": 543.6998844146729,
+   "combine": 51.37240290641785
+  },
+  "total": 972.4229991436005
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1,
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 30.448201298713684,
+   "stage1": 355.8345079421997,
+   "stage2": 615.5084133148193,
+   "combine": 1.8239999189972878
+  },
+  "total": 1003.61512247473
+ },
+ {
+  "I": 1536,
+  "T": 4096,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe3+s2nt"
+  },
+  "median_us": {
+   "prologue": 30.54029941558838,
+   "stage1": 367.26670265197754,
+   "stage2": 254.43379878997803,
+   "combine": 52.74440050125122
+  },
+  "total": 704.9852013587952
+ }
+]

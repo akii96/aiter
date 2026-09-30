@@ -1,0 +1,221 @@
+[
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w"
+  },
+  "median_us": {
+   "prologue": 61.93240284919739,
+   "stage1": 593.8161849975586,
+   "stage2": 416.83502197265625,
+   "combine": 120.82879543304443
+  },
+  "total": 1193.4124052524567
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2"
+  },
+  "median_us": {
+   "prologue": 62.392401695251465,
+   "stage1": 579.4401168823242,
+   "stage2": 378.35869789123535,
+   "combine": 121.35289907455444
+  },
+  "total": 1141.5441155433655
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt"
+  },
+  "median_us": {
+   "prologue": 62.18839883804321,
+   "stage1": 582.9081058502197,
+   "stage2": 359.7064971923828,
+   "combine": 120.76079845428467
+  },
+  "total": 1125.5638003349304
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=3,diag=wpe2+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "wpe2+s2nt"
+  },
+  "median_us": {
+   "prologue": 62.33239769935608,
+   "stage1": 574.4760036468506,
+   "stage2": 625.7284164428711,
+   "combine": 119.98889446258545
+  },
+  "total": 1382.5257122516632
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe3+s2nt"
+  },
+  "median_us": {
+   "prologue": 63.55239748954773,
+   "stage1": 579.2521953582764,
+   "stage2": 428.41100692749023,
+   "combine": 120.73290348052979
+  },
+  "total": 1191.9485032558441
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=128,NW=4,pipe=async,D=2,diag=wpe2+s2nt,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 62.308502197265625,
+   "stage1": 579.456090927124,
+   "stage2": 433.0310821533203,
+   "combine": 120.2847957611084
+  },
+  "total": 1195.0804710388184
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2,FC=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2",
+   "FC": 1
+  },
+  "median_us": {
+   "prologue": 61.25649809837341,
+   "stage1": 573.8080024719238,
+   "stage2": 487.55149841308594,
+   "combine": 1.6200000420212746
+  },
+  "total": 1124.2359990254045
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "skip",
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe2+s2nt",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 61.964499950408936,
+   "stage1": 553.5038948059082,
+   "stage2": 719.865083694458,
+   "combine": 120.38079500198364
+  },
+  "total": 1455.7142734527588
+ }
+]

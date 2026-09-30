@@ -143,7 +143,7 @@ Stage 1 alone at T=32768 is down 20–29% (I=1536: 2448 -> 1741 µs, 3.55 PF). M
 | Ring depth 4 | -2 to -4% |
 | LDS operand reads issued before the DMA | -2 to -8% |
 
-Measured dead ends: GM rasterization, L2 touch-prefetch (hits the register cap and spills), DMA issue interleaved into the MFMA phase, deeper stage-2 rings, and stage-2 mainloop changes. Stage 2 is bound by its y-row store, at about 90% of that store's bandwidth floor.
+Measured dead ends: GM rasterization, L2 touch-prefetch (hits the register cap and spills), DMA issue interleaved into the MFMA phase, deeper stage-2 rings, and stage-2 mainloop changes. (Round 4 correction: the earlier claim that stage 2 runs at about 90% of its y-row store floor does not hold against measured bandwidth. At T=32768 it is at 67% of its current-dataflow floor at I=384 and 37% at I=1536; see `bench/results/r4_roofline_v4.log`.)
 
 **Stage-1 ceiling analysis** (thread trace, I=1536):
 - The compute phase takes 556 cycles per K step, against an ideal of 512.

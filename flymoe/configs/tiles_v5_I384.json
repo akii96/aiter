@@ -1,0 +1,287 @@
+{
+ "32": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.280100524425507,
+   "stage1": 37.716299295425415,
+   "stage2": 24.35609996318817,
+   "combine": 1.071999967098236,
+   "total": 86.42449975013733
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "64": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.90819936990738,
+   "stage1": 44.99630033969879,
+   "stage2": 29.228198528289795,
+   "combine": 1.128000020980835,
+   "total": 99.2606982588768
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "128": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.544199764728546,
+   "stage1": 53.22039723396301,
+   "stage2": 32.7241986989975,
+   "combine": 1.1119999922811985,
+   "total": 110.60079568997025
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "256": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.93209934234619,
+   "stage1": 57.480400800704956,
+   "stage2": 34.41219925880432,
+   "combine": 1.116000022739172,
+   "total": 116.94069942459464
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "512": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 2
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 26.02820098400116,
+   "stage1": 64.26849961280823,
+   "stage2": 32.74030089378357,
+   "combine": 7.3840998113155365,
+   "total": 130.4211013019085
+  }
+ },
+ "1024": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 29.812198877334595,
+   "stage1": 68.04850101470947,
+   "stage2": 39.044299721717834,
+   "combine": 12.583999335765839,
+   "total": 149.48899894952774
+  },
+  "note": "v3 config (tuner pick lost serially)"
+ },
+ "2048": {
+  "s1": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe2+s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 28.616198897361755,
+   "stage1": 77.43250131607056,
+   "stage2": 60.29239892959595,
+   "combine": 24.528099596500397
+  },
+  "note": "r4: stage-2 arm 'BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt' from r4_s2_sweep_I384_T2048.json, +4.8% vs the v4 cell in-run"
+ },
+ "4096": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 30.30419945716858,
+   "stage1": 94.53669786453247,
+   "stage2": 76.22050046920776,
+   "combine": 51.116400957107544
+  },
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt' from r4_s2b_I384_T4096.json, +9.7% vs the v4 cell in-run"
+ },
+ "8192": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 63.24840188026428,
+   "stage1": 145.20100355148315,
+   "stage2": 130.79290390014648,
+   "combine": 120.46079635620117
+  },
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2_sweep_I384_T8192.json, +9.7% vs the v4 cell in-run"
+ },
+ "16384": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 97.22869992256165,
+   "stage1": 245.46570777893066,
+   "stage2": 246.99769020080566,
+   "combine": 240.70560932159424
+  },
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2_sweep_I384_T16384.json, +10.2% vs the v4 cell in-run"
+ },
+ "32768": {
+  "s1": {
+   "BM": 256,
+   "NW": 8,
+   "WM": 2,
+   "pipe": "pingpong",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 177.54919528961182,
+   "stage1": 455.0631046295166,
+   "stage2": 481.0671806335449,
+   "combine": 478.23920249938965
+  },
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt' from r4_s2_sweep_I384_T32768.json, +7.8% vs the v4 cell in-run"
+ }
+}

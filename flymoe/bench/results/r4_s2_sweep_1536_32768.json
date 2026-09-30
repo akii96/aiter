@@ -1,0 +1,239 @@
+[
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 171.18109464645386,
+   "stage1": 1688.2471084594727,
+   "stage2": 1418.2494163513184,
+   "combine": 481.0351848602295
+  },
+  "total": 3758.7128043174744
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=4,diag=nos2w",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 4,
+   "diag2": "nos2w"
+  },
+  "median_us": {
+   "prologue": 170.46509981155396,
+   "stage1": 1704.707145690918,
+   "stage2": 1780.0439834594727,
+   "combine": 480.8631896972656
+  },
+  "total": 4136.07941865921
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe2",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w+wpe2"
+  },
+  "median_us": {
+   "prologue": 169.48920488357544,
+   "stage1": 1699.8872756958008,
+   "stage2": 1383.541202545166,
+   "combine": 480.28721809387207
+  },
+  "total": 3733.2049012184143
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=hybrid2,D=3,diag=nos2w+wpe2",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w+wpe2"
+  },
+  "median_us": {
+   "prologue": 170.19309997558594,
+   "stage1": 1707.387351989746,
+   "stage2": 2070.261573791504,
+   "combine": 480.59120178222656
+  },
+  "total": 4428.4332275390625
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=nos2w+wpe3",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w+wpe3"
+  },
+  "median_us": {
+   "prologue": 174.96119737625122,
+   "stage1": 1715.3995513916016,
+   "stage2": 1508.8540077209473,
+   "combine": 480.02309799194336
+  },
+  "total": 3879.2378544807434
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=3,diag=nos2w+wpe3",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w+wpe3"
+  },
+  "median_us": {
+   "prologue": 174.91309642791748,
+   "stage1": 1712.7153396606445,
+   "stage2": 1870.932388305664,
+   "combine": 481.4671993255615
+  },
+  "total": 4240.028023719788
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "wpe3"
+  },
+  "median_us": {
+   "prologue": 174.94510412216187,
+   "stage1": 1703.8793563842773,
+   "stage2": 1635.2588653564453,
+   "combine": 481.59918785095215
+  },
+  "total": 3995.6825137138367
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=128,NW=4,pipe=async,D=2,diag=nos2w+wpe2,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 128,
+   "NW2": 4,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w+wpe2",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 171.40120267868042,
+   "stage1": 1696.407127380371,
+   "stage2": 1474.5018005371094,
+   "combine": 482.7672004699707
+  },
+  "total": 3825.0773310661316
+ },
+ {
+  "I": 1536,
+  "T": 32768,
+  "arm": "BM=64,NW=4,pipe=async,D=2,diag=nos2w+wpe3,HT=1",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 8,
+   "WM1": 2,
+   "pipe1": "pingpong",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 64,
+   "NW2": 4,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w+wpe3",
+   "HT": 1
+  },
+  "median_us": {
+   "prologue": 175.04509687423706,
+   "stage1": 1699.7831344604492,
+   "stage2": 1700.9391784667969,
+   "combine": 480.3391933441162
+  },
+  "total": 4056.1066031455994
+ }
+]

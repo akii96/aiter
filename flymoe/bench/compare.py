@@ -31,7 +31,8 @@ from flymoe import moe  # noqa: E402
 from tests.test_moe import make_problem  # noqa: E402
 
 STAGES = ("prologue", "stage1", "stage2", "combine")
-REF_TABLES = {"v1": "tiles_I{I}.json", "v3": "tiles_v3_I{I}.json", "v4pre": "tiles_v4_I{I}.json"}
+REF_TABLES = {"v1": "tiles_I{I}.json", "v3": "tiles_v3_I{I}.json", "v4pre": "tiles_v4_I{I}.json",
+              "v4": "tiles_v4_I{I}.json"}
 _flush_buf = None
 
 

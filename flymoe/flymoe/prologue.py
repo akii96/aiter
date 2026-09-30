@@ -210,47 +210,83 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
         return (c % parent + (bm - 1)) // bm
 
     ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}_{hw.SRC_HASH}"
+    PT = 256
+    NV = NBM + 1  # scanned vectors: row counts + one tile count per spec
+    SCAN_B = NV * PT * 4  # one scan buffer; two alternate so each step needs one barrier
+    X_OFF = 2 * SCAN_B  # per spec: exclusive tile prefix per expert, total at [E]
+    C_OFF = X_OFF + NBM * (E + 1) * 4
+    O_OFF = C_OFF + E * 4
 
-    @flyc.kernel(name=ptag, known_block_size=[256, 1, 1])
+    @fx.struct
+    class PrefixStorage:
+        raw: fx.Array[fx.Uint8, ((O_OFF + E * 4 + 15) // 16) * 16, 16]
+
+    @flyc.kernel(name=ptag, known_block_size=[PT, 1, 1])
     def k_prefix(gcount_ptr: fx.Int64, offs_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64,
                  max_tiles0: fx.Int32):
         if const_expr(ptag == ""):  # tag string in the JIT cache key
             pass
         tid = fx.Int32(gpu.thread_id("x"))
+        lb = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(PrefixStorage).peek().raw.ptr))
         r_gc = hw.rsrc(gcount_ptr)
         r_offs = hw.rsrc(offs_ptr)
         r_tiles = hw.rsrc(tiles_ptr)
         r_nt = hw.rsrc(ntiles_ptr)
-        if tid < fx.Int32(E):
-            # Each thread sums the counts before it (E is small; loads hit L2).
-            cnt = fx.Int32(hw.bload(r_gc, tid * 4, T.i32))
-            off = fx.Int32(0)
-            toffs = [fx.Int32(0)] * NBM
-            for e2 in range_constexpr(E):
-                c2 = fx.Int32(hw.bload(r_gc, e2 * 4, T.i32))
-                before = fx.Int32(e2) < tid
-                off = off + before.select(c2, fx.Int32(0))
-                for b in range_constexpr(NBM):
-                    toffs[b] = toffs[b] + before.select(_nt(c2, *specs[b], e2), fx.Int32(0))
+        valid = tid < fx.Int32(E)
+        zero = fx.Int32(0)
+        cnt = valid.select(fx.Int32(hw.bload(r_gc, valid.select(tid, zero) * 4, T.i32)), zero)
+        own = [cnt] + [valid.select(_nt(cnt, *specs[b], tid), zero) for b in range_constexpr(NBM)]
+        inc = list(own)
+        # Hillis-Steele inclusive scan over the PT threads (experts >= E contribute 0).
+        for step in range_constexpr((PT - 1).bit_length()):
+            d, buf = 1 << step, step % 2
+            for i in range_constexpr(NV):
+                hw.lds_store(inc[i], lb, buf * SCAN_B + (i * PT) * 4 + tid * 4, align=4)
+            gpu.barrier()
+            src = fx.max(tid - d, zero)
+            for i in range_constexpr(NV):
+                o = fx.Int32(hw.lds_load(lb, buf * SCAN_B + (i * PT) * 4 + src * 4, T.i32, align=4))
+                inc[i] = inc[i] + (tid >= fx.Int32(d)).select(o, zero)
+        off = inc[0] - own[0]
+        if valid:
             hw.bstore(off, r_offs, tid * 4)
+            hw.lds_store(cnt, lb, C_OFF + tid * 4, align=4)
+            hw.lds_store(off, lb, O_OFF + tid * 4, align=4)
             for b in range_constexpr(NBM):
-                bm, parent = specs[b]
-                nt = _nt(cnt, bm, parent, tid)
-                tb = max_tiles0 * b  # spec b's tile list starts at b * stride
+                hw.lds_store(inc[b + 1] - own[b + 1], lb, X_OFF + (b * (E + 1)) * 4 + tid * 4, align=4)
+                if tid == fx.Int32(E - 1):
+                    hw.lds_store(inc[b + 1], lb, X_OFF + (b * (E + 1) + E) * 4, align=4)
+                    hw.bstore(inc[b + 1], r_nt, b * 4)
+        gpu.barrier()
+        # Tile entries (expert, first row, rows, 0), spread over all threads: tile j of spec b
+        # belongs to the expert e with X[e] <= j < X[e + 1] (binary search; X is monotone).
+        for b in range_constexpr(NBM):
+            bm, parent = specs[b]
+            xb = X_OFF + (b * (E + 1)) * 4
+            tb = max_tiles0 * b  # spec b's tile list starts at b * stride
+            ntot = fx.Int32(hw.lds_load(lb, xb + E * 4, T.i32, align=4))
+            for j in range(tid, ntot, PT):
+                jj = fx.Int32(j)
+                lo, hi = zero, fx.Int32(E)
+                for _ in range_constexpr(max(1, (E - 1).bit_length())):
+                    mid = (lo + hi) // 2
+                    le = fx.Int32(hw.lds_load(lb, xb + mid * 4, T.i32, align=4)) <= jj
+                    lo = le.select(mid, lo)
+                    hi = le.select(hi, mid)
+                e = lo
+                mi = jj - fx.Int32(hw.lds_load(lb, xb + e * 4, T.i32, align=4))
+                ce = fx.Int32(hw.lds_load(lb, C_OFF + e * 4, T.i32, align=4))
+                oe = fx.Int32(hw.lds_load(lb, O_OFF + e * 4, T.i32, align=4))
                 if const_expr(parent > 0):
                     # remainder rows after this expert's full parent-size tiles
-                    base = off + (cnt // parent) * parent
-                    left = cnt % parent
+                    base = oe + (ce // parent) * parent
+                    left = ce % parent
                 else:
-                    base = off
-                    left = cnt
-                for m in range(0, nt, 1):
-                    mi = fx.Int32(m)
-                    nr = fx.Int32(bm) if const_expr(parent == -1) else fx.min(left - mi * bm, fx.Int32(bm))
-                    v = fx.Vector.from_elements([tid, base + mi * bm, nr, fx.Int32(0)], fx.Int32)
-                    hw.bstore(v, r_tiles, (tb + toffs[b] + mi) * 16)
-                if tid == fx.Int32(E - 1):
-                    hw.bstore(toffs[b] + nt, r_nt, b * 4)
+                    base = oe
+                    left = ce
+                nr = fx.Int32(bm) if const_expr(parent == -1) else fx.min(left - mi * bm, fx.Int32(bm))
+                v = fx.Vector.from_elements([e, base + mi * bm, nr, zero], fx.Int32)
+                hw.bstore(v, r_tiles, (tb + jj) * 16)
         gpu.barrier()
         # Every thread has read every count above; re-zero here (single CTA, same launch
         # that consumed them) so an aborted later launch cannot leave gcount dirty.
@@ -437,7 +473,7 @@ def build_scale_t(KG: int, threads: int = 256):
     With this layout a tile's A scales for one 128-K step are BM*4 contiguous bytes,
     so the GEMM fetches them with one 16 B/lane DMA instead of a 4 B-per-row gather.
     """
-    KS = KG // 4
+    assert KG % 16 == 0, "a token's scale row is read as 16 B chunks"
 
     kname = f"flymoe_scale_t_kg{KG}_{hw.SRC_HASH}"
 
@@ -445,16 +481,18 @@ def build_scale_t(KG: int, threads: int = 256):
     def kern(as_ptr: fx.Int64, rtok_ptr: fx.Int64, ast_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32):
         if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
             pass
-        b = fx.Int32(gpu.block_id("x"))
-        row = (b % ((n_rows + threads - 1) // threads)) * threads + fx.Int32(gpu.thread_id("x"))
-        s = b // ((n_rows + threads - 1) // threads)
+        # One thread per compact row: the token's whole scale row in 16 B loads, then one
+        # 4 B store per K step (consecutive rows -> coalesced across the wave).
+        row = fx.Int32(gpu.block_id("x")) * threads + fx.Int32(gpu.thread_id("x"))
         r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
         r_as = hw.rsrc(as_ptr, fx.Int64(n_tok) * fx.Int64(KG))
         r_ast = hw.rsrc(ast_ptr, fx.Int64(n_rows) * fx.Int64(KG))
         if row < n_rows:
             t = fx.Int32(hw.bload(r_tok, row * 4, T.i32))
-            v = fx.Int32(hw.bload(r_as, t * KG + s * 4, T.i32))
-            hw.bstore(v, r_ast, (s * n_rows + row) * 4)
+            vs = [fx.Vector(hw.bload(r_as, t * KG + q * 16, T.i32x4)) for q in range_constexpr(KG // 16)]
+            for q in range_constexpr(KG // 16):
+                for j in range_constexpr(4):
+                    hw.bstore(fx.Int32(vs[q][j]), r_ast, ((q * 4 + j) * n_rows + row) * 4)
 
     @flyc.jit
     def launch(as_ptr: fx.Int64, rtok_ptr: fx.Int64, ast_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32,
@@ -470,7 +508,7 @@ def run_scale_t(a_s, row_tok, a_s_t, stream=None):
 
     n_tok, KG = a_s.shape
     R = row_tok.numel()
-    grid = ((R + 255) // 256) * (KG // 4)
+    grid = (R + 255) // 256
     stream = torch.cuda.current_stream() if stream is None else stream
     _run(("st", KG), build_scale_t(KG),
          (a_s.data_ptr(), row_tok.data_ptr(), a_s_t.data_ptr(), R, n_tok, grid, stream))

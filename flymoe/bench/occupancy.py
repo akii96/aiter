@@ -62,10 +62,11 @@ def kv(s):
     return d
 
 
-def probe(I, s1, s2, T=64):
+def probe(I, s1, s2, T=64, extra=None):
     x, ids, w, wts = make_problem(T, I)
     kw = {f"{k}1": v for k, v in s1.items()}
     kw.update({f"{k}2": v for k, v in s2.items()})
+    kw.update(extra or {})
     run = moe.MoERun(x, ids, w, moe.MoEWeights(*wts), **kw)
     with contextlib.redirect_stdout(io.StringIO()):
         run.forward()
