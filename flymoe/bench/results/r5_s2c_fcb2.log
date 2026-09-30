@@ -1,0 +1,32 @@
+OK     table: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: False
+OK     diag2=nofcb: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=agf136: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=agf132: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     D2=2: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+I=  768 T= 32768 table                                                                  s1   851.8 s2  1152.3 cb    2.5 total  2133.6 | s2+cb  +0.0% vs table
+I=  768 T= 32768 diag2=nofcb                                                            s1   841.1 s2  1259.4 cb    1.8 total  2229.4 | s2+cb  -9.2% vs table
+I=  768 T= 32768 diag2=agf136                                                           s1   840.4 s2  1156.9 cb    2.4 total  2126.4 | s2+cb  -0.4% vs table
+I=  768 T= 32768 diag2=agf132                                                           s1   839.7 s2  1176.5 cb    2.1 total  2145.1 | s2+cb  -2.1% vs table
+I=  768 T= 32768 D2=2                                                                   s1   835.7 s2  1348.9 cb    1.8 total  2313.1 | s2+cb -17.0% vs table
+OK     table: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: False
+OK     diag2=wpe2+s2nt+nofcb: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=wpe2+s2nt+agf136: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=wpe2+s2nt+agf132: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=wpe2+s2nt+ytl: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+I= 1536 T= 32768 table                                                                  s1  1664.3 s2  1603.1 cb    1.7 total  3396.6 | s2+cb  +0.0% vs table
+I= 1536 T= 32768 diag2=wpe2+s2nt+nofcb                                                  s1  1676.5 s2  1615.8 cb    1.1 total  3420.4 | s2+cb  -0.8% vs table
+I= 1536 T= 32768 diag2=wpe2+s2nt+agf136                                                 s1  1677.2 s2  1548.8 cb    1.2 total  3354.3 | s2+cb  +3.4% vs table
+I= 1536 T= 32768 diag2=wpe2+s2nt+agf132                                                 s1  1672.9 s2  1556.0 cb    1.7 total  3355.1 | s2+cb  +2.9% vs table
+I= 1536 T= 32768 diag2=wpe2+s2nt+ytl                                                    s1  1673.0 s2  1910.1 cb    1.2 total  3708.6 | s2+cb -19.1% vs table
+I= 1536 T=  8192 table                                                                  s1   562.6 s2   475.3 cb    2.3 total  1080.9 | s2+cb  +0.0% vs table
+I= 1536 T=  8192 diag2=wpe2+s2nt+nofcb                                                  s1   571.2 s2   468.6 cb    2.1 total  1082.5 | s2+cb  +1.4% vs table
+I= 1536 T=  8192 diag2=wpe2+s2nt+agf136                                                 s1   567.2 s2   455.9 cb    2.1 total  1065.8 | s2+cb  +4.1% vs table
+I= 1536 T= 16384 table                                                                  s1   951.8 s2   861.8 cb    2.1 total  1879.0 | s2+cb  +0.0% vs table
+I= 1536 T= 16384 diag2=wpe2+s2nt+nofcb                                                  s1   938.7 s2   862.0 cb    2.1 total  1868.5 | s2+cb  -0.0% vs table
+I= 1536 T= 16384 diag2=wpe2+s2nt+agf136                                                 s1   952.2 s2   829.8 cb    2.1 total  1847.2 | s2+cb  +3.7% vs table
+I=  768 T=  2048 table                                                                  s1   148.0 s2   125.0 cb    1.0 total   299.4 | s2+cb  +0.0% vs table
+I=  768 T=  2048 diag2=nofcb                                                            s1   147.0 s2   124.1 cb    1.1 total   296.0 | s2+cb  +0.7% vs table
+I=  768 T=  2048 diag2=agf136                                                           s1   147.6 s2   125.1 cb    1.1 total   298.7 | s2+cb  -0.1% vs table
+I=  768 T= 16384 table                                                                  s1   449.7 s2   619.7 cb    2.0 total  1134.7 | s2+cb  +0.0% vs table
+I=  768 T= 16384 diag2=nofcb                                                            s1   446.6 s2   660.0 cb    2.3 total  1174.1 | s2+cb  -6.5% vs table
+I=  768 T= 16384 diag2=agf136                                                           s1   455.6 s2   619.7 cb    2.2 total  1143.1 | s2+cb  -0.0% vs table

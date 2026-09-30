@@ -43,3 +43,41 @@ rejected / neutral variants (kept as diag flags, off by default):
   kob / kod / noepi                                                      -> timing knock-outs only (wrong results)
 not pursued: 2-K-step A DMAs (8 rows x 128 B, g128dma): +17% on the A path in dma_bw.py (36.5 vs 31.2
   B/clk/CU); would need a 2 x 32 KB A ring and a new swizzle for an estimated few % end to end.
+
+== S2-C  FC epilogue (shared-expert tiles: own row + the token's 4 routed y_rows) ==
+iterations (logs: r5_s2c_fcb.log, r5_s2c_fcb2.log; traces att_r5/s2fcb):
+  1    v5 trace (I=1536 T=32k, fused launch): 79k-cycle epilogue per wave, serial tok -> inv -> row
+       chain per 8 rows. FCB: batched epilogue (all token ids, then all inv slots, routed rows
+       prefetched one iteration ahead), same summation order                -> bit-identical to v5 FC;
+                                                                               I=768 T=32k +9.2%, T=16k +6.5%;
+                                                                               I=1536 / I=768 T=2k: +-1.4% (noise)
+  2    FCB trace: epilogue 79k -> 45.5k cycles but the K loop grew 24.7k -> 45.4k: the hot waits are
+       scratch_load reloads of spilled MFMA accumulators (vmcnt(0) behind in-flight gathers, ~1.5k cyc
+       each). The fused variant spills (11 old path / 32 FCB) where the rows variant from the same
+       template does not: LLVM splits the wpe2 budget 128 arch VGPR / 128 AGPR. agfN (fused launch
+       only: amdgpu-agpr-alloc=N)                                            -> agf136: +3.4 / +3.7 / +4.1% s2
+                                                                               (I=1536 T=32k / 16k / 8k);
+                                                                               I=768: 0.0 .. -0.4% (not used)
+       spill count does not predict speed (ag144: 3 spills, rows launch 1.7x slower).
+  3    knock-out fcnor (no routed-row loads): fused launch 624 -> 258 us, so the 1.6 GB gather costs
+       366 us (~4.4 TB/s). MALL-residency test: per-token cost of the fused launch is flat from T=4096
+       (routed rows 200 MB, MALL-sized; also with normal instead of NT y_rows stores) to T=32768:
+       19-22 ns/token, gather ~3.8-4.4 TB/s either way                     -> readiness-counter interleave for
+                                                                               MALL reuse rejected (no reuse to win)
+  4    overlap bound (bench/overlap_probe.py): routed and shared launches concurrently, two streams:
+       1638 vs 1598 us back to back; CU-masked split (128 + 128 CUs): alone 1580 / 1038 us, concurrently
+       1877 us > sequential 1608 us                                         -> single-launch interleave rejected:
+                                                                               the two phases contend, not overlap
+  5    shared-launch config free of the routed one (BMF/NWF/DF/pipeF/diagF/GMF): NW=8, D=3, BM=64
+       (wpe2/wpe3), async pipe                                              -> all 600-700 us (fused launch):
+                                                                               none better than the routed config
+  6    ytl: y_rows column-block-major ([N/BN][R][BN]) so a routed tile's store is one contiguous
+       64 KB block                                                          -> bit-identical; I=1536 T=32k -19.1%
+                                                                               (routed launch 972 -> 1325 us); rejected
+verdict: SHIP FCB (default for the fused epilogue; nofcb = old path) and diag agf136 on the I=1536 FC cells
+  (T=8192/16384/32768). The readiness-counter interleave is rejected on measurements 3 and 4.
+binding limit (I=1536 T=32768, stage 2 = 1549 us with agf136): the y_rows round trip, 1.6 GB written by the
+  routed launch (~370 us at ~4.3 TB/s) and 1.6 GB gathered by the shared launch (366 us), runs at HBM rate
+  and cannot be overlapped with the GEMM work (probe 4: concurrent phases slow each other). Removing it
+  needs non-deterministic atomics or lossy rows, both excluded (lossless, reproducible; rows stay bf16).
+  At I=384 the FC path (993 us) stays worse than rows + combine (471 + 453 us).

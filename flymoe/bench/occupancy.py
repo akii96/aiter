@@ -91,8 +91,9 @@ if __name__ == "__main__":
     ap.add_argument("--I", type=int, default=384)
     ap.add_argument("--s1", default="BM=128,NW=4,pipe=async,D=3")
     ap.add_argument("--s2", default="BM=128,NW=4,pipe=regs,D=2")
+    ap.add_argument("--extra", default="", help="non-suffixed MoERun kwargs, e.g. FC=1")
     a = ap.parse_args()
-    for name, i in probe(a.I, kv(a.s1), kv(a.s2)):
+    for name, i in probe(a.I, kv(a.s1), kv(a.s2), extra=kv(a.extra) if a.extra else None):
         print(f"{name:60s} vgpr={i['vgpr']:3d} agpr={i['agpr']:3d} lds={i['lds']:6d} spill={i['spill']} "
               f"| waves/SIMD={i['waves_per_simd']} CTAs/CU={i['ctas_per_cu']} ({i['limiter']}) "
               f"| mfma={i['mfma']} barrier={i['barrier']} waitcnt={i['waitcnt']}")

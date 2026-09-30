@@ -181,6 +181,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     # per row) in LDS, then writes 16 B/lane full-line row segments.
     S2W = stage == 2 and ((epi == "rows" and "nos2w" not in DG) or epi == "fused")
     S2NT = "s2nt" in DG
+    # ytl: FC-only y_rows layout [N/BN][R][BN] (written by the rows launch, read by the fused one).
+    YTL = stage == 2 and "ytl" in DG
+    assert not YTL or (S2W and "nofcb" not in DG), "ytl needs the LDS-staged rows / batched FC epilogues"
     ROWS_W = MBW * 16
     if S2W:
         lds_bytes = max(lds_bytes, NW * ROWS_W * 128)
@@ -978,6 +981,11 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     # count spans all remaining rows: a tile-sized count measured ~30% slower.
                     r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
                                   fx.Int64(n_rows - row_start) * fx.Int64(N * 2))
+                    if const_expr(YTL and epi == "rows"):
+                        # y_rows column-block-major ([N/BN][R][BN]): a tile's store is one
+                        # contiguous block.
+                        r_oy = hw.rsrc(fx.Int64(o_ptr) + (fx.Int64(nblk * n_rows) + fx.Int64(row_start))
+                                       * fx.Int64(BN * 2), fx.Int64(n_rows - row_start) * fx.Int64(BN * 2))
                 col0 = nblk * BN + wn * 64 + l16 * 2
                 if const_expr(S2W):
                     gpu.barrier()  # every wave is done reading the LDS ring
@@ -1001,7 +1009,55 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         # (y_rows, via inv), summed in fp32; no combine pass, no shared y rows.
                         r_inv = hw.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
                         r_out = hw.rsrc(os_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
-                    for it in range_constexpr(ROWS_W // 8):
+                    FCB = epi == "fused" and "nofcb" not in DG
+                    if const_expr(FCB):
+                        # Batched FC epilogue: every row's token id, then all its routed-row
+                        # indices, up front; routed rows prefetched one iteration ahead. Rows
+                        # past nrows are clamped to a valid row and their store is dropped.
+                        NIT = ROWS_W // 8
+                        ch = lane % 8
+                        colb = (nblk * BN + wn * 64) * 2 + ch * 16
+                        rls = [fx.Int32(it * 8) + lane // 8 for it in range_constexpr(NIT)]
+                        oks = [rb0 * 16 + rl < nrows for rl in rls]
+                        grows = [row_start + ok.select(rb0 * 16 + rl, fx.Int32(0)) for ok, rl in zip(oks, rls)]
+                        ts = [fx.Int32(hw.bload(r_tok, g * 4, T.i32)) for g in grows]
+                        srcs = []
+                        for it in range_constexpr(NIT):
+                            ss = []
+                            for sl in range_constexpr(KTOP):
+                                rs = fx.Int32(hw.bload(r_inv, (ts[it] * KTOP + sl) * 4, T.i32))
+                                rs = fx.max(fx.min(rs, n_rows - 1), fx.Int32(0))
+                                ss.append(rs)
+                            srcs.append(ss)
+
+                        def fc_rows(it):
+                            if const_expr("fcnor" in DG):
+                                return [fx.Vector.filled(8, 0.0, fx.BFloat16) for _ in range_constexpr(KTOP)]
+                            if const_expr(YTL):
+                                yb = (fx.Int64(o_ptr) + fx.Int64(nblk * n_rows) * fx.Int64(BN * 2)
+                                      + fx.Int64((wn * 64) * 2 + ch * 16))
+                                return [fx.Vector(hw.gload(yb + fx.Int64(srcs[it][sl]) * fx.Int64(BN * 2),
+                                                           T.vec(8, T.bf16)))
+                                        for sl in range_constexpr(KTOP)]
+                            return [fx.Vector(hw.gload(fx.Int64(o_ptr) + fx.Int64(srcs[it][sl]) * fx.Int64(N * 2)
+                                                       + fx.Int64(colb), T.vec(8, T.bf16)))
+                                    for sl in range_constexpr(KTOP)]
+
+                        ys = {0: fc_rows(0)}
+                        z8 = fx.Vector.filled(8, 0.0, fx.Float32)
+                        for it in range_constexpr(NIT):
+                            if const_expr(it + 1 < NIT):
+                                ys[it + 1] = fc_rows(it + 1)
+                            rl = rls[it]
+                            v16 = hw.lds_load(lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4)
+                            accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
+                            yl = ys.pop(it)
+                            for sl in range_constexpr(KTOP):
+                                other = srcs[it][sl] != grows[it]
+                                accv = accv + other.select(yl[sl].to(fx.Float32), z8)
+                            hw.bstore(accv.to(fx.BFloat16), r_out,
+                                      oks[it].select(ts[it] * (N * 2) + colb, fx.Int32(0x7FFFFFF0)))
+                    for it in range_constexpr(ROWS_W // 8 if not FCB else 0):
                         rl = fx.Int32(it * 8) + lane // 8
                         ch = lane % 8
                         v16 = hw.lds_load(lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4)
@@ -1024,6 +1080,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                     zero8 = fx.Vector.filled(8, 0.0, fx.Float32)
                                     accv = accv + other.select(yv, zero8)
                                 hw.bstore(accv.to(fx.BFloat16), r_out, t * (N * 2) + colb)
+                        elif const_expr(YTL):
+                            off = row * (BN * 2) + (wn * 64) * 2 + ch * 16
+                            hw.bstore(v16, r_oy, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
                         else:
                             off = row * (N * 2) + colb
                             hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
@@ -1105,6 +1164,13 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     if wpe:
         # diag=wpeN: cap registers so N waves/SIMD fit (e.g. wpe3: <= 168 VGPRs).
         launch.compile_hints = dict(getattr(launch, "compile_hints", None) or {}, waves_per_eu=wpe[0])
+    ag = [t[2:] for t in DG if t.startswith("ag") and t[2:].isdigit()]
+    ag += [t[3:] for t in DG if epi == "fused" and t.startswith("agf") and t[3:].isdigit()]
+    if ag:
+        # diag=agN: AGPR share of the unified budget (LLVM default: half when AGPRs are used).
+        hints = dict(getattr(launch, "compile_hints", None) or {})
+        hints["fn_attrs"] = dict(hints.get("fn_attrs", {}), **{"amdgpu-agpr-alloc": ag[0]})
+        launch.compile_hints = hints
     launch.persistent = PERS
     return launch, NB
 

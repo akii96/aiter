@@ -58,7 +58,8 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0, SR="even", validate=True):
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0, SR="even", validate=True,
+                 BMF=None, NWF=None, DF=None, pipeF=None, diagF=None, WMF=None, GMF=None):
         T, H = x.shape
         k = topk_ids.shape[1]
         assert x.dtype == torch.bfloat16 and x.is_contiguous(), "x must be contiguous bf16"
@@ -117,7 +118,14 @@ class MoERun:
             assert not validate or bool(((topk_ids == W.E - 1).sum(1) == 1).all()), \
                 "FC needs the shared expert (E-1) exactly once per token"
             assert T * H * 2 < 2**31, "the fused epilogue stores out with 32-bit offsets"
-            self.launches2 = [(spec((BM2, -2)), self.cfg2), (spec((BM2, -3)), dict(self.cfg2, epi="fused"))]
+            # *F: optional shared-tile (fused) launch config; defaults to the routed config.
+            over = {k: v for k, v in dict(BM=BMF, NW=NWF, D=DF, pipe=pipeF, diag=diagF, WM=WMF, GM=GMF).items()
+                    if v is not None}
+            cf = dict(self.cfg2, epi="fused", **over)
+            ytl = ["ytl" in c["diag"].split("+") for c in (self.cfg2, cf)]
+            assert ytl[0] == ytl[1] and (not ytl[0] or (cf["NW"], cf["WM"]) == (NW2, WM2)), \
+                "ytl: both FC launches need it, with the same N-block width"
+            self.launches2 = [(spec((BM2, -2)), self.cfg2), (spec((cf["BM"], -3)), cf)]
         else:
             self.launches2 = [(spec((BM2, -1) if TB2 else BM2), self.cfg2)]
             if TB2:

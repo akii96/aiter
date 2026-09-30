@@ -25,7 +25,7 @@ from compare import STAGES, sample, table_cfg  # noqa: E402
 from flymoe import hw, moe  # noqa: E402
 from tests.test_moe import make_problem  # noqa: E402
 
-GLOBAL = ("HT", "FC", "TB1", "TB2", "QAST", "epi")
+GLOBAL = ("HT", "FC", "TB1", "TB2", "QAST", "epi", "BMF", "NWF", "DF", "pipeF", "diagF", "WMF", "GMF")
 
 
 def arm_cfg(base, spec):
@@ -48,9 +48,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--I", type=int, required=True)
     ap.add_argument("--T", type=int, required=True)
-    ap.add_argument("--table", default=os.path.join(HERE, "..", "configs", "tiles_v4_I{I}.json"))
+    ap.add_argument("--table", default=os.path.join(HERE, "..", "configs", "tiles_v5_I{I}.json"))
     ap.add_argument("--arms", nargs="+", required=True)
     ap.add_argument("--reps", type=int, default=5)
+    ap.add_argument("--notime", action="store_true", help="gate only")
     ap.add_argument("--out")
     ap.add_argument("--nogate", action="store_true", help="time diagnostic arms whose output is wrong")
     a = ap.parse_args()
@@ -60,7 +61,7 @@ def main():
     cfgs = {"table": base}
     for s in a.arms:
         cfgs[s] = arm_cfg(base, s)
-    runs, diffs, ref_out = {}, {}, None
+    runs, diffs, ref_out, prev_out = {}, {}, None, None
     for n, c in cfgs.items():
         try:
             r = moe.MoERun(x, ids, w, W, **c)
@@ -76,8 +77,13 @@ def main():
         if not d <= 1e-3 and not a.nogate:
             print(f"REJECT {n}: rel diff {d:.2e} vs table arm", flush=True)
             continue
+        same = prev_out is not None and bool(torch.equal(r.out, prev_out))
+        print(f"OK     {n}: rel diff {d:.2e} vs table arm; bit-identical to previous arm: {same}", flush=True)
+        prev_out = r.out.clone()
         runs[n] = r
         diffs[n] = d
+    if a.notime:
+        return
     if "table" not in runs:
         raise SystemExit("the table arm failed to build; nothing to compare against")
     names = list(runs)

@@ -1,0 +1,15 @@
+I= 1536 T= 32768 table                                                                  s1  1721.3 s2  1604.5 cb    1.6 total  3456.9 | s2+cb  +0.0% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt+nofcb,FC=1                 s1  1683.4 s2  1612.1 cb    1.6 total  3425.4 | s2+cb  -0.5% vs table
+I= 1536 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1                       s1  1676.1 s2  1623.6 cb    1.5 total  3428.8 | s2+cb  -1.2% vs table
+I= 1536 T=  8192 table                                                                  s1   548.5 s2   479.4 cb    1.4 total  1070.3 | s2+cb  +0.0% vs table
+I= 1536 T=  8192 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt+nofcb,FC=1                 s1   555.7 s2   466.8 cb    1.6 total  1064.9 | s2+cb  +2.6% vs table
+I= 1536 T=  8192 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1                       s1   553.2 s2   477.7 cb    1.5 total  1072.4 | s2+cb  +0.3% vs table
+I=  768 T= 32768 table                                                                  s1   834.8 s2  1151.6 cb    1.7 total  2115.9 | s2+cb  +0.0% vs table
+I=  768 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt+nofcb,FC=1                 s1   850.4 s2  1442.3 cb    1.5 total  2421.2 | s2+cb -25.2% vs table
+I=  768 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1                       s1   849.9 s2  1171.3 cb    1.4 total  2149.3 | s2+cb  -1.7% vs table
+I=  768 T=  8192 table                                                                  s1   290.4 s2   219.8 cb  120.0 total   669.8 | s2+cb  +0.0% vs table
+I=  768 T=  8192 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt+nofcb,FC=1                 s1   290.6 s2   417.3 cb    1.7 total   750.0 | s2+cb -23.3% vs table
+I=  768 T=  8192 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1                       s1   290.0 s2   340.6 cb    1.5 total   672.6 | s2+cb  -0.7% vs table
+I=  384 T= 32768 table                                                                  s1   444.1 s2   470.7 cb  452.7 total  1496.3 | s2+cb  +0.0% vs table
+I=  384 T= 32768 BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt,FC=1                        s1   447.8 s2   992.7 cb    1.9 total  1569.6 | s2+cb  -7.7% vs table
+I=  384 T= 32768 BM=128,NW=4,pipe=hybrid2,D=2,diag=wpe2+s2nt,FC=1                       s1   441.2 s2  1024.5 cb    1.6 total  1593.0 | s2+cb -11.1% vs table
