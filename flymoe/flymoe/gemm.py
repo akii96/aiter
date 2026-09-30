@@ -184,6 +184,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     S1S_H = ROWS_W * CG * 16
     S1S_W = S1S_H + ROWS_W * CG
     S1S_BASE = lds_bytes
+    IL4P = bool(PERS) and pipe == "il4" and "nopro" not in DG
     if S1S:
         lds_bytes = S1S_BASE + NW * S1S_W
         assert lds_bytes <= 160 * 1024, lds_bytes
@@ -221,25 +222,49 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         r_misc = hw.rsrc(ntiles_ptr, 4)
         ntiles = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_misc, 0, T.i32)))
         bound = ntiles * NB
-        def _tile_body(work):
-            if const_expr(PERS):
-                gpu.barrier()  # previous tile's LDS use is finished before the ring refills
+        lds_base = fx.Int32(
+            fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
+        )
+        n_rows_k, n_a_rows_k, lane_k, wave_k = n_rows, n_a_rows, lane, wave
+
+        def _decode(work):
             if const_expr(GM == 1):
-                tile = work // NB
-                nblk = work % NB
-            else:
-                # Groups of GM m-tiles sweep the N blocks together, so concurrently
-                # running CTAs share a few weight column slices (L2 reuse).
-                grp = work // (GM * NB)
-                within = work % (GM * NB)
-                gsize = fx.min(ntiles - grp * GM, fx.Int32(GM))
-                nblk = within // gsize
-                tile = grp * GM + within % gsize
+                return work // NB, work % NB
+            # Groups of GM m-tiles sweep the N blocks together, so concurrently
+            # running CTAs share a few weight column slices (L2 reuse).
+            grp = work // (GM * NB)
+            within = work % (GM * NB)
+            gsize = fx.min(ntiles - grp * GM, fx.Int32(GM))
+            return grp * GM + within % gsize, within // gsize
+
+        def _tile_body(work, mode="full", nxt=None, st=None, defer=False):
+            # IL4P modes: "pro" = setup + prologue DMAs only; "main" = the tile with its
+            # prologue already in flight, issuing tile `nxt`'s prologue before its epilogue.
+            # st = [e, row_start, nrows, raw token of each A DMA row]: a tile's loaded state,
+            # carried across the tile loop so no body waits on its own tile / token loads.
+            # Returns the state of the tile it set up ("pro") or of tile `nxt` ("main").
+            # Per-tile opaque copies: LICM would otherwise hoist every n_rows-derived
+            # per-step scale offset out of the tile loop and spill them.
+            n_rows = hw.s_opaque(n_rows_k, work) if const_expr(IL4P) else n_rows_k
+            n_a_rows = hw.s_opaque(n_a_rows_k, work) if const_expr(IL4P) else n_a_rows_k
+            lane = hw.v_opaque(lane_k, work) if const_expr(IL4P) else lane_k
+            wave = hw.s_opaque(wave_k, work) if const_expr(IL4P) else wave_k
+            wm, wn = wave // WN, wave % WN
+            if const_expr(PERS and mode == "full"):
+                gpu.barrier()  # previous tile's LDS use is finished before the ring refills
+            tile, nblk = _decode(work)
             r_tiles = hw.rsrc(tiles_ptr)
-            tv = fx.Vector(hw.bload(r_tiles, tile * 16, T.i32x4))
-            e = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[0])))
-            row_start = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[1])))
-            nrows = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[2])))
+            if const_expr(st is None):
+                tv = fx.Vector(hw.bload(r_tiles, tile * 16, T.i32x4))
+                e = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[0])))
+                row_start = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[1])))
+                nrows = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[2])))
+                toks = None
+            else:
+                e, row_start, nrows = st[0], st[1], st[2]
+                toks = st[3:]
+            st_out = None
+            pro_ops = []
 
             r_a = hw.rsrc(a_ptr, fx.Int64(n_a_rows) * fx.Int64(KH))
             r_as = hw.rsrc(as_ptr, fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG))
@@ -249,9 +274,11 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             r_b = hw.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp, b_exp)
             r_bs = hw.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp, bs_exp)
 
-            def a_row_of(row):
+            def a_row_of(row, it=None):
                 valid = row < nrows
-                if const_expr(stage == 1):
+                if const_expr(toks is not None and it is not None):
+                    t = toks[it]
+                elif const_expr(stage == 1):
                     t = fx.Int32(hw.bload(r_tok, (row_start + row) * 4, T.i32))
                 else:
                     t = row_start + row
@@ -287,9 +314,6 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             bs16_voff = (nblk * WN) * 256 + lane * 16
             bs_wave = 1 if NW <= 4 else 4  # the wave issuing the B-scale DMA
             rb0 = wm * MBW  # first row block owned by this wave
-            lds_base = fx.Int32(
-                fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
-            )
             zero = hw.raw(fx.Vector.filled(4, 0.0, fx.Float32))
             acc = [[zero] * TWN for _ in range(MBW)]
 
@@ -297,9 +321,13 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
                 pc = lane % 4
                 a_dma_voff = []
+                if const_expr(IL4P and toks is None):
+                    toks = [fx.Int32(hw.bload(r_tok, (row_start + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
+                            for it in range_constexpr(A_IT)]
+                    st_out = [e, row_start, nrows] + toks
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
-                    a_dma_voff.append(a_row_of(row) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
+                    a_dma_voff.append(a_row_of(row, it) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
                 as_uni_voff = as_off(wn * 64 + lane)
                 as4_voff = as_off(wave * (BM // NW) + lane)
                 AS16 = AST and BM >= 256
@@ -419,8 +447,16 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 if const_expr(not b_lds):
                     for p in range_constexpr(DB):
                         breg[p] = issue_b(p)
-                for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS)):
+                if const_expr(mode == "pro" and defer):
+                    # (issue order) the prologue's DMAs + asyncmarks, for the caller to spread
+                    thunks = []
+                    for p in range_constexpr(min(NSTG, KS)):
+                        thunks += dma_ops(p) + [rocdl.asyncmark]
+                    return thunks
+                for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS) if mode != "main" else 0):
                     issue(p)
+                if const_expr(mode == "pro"):
+                    return st_out
 
                 # Per-kind LDS read bases (lane-varying part + region start), computed once.
                 as_rd = l16 * 4 + lg + rb0 * 64 + RAS
@@ -509,6 +545,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     for rb in range_constexpr(MBW):
                         a_ops[rb], sa[rb] = [f() for f in rd_a(0, rb)]
                     NMF = MBW * TWN
+                    if const_expr(mode == "main"):
+                        # Tile `nxt`'s state loads, long before its prologue needs them.
+                        tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
                     for s in range_constexpr(KS):
                         has_next = s + 1 < KS
                         dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS) else []
@@ -525,6 +564,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                                               a_ops[rb], b_ops[t], sa[rb], bsv[h], j)
                             else:
                                 acc[rb][t] = hw.mfma_fp4(acc[rb][t], a_ops[rb], b_ops[t], sa[rb], bsv[h], 0, j)
+                            if const_expr(mode == "main" and s == KS // 2 and i == 16):
+                                rocdl.sched_barrier(0)
+                                e_n, rs_n, nr_n = [fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q])))
+                                                   for q in range_constexpr(3)]
+                                st_out = [e_n, rs_n, nr_n] + [
+                                    fx.Int32(hw.bload(r_tok, (rs_n + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
+                                    for it in range_constexpr(A_IT)]
+                                rocdl.sched_barrier(0)
                             for k2 in range_constexpr(len(plan[i])):
                                 kind, idx = plan[i][k2]
                                 rocdl.sched_barrier(0)
@@ -559,6 +606,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         rocdl.sched_barrier(0)
                         fenced = hw.mfma_drain([acc[rb][t] for rb in range_constexpr(MBW) for t in range_constexpr(TWN)])
                         acc = [fenced[rb * TWN:(rb + 1) * TWN] for rb in range_constexpr(MBW)]
+                        rocdl.sched_barrier(0)
+                    if const_expr(mode == "main"):
+                        gpu.barrier()  # every wave is past its last ring read
+                        pro_ops = _tile_body(nxt, "pro", st=st_out, defer=True)
                         rocdl.sched_barrier(0)
 
                 if const_expr(pipe == "pingpong"):
@@ -737,6 +788,11 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 for rb in range_constexpr(MBW if S1S else 0):
                     # All CG*4 (group, row) chains of a row block at once: the DPP row-max
                     # levels interleave across chains instead of stalling on DPP hazards.
+                    per = -(-len(pro_ops) // MBW)
+                    for op in pro_ops[rb * per:(rb + 1) * per]:
+                        rocdl.sched_barrier(0)
+                        op()
+                        rocdl.sched_barrier(0)
                     sw = S1S_BASE + wave * S1S_W
                     ch = []
                     for gi in range_constexpr(CG):
@@ -769,6 +825,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                      align=1)
                         # the 16 lanes of a row hold the same scale: same byte, same address
                         hw.lds_store(bexp.to(fx.Int8), lds_base, sw + S1S_H + rl * CG + gi, align=1)
+                if const_expr(not S1S):
+                    for op in pro_ops:
+                        op()
                 for rbg in range_constexpr(MBW * CG if not S1S else 0):
                     rb, gi = rbg // CG, rbg % CG
                     g = (nblk * WN + wn) * CG + gi
@@ -935,6 +994,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                     hw.batomic_fadd(pk, r_o, off)
                                 else:
                                     hw.bstore(pk, r_o, off)
+            return st_out
 
         # CTAs are dealt round-robin over the 8 XCDs; each XCD gets a contiguous range of
         # work so an expert's m-tiles share one L2.
@@ -942,7 +1002,17 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         xr = bound % 8
         xc = bid % 8
         xstart = xc * xq + fx.min(xc, xr)
-        if const_expr(PERS):
+        if const_expr(IL4P):
+            # Persistent il4: tile w+1's prologue DMAs overlap tile w's epilogue. The next
+            # work index is clamped (the last tile re-fetches itself), so nothing branches.
+            gx = fx.Int32(gpu.grid_dim.x) // 8
+            wend = xstart + xq + (xc < xr).select(fx.Int32(1), fx.Int32(0))
+            first = xstart + bid // 8
+            st = _tile_body(fx.max(fx.min(first, bound - 1), fx.Int32(0)), "pro")
+            for w in range(first, wend, gx):
+                st = _tile_body(fx.Int32(w), "main", fx.min(fx.Int32(w) + gx, wend - 1), st)
+            rocdl.wait_asyncmark(0)
+        elif const_expr(PERS):
             # Persistent: grid = CUs * PERS CTAs; CTA c walks its XCD's range with stride
             # (CTAs per XCD).
             gx = fx.Int32(gpu.grid_dim.x) // 8

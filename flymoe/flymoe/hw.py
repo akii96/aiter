@@ -188,6 +188,19 @@ def mfma_drain(accs):
             for v in accs]
 
 
+def s_opaque(x, dep):
+    """x (uniform i32), made to look dependent on `dep`: values derived from it are not
+    hoisted out of a loop over `dep` (and kept live across it) by LICM."""
+    return fx.Int32(llvm.InlineAsmOp(T.i32, [raw(fx.Int32(x)), raw(fx.Int32(dep))], "; opaque $0 $2",
+                                     "=s,0,s", has_side_effects=False).result)
+
+
+def v_opaque(x, dep):
+    """Per-lane s_opaque."""
+    return fx.Int32(llvm.InlineAsmOp(T.i32, [raw(fx.Int32(x)), raw(fx.Int32(dep))], "; opaque $0 $2",
+                                     "=v,0,s", has_side_effects=False).result)
+
+
 def dpp_i32(src, ctrl, row_mask=0xF, bank_mask=0xF, bound_ctrl=True):
     """llvm.amdgcn.update.dpp.i32 with old = src (lanes outside the pattern keep src)."""
     v = raw(fx.Int32(src))
