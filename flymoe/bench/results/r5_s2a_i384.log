@@ -1,0 +1,8 @@
+I=  384 T= 32768 table                                                                  s1   440.1 s2   467.0 cb  455.1 total  1490.6 | s2+cb  +0.0% vs table
+I=  384 T= 32768 FC=1                                                                   s1   450.0 s2   981.3 cb    2.2 total  1561.0 | s2+cb  -6.7% vs table
+I=  384 T= 32768 FC=1,pipeF=hybrid,BMF=128,NWF=4,DF=3,diagF=                            s1   441.5 s2   975.9 cb    1.9 total  1546.2 | s2+cb  -6.0% vs table
+I=  384 T= 32768 FC=1,pipeF=hybrid2,BMF=128,NWF=4,DF=2,diagF=wpe2+s2nt+agf136           s1   439.9 s2   972.1 cb    2.0 total  1540.8 | s2+cb  -5.6% vs table
+I=  384 T=  8192 table                                                                  s1   144.5 s2   131.6 cb  120.9 total   437.1 | s2+cb  +0.0% vs table
+I=  384 T=  8192 FC=1                                                                   s1   143.5 s2   262.8 cb    2.2 total   449.2 | s2+cb  -5.0% vs table
+I=  384 T=  8192 FC=1,pipeF=hybrid,BMF=128,NWF=4,DF=3,diagF=                            s1   145.6 s2   283.7 cb    2.0 total   471.8 | s2+cb -13.2% vs table
+I=  384 T=  8192 FC=1,pipeF=hybrid2,BMF=128,NWF=4,DF=2,diagF=wpe2+s2nt+agf136           s1   144.4 s2   265.3 cb    2.1 total   452.2 | s2+cb  -5.9% vs table

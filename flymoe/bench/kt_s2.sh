@@ -10,7 +10,7 @@ import csv,sys,collections
 d=collections.defaultdict(list)
 for r in csv.DictReader(open(sys.argv[1])):
     n=r['Kernel_Name']
-    if 'flymoe_s' in n:
+    if 'flymoe_s' in n or 'combine' in n:
         k=n.split('_')[1]+('_rows' if '_rows' in n else '_fused' if '_fused' in n else '')
         d[k].append((int(r['End_Timestamp'])-int(r['Start_Timestamp']))/1e3)
 print(sys.argv[2], {k: round(min(v),1) for k,v in d.items()})

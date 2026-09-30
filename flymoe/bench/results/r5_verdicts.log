@@ -114,3 +114,28 @@ binding limit (I=1536 T=32768, routed launch): per tile the K loop is 17.1k cycl
   epilogue + next-prologue wait 11.2k (39%): 256 AGPR reads, 128 bf16 packs, 128 LDS writes, 32 row stores
   per wave (1.4k cycles of store back-pressure). At 1 wave/SIMD with all 256 AGPRs holding accumulators the
   epilogue cannot overlap MFMA. The shared launch (576 us) is the S2-C gather-bound kernel.
+
+== S2-A  stage 2 at mid / small T and I=384 (BM64 wpe3 register split, occupancy, W2 reuse) ==
+logs: r5_s2a_i384.log, r5_s2a_sweep.log; trace att_r5/s2a384 (I=384 T=32768, v5 cell)
+iterations:
+  1    FC shared launch at I=384 (default, hybrid BMF128 DF3, hybrid2 wpe2+agf136)   -> -5.0 .. -13.2% s2+cb
+       (T=8192 / 32768): the fused gather costs as much as the standalone combine;   rejected
+  2    BM64 hybrid2 wpe3 has 4 spills at K=768/1536 (LLVM agpr 84 / vgpr 168 split). agN (amdgpu-agpr-alloc)
+       ag32/48/64: 0 spills, ag80: 5. Serial GPU 0, s2+cb vs v5 table (repeated run):
+         I=768  T=256 +7.8% (BM32 NW2 ag32), 512 +8.5%, 1024 +9.0%, 2048 +7.5%, 4096 +4.8% (ag32), 8192 +0.1..0.9%
+         I=1536 T=256 +3.8%, 512 +2.6%, 1024 +6.4%, 2048 -3.6%, 4096 -4.4%
+         I=384 (K=384, no spills at the default split): -3.2 .. +1.1% everywhere  -> ship where > +1.5%
+  3    ATT (I=384 T=32768 v5 cell, 980 waves): prologue 44% / loop 36% / epilogue 20% of wave time, 48 MFMAs
+       at 15.9% duty -> latency-bound with 3 waves/SIMD (152-166 VGPR). 4 waves/SIMD arms (<=128 regs):
+       BM64 wpe4 (spills) -45%, BM32 NW4 -3..-6%, BM64 WM2 async -0.2..-4.5%, BM64 NW8 WM2 -3.5..-8%,
+       BM128 NW8 WM2 async wpe3 +0.8 / -3.4%                                       -> rejected: occupancy not binding
+  4    W2 reuse: GM=4 / 16 raster groups +2.5 / -1.0% (T=8192), +0.4 / -0.3% (T=32k); BM128 wpe2 (half the
+       W2 re-reads) -6.8 / -2.3%                                                   -> W2 traffic not binding
+  5    knock-outs (rocprofv3 kernel trace, I=384 T=32k, v5 cell): full 617 us, noepi 235, nodmaB 636,
+       nodmaA+nodmaB 532; s2nt off: 475 -> 651 us (serial)                         -> the y_rows stores bind
+verdict: SHIP BM2=64 NW2=4 pipe2=hybrid2 D2=2 diag2=wpe3+s2nt+agN at I=768 T=512..4096 (ag64; ag32 at 4096),
+  BM2=32 NW2=2 (ag32) at I=768 T=256, and at I=1536 T=256 (ag32) / 512 / 1024 (ag64). No change at I=384.
+binding limit (I=384, T >= 8192): the y_rows write. Stage 2 writes R*H*2 B (T=32768: 2.01 GB, 385 us at the
+  measured 5.23 TB/s row-write rate) plus 0.16 GB of W2 / h reads: floor ~415 us vs 475 us measured (87%;
+  T=8192: 125 vs 131 us, 95%); the combine (455 us) reads the same 2.01 GB and writes 0.4 GB at ~5.3 TB/s.
+  Fusing them (FC) keeps the round trip (iteration 1); removing it needs atomics or lossy rows (excluded).
