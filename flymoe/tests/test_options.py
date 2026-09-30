@@ -12,6 +12,7 @@ from tests.test_moe import make_problem
 PP = dict(BM1=256, NW1=8, WM1=2, pipe1="pingpong", D1=4, EF1=1, MV1=1)
 H2 = dict(BM2=128, NW2=4, pipe2="hybrid2", D2=4)
 A2 = dict(BM2=128, NW2=4, pipe2="async", D2=2)
+IL4 = dict(BM1=256, NW1=4, WM1=2, pipe1="il4", D1=3, EF1=1, diag1="bar8")
 CONFIGS = [
     dict(PP, **H2),
     dict(PP, **H2, diag1="skip"),
@@ -33,6 +34,10 @@ CONFIGS = [
     dict(PP, BM2=128, NW2=4, pipe2="hybrid2", D2=2, diag2="wpe2+s2nt+agf136", FC=1),
     dict(PP, BM2=128, NW2=4, pipe2="hybrid2", D2=2, diag2="wpe2+s2nt+nofcb", FC=1),
     dict(PP, **H2, FC=1, BMF=64, NWF=8, DF=2, diagF="s2nt"),
+    dict(IL4, PERS1=1, HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1),
+    dict(IL4, HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, diag2="s2tr"),
+    dict(IL4, PERS1=1, HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1, diag2="s2nt",
+         FC=1, pipeF="hybrid", BMF=128, NWF=4, WMF=1, DF=3, diagF=""),
     dict(PP, BM2=64, NW2=4, pipe2="hybrid2", D2=2, diag2="wpe3+s2nt"),
     dict(PP, BM2=64, NW2=4, pipe2="hybrid2", D2=3, diag2="wpe3+s2nt"),
     dict(BM1=128, NW1=4, pipe1="async", D1=3, BM2=64, NW2=4, pipe2="regs", D2=2),

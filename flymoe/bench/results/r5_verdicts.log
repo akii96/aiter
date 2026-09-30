@@ -81,3 +81,36 @@ binding limit (I=1536 T=32768, stage 2 = 1549 us with agf136): the y_rows round 
   and cannot be overlapped with the GEMM work (probe 4: concurrent phases slow each other). Removing it
   needs non-deterministic atomics or lossy rows, both excluded (lossless, reproducible; rows stay bf16).
   At I=384 the FC path (993 us) stays worse than rows + combine (471 + 453 us).
+
+== S2-D  il4 for stage 2 (256x256 tiles, persistent; with il4 stage 1 writing h_t) ==
+setup: il4 stage 1 S1S epilogue writes h K-step-major (HT: h_t[I/128][R][64 B] + step-major h
+  scales) -- a CTA's 128 h columns are exactly one stage-2 K step, so the change is store offsets
+  only (stage-1 time unchanged: 1522 vs 1526 us, I=1536 T=32k). Stage 2 on il4: contiguous 1 KB
+  h_t A DMAs (no token gather), W2 scale block stride KS*256, rows epilogue through a 4 KB
+  wave-private LDS row-block transpose (the persistent next-tile prologue keeps the ring).
+iterations (logs: r5_s2d_il4.log; traces att_r5/s2il4, s2il4b):
+  1    port, bit-identical to v5 (non-persistent and PERS2=1). Trace (I=1536 T=32k, PERS2): K loop
+       17.9k cyc/tile at 68.7% MFMA duty (hybrid2 routed launch: 27%), but 16.4k between tiles:
+       8 x s_waitcnt vmcnt(0) ~1.2k each in the epilogue                     -> 1146 us for all 5 rows
+  2    router weights of all 8 row blocks loaded before the first store (vmcnt counts stores: a
+       per-block weight load waited for every earlier store)                 -> 1146 -> 1038 us (5 rows);
+                                                                               between tiles 16.4k -> 11.2k
+  3    s2tr: MFMA operands swapped (C^T) so an even/odd W2 tile pair is 8 consecutive bf16 per lane:
+       direct 16 B stores, no LDS transpose                                  -> bit-identical; -8.6 / -9.0 /
+                                                                               -14% (I=1536/768/384): 64 B
+                                                                               row pieces vs 256 B; rejected
+  4    placement: il4 routed launch + FC shared launch. The shared launch under HT: hybrid2 740 us,
+       hybrid BM128 D3 576-593, async 676, async2 677, hybrid BM64 655      -> pipeF=hybrid,BMF=128,DF=3
+       serial GPU 0 (s2+cb vs v5 table):
+         I=1536 T=32768 +11.1%, T=16384 +10.5%, T=8192 +7.8%, T=4096 -3.8%
+         I=768  T=32768 +5.7% (diag2=s2nt), T=16384 +5.1%, T=8192 +2.0%
+         il4 rows + combine (no FC): I=1536 T=32k +4.4%, I=768 -5.1%, I=384 -14.3%
+         FC il4 at I=384 T=32k: -7.1%
+  5    stage-2 il4 pipeline knobs: D2=4, bar4/6/8, r4                          -> all within +-2% (840-856 us
+                                                                               routed launch): loop not binding
+verdict: SHIP pipe2=il4 PERS2=1 + HT=1 + FC=1 with the shared launch on pipeF=hybrid BMF=128 NWF=4 WMF=1
+  DF=3 for I=1536 T >= 8192 and I=768 T >= 16384 (with il4 PERS1=1 stage 1). Not at I=384 or smaller T.
+binding limit (I=1536 T=32768, routed launch): per tile the K loop is 17.1k cycles at 72.1% MFMA duty and the
+  epilogue + next-prologue wait 11.2k (39%): 256 AGPR reads, 128 bf16 packs, 128 LDS writes, 32 row stores
+  per wave (1.4k cycles of store back-pressure). At 1 wave/SIMD with all 256 AGPRs holding accumulators the
+  epilogue cannot overlap MFMA. The shared launch (576 us) is the S2-C gather-bound kernel.

@@ -181,11 +181,11 @@ def mfma_fp4(acc, a, b, sa, sb, opsel_a=0, opsel_b=0):
     )
 
 
-def mfma_fp4_agpr(acc, a, b, sa, sb, opsel_b=0):
+def mfma_fp4_agpr(acc, a, b, sa, sb, opsel_b=0, opsel_a=0):
     """mfma_fp4 as inline asm with the accumulator pinned to AGPRs (tied in/out) and A/B/scales
     in VGPRs; acc=None: srcC is the inline constant 0 (first K step, no zero-init copies).
     The hazard recognizer does not see inside the asm: finish with mfma_drain(accs)."""
-    sel = f"op_sel:[0,{opsel_b & 1},0] op_sel_hi:[0,{opsel_b >> 1},0]"
+    sel = f"op_sel:[{opsel_a & 1},{opsel_b & 1},0] op_sel_hi:[{opsel_a >> 1},{opsel_b >> 1},0]"
     ops = [raw(a), raw(b), raw(fx.Int32(sa)), raw(fx.Int32(sb))]
     if acc is None:
         return llvm.InlineAsmOp(

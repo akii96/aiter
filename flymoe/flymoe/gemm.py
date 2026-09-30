@@ -92,8 +92,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     assert K % 128 == 0 and N % BN == 0 and BM % (16 * WM) == 0
     assert WM == 1 or pipe in ("async", "async2", "pingpong", "il4"), "WM > 1 needs B staged in LDS"
     assert pipe != "pingpong" or WM == 2, "pingpong alternates the two wave-rows (WM=2)"
-    assert pipe != "il4" or (NW == 4 and stage == 1 and not HT and AST and BM == 256 and WM == 2), \
-        "il4: 4 waves as 2x2 (256x256 CTA), stage 1, step-major A scales, non-HT h"
+    assert pipe != "il4" or (NW == 4 and AST and BM == 256 and WM == 2), \
+        "il4: 4 waves as 2x2 (256x256 CTA), step-major A scales"
+    assert pipe != "il4" or stage == 1 or (HT and epi == "rows"), "il4 stage 2: h_t A (HT), rows epilogue"
     KS = K // 128
     MB = BM // 16
     MBW = MB // WM  # row blocks per wave
@@ -170,7 +171,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     IL4_ASM = pipe == "il4" and "noasm" not in DG
     SE = "se" in DG  # "even" e8m0 scale rule (checkpoint / runtime quant), else ceil_pow2(amax/6)
     HTA = HT and stage == 2   # stage-2 A (= h) is K-step-major: h_t[I/128][R][64 B]
-    HTW = HT and stage == 1   # stage-1 epilogue writes h_t + step-major h scales
+    # S1S: stage-1 il4 epilogue staged per wave in a private LDS region past the ring (no
+    # barrier): ROWS_W rows x CG*16 B of h, then ROWS_W x CG scale bytes; written back as
+    # 16 B/lane h rows and CG-byte scale runs instead of one global byte store per value.
+    # With HT the same runs go to h_t / the step-major h scales.
+    S1S = stage == 1 and pipe == "il4" and "nos1s" not in DG
+    HTW = HT and stage == 1 and not S1S   # stage-1 epilogue writes h_t + step-major h scales
     # Uniform scale DMAs for the 2x4 ping-pong tile: every wave issues exactly one 256 B
     # scale DMA per step (wave-row 0: its B-scale block, wave-row 1: a quarter of the
     # step-major A scales), so all waves carry identical DMA counts and vmcnt is exact.
@@ -179,7 +185,13 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
     # Stage-2 wide stores: each wave stages its weighted bf16 tile (rows x 64 cols = 128 B
     # per row) in LDS, then writes 16 B/lane full-line row segments.
-    S2W = stage == 2 and ((epi == "rows" and "nos2w" not in DG) or epi == "fused")
+    S2W = stage == 2 and pipe != "il4" and ((epi == "rows" and "nos2w" not in DG) or epi == "fused")
+    # il4 stage 2: each wave transposes one 16-row block (16 x 128 cols bf16 = 4 KB) at a time
+    # through a private LDS region past the ring, so persistent prologue DMAs keep the ring.
+    S2I = stage == 2 and pipe == "il4"
+    # s2tr: il4 stage 2 computes C^T (MFMA operands swapped): a lane holds 4 consecutive columns
+    # of one row, so an even/odd W2 tile pair is 8 consecutive bf16 -> direct 16 B stores.
+    S2TR = S2I and "s2tr" in DG
     S2NT = "s2nt" in DG
     # ytl: FC-only y_rows layout [N/BN][R][BN] (written by the rows launch, read by the fused one).
     YTL = stage == 2 and "ytl" in DG
@@ -187,20 +199,19 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     ROWS_W = MBW * 16
     if S2W:
         lds_bytes = max(lds_bytes, NW * ROWS_W * 128)
-    if HT and stage == 1:
+    if HTW:
         lds_bytes = max(lds_bytes, NW * max(ROWS_W, 64) * 16)
-    # S1S: stage-1 non-HT epilogue staged per wave in a private LDS region past the ring (no
-    # barrier): ROWS_W rows x CG*16 B of h, then ROWS_W x CG scale bytes; written back as
-    # 16 B/lane h rows and CG-byte scale runs instead of one global byte store per value.
-    S1S = stage == 1 and not HT and pipe == "il4" and "nos1s" not in DG
     assert not S1S or CG == 2
     S1S_H = ROWS_W * CG * 16
     S1S_W = S1S_H + ROWS_W * CG
     S1S_BASE = lds_bytes
+    S2I_W = 16 * (16 * TWN) * 2  # one row block: 16 rows x (16 * TWN) cols bf16
     IL4P = bool(PERS) and pipe == "il4" and "nopro" not in DG
     if S1S:
         lds_bytes = S1S_BASE + NW * S1S_W
-        assert lds_bytes <= 160 * 1024, lds_bytes
+    if S2I:
+        lds_bytes = S1S_BASE + NW * S2I_W
+    assert lds_bytes <= 160 * 1024, lds_bytes
 
     @fx.struct
     class SharedStorage:
@@ -289,7 +300,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
             def a_row_of(row, it=None):
                 valid = row < nrows
-                if const_expr(toks is not None and it is not None):
+                if const_expr(stage == 1 and toks is not None and it is not None):
                     t = toks[it]
                 elif const_expr(stage == 1):
                     t = fx.Int32(hw.bload(r_tok, (row_start + row) * 4, T.i32))
@@ -321,7 +332,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 bs_voff = (nblk * WN + wn) * (KS * 256) + lane * 4
                 BS_STEP = 256
             b4_voff = (nblk * (WN * TWN) + wave) * (KS * 1024) + lane * 16
-            bs4_voff = (nblk * (WN * CG) + wave) * 256 + lane * 4
+            # B-scale block stride: stage 1 is K-step-major (blocks of a step adjacent), stage 2
+            # keeps each 64-column block's KS steps together.
+            BSB = 256 if stage == 1 else KS * 256
+            bs4_voff = (nblk * (WN * CG) + wave) * BSB + lane * 4
             # One 16 B/lane DMA covers the CTA's 4 B-scale blocks (1 KB) for a step.
             BS1 = WN == 4 and stage == 1
             bs16_voff = (nblk * WN) * 256 + lane * 16
@@ -334,17 +348,19 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
                 pc = lane % 4
                 a_dma_voff = []
-                if const_expr(IL4P and toks is None):
+                if const_expr(IL4P and toks is None and stage == 1):
                     toks = [fx.Int32(hw.bload(r_tok, (row_start + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
                             for it in range_constexpr(A_IT)]
                     st_out = [e, row_start, nrows] + toks
+                elif const_expr(IL4P and st is None):
+                    st_out = [e, row_start, nrows]
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
                     a_dma_voff.append(a_row_of(row, it) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
                 as_uni_voff = as_off(wn * 64 + lane)
                 as4_voff = as_off(wave * (BM // NW) + lane)
                 # sc2: the CTA's 1 KB of B scales / 256 rows x 4 B of A scales for one step
-                bs16_voff4 = (nblk * (WN * CG)) * 256 + lane * 16
+                bs16_voff4 = (nblk * (WN * CG) + lane // 16) * BSB + (lane % 16) * 16
                 as16_voff = as_off(lane * 4)
                 AS16 = AST and BM >= 256
                 if const_expr(AS16):
@@ -410,7 +426,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             return ops
                         for q in range_constexpr((WN * CG) // NW):
                             ops.append(lambda q=q: hw.dma_async(
-                                r_bs, lds_base, wave * 256 + (oBS + q * NW * 256), bs4_voff + (q * NW) * 256,
+                                r_bs, lds_base, wave * 256 + (oBS + q * NW * 256), bs4_voff + (q * NW) * BSB,
                                 soff=s * BS_STEP, nbytes=4, cm=b_cm))
                         ops.append(lambda: hw.dma_async(r_as, lds_base, wave * 256 + oAS, as4_voff,
                                                         soff=n_rows * (s * 4), nbytes=4))
@@ -596,9 +612,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         for i in range_constexpr(NMF):
                             h, rb, j = i // 32, (i % 32) // 4, i % 4
                             t = 4 * h + j
-                            if const_expr(IL4_ASM):
+                            if const_expr(IL4_ASM and S2TR):
+                                acc[rb][t] = hw.mfma_fp4_agpr(acc[rb][t] if const_expr(s > 0) else None,
+                                                              b_ops[t], a_ops[rb], bsv[h], sa[rb], 0, j)
+                            elif const_expr(IL4_ASM):
                                 acc[rb][t] = hw.mfma_fp4_agpr(acc[rb][t] if const_expr(s > 0) else None,
                                                               a_ops[rb], b_ops[t], sa[rb], bsv[h], j)
+                            elif const_expr(S2TR):
+                                acc[rb][t] = hw.mfma_fp4(acc[rb][t], b_ops[t], a_ops[rb], bsv[h], sa[rb], j, 0)
                             else:
                                 acc[rb][t] = hw.mfma_fp4(acc[rb][t], a_ops[rb], b_ops[t], sa[rb], bsv[h], 0, j)
                             if const_expr(mode == "main" and s == KS // 2 and i == 16):
@@ -607,7 +628,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                                    for q in range_constexpr(3)]
                                 st_out = [e_n, rs_n, nr_n] + [
                                     fx.Int32(hw.bload(r_tok, (rs_n + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
-                                    for it in range_constexpr(A_IT)]
+                                    for it in range_constexpr(A_IT if stage == 1 else 0)]
                                 rocdl.sched_barrier(0)
                             for k2 in range_constexpr(len(plan[i])):
                                 kind, idx = plan[i][k2]
@@ -950,14 +971,21 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         part = lane % LPR
                         v16 = hw.lds_load(lds_base, sw + rl * (CG * 16) + part * 16, T.i32x4)
                         row = rb0 * 16 + rl
-                        off = (row_start + row) * (INTER // 2) + g0 * 16 + part * 16
+                        if const_expr(HT):
+                            # h_t[g//4][row][64 B]; g0 is even, so both groups sit in plane g0//4
+                            off = ((g0 // 4) * n_rows + row_start + row) * 64 + (g0 % 4) * 16 + part * 16
+                        else:
+                            off = (row_start + row) * (INTER // 2) + g0 * 16 + part * 16
                         hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFFF0)))
-                    # scales: CG bytes per row at h_s[row][g0 .. g0 + CG)
+                    # scales: CG bytes per row at h_s[row][g0 .. g0 + CG) (HT: [g0//4][row][4 B])
                     for it in range_constexpr((ROWS_W + 63) // 64):
                         rl = fx.Int32(it * 64) + lane
                         row = rb0 * 16 + rl
                         sv = hw.lds_load(lds_base, sw + S1S_H + rl * CG, T.i16, align=2)
-                        off = (row_start + row) * (INTER // 32) + g0
+                        if const_expr(HT):
+                            off = ((g0 // 4) * n_rows + row_start + row) * 4 + (g0 % 4)
+                        else:
+                            off = (row_start + row) * (INTER // 32) + g0
                         hw.bstore(sv, r_os, ((row < nrows) & (rl < fx.Int32(ROWS_W))).select(off, fx.Int32(0x7FFFFFF0)))
                 if const_expr(HTW):
                     # h_t[g//4][row][64 B]: this wave's 16 B column group of each row
@@ -968,6 +996,68 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         off = ((g // 4) * n_rows + row_start + row) * 64 + (g % 4) * 16
                         ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
                         hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)))
+            elif const_expr(S2I):
+                # W2 columns are even/odd interleaved per 32: tiles (4g + 2p, 4g + 2p + 1) give
+                # output columns gb + 32p + 2c, +1 of 64-column group g (gb = wn*128 + 64g).
+                r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+                r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
+                              fx.Int64(n_rows - row_start) * fx.Int64(N * 2))
+                cm_o = hw.NT if const_expr(S2NT) else 0
+                sw = S1S_BASE + wave * S2I_W
+                per = -(-len(pro_ops) // MBW)
+                # Every row block's weights before any store: vmcnt also counts stores, so a
+                # per-block load would wait for all earlier stores to drain.
+                if const_expr(S2TR):
+                    wts = [fx.Float32(hw.bload(r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + l16) * 4, T.f32))
+                           for rb in range_constexpr(MBW)]
+                else:
+                    wvs = [fx.Vector(hw.bload(r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + lg * 4) * 4,
+                                              T.vec(4, T.f32))) for rb in range_constexpr(MBW)]
+                for rb in range_constexpr(MBW):
+                    for op in pro_ops[rb * per:(rb + 1) * per]:
+                        rocdl.sched_barrier(0)
+                        op()
+                        rocdl.sched_barrier(0)
+                    if const_expr(S2TR):
+                        # C^T: the lane holds row l16, columns 4*lg .. 4*lg+3 of each n16 tile, so
+                        # a tile pair is output columns gb + 32p + 8*lg .. +7: one 16 B store.
+                        row = rb0 * 16 + fx.Int32(rb * 16) + l16
+                        ok = row < nrows
+                        wv8 = fx.Vector.from_elements([wts[rb]] * 8, fx.Float32)
+                        for gi in range_constexpr(CG):
+                            for p in range_constexpr(2):
+                                ve_ = fx.Vector(acc[rb][4 * gi + 2 * p])
+                                vo_ = fx.Vector(acc[rb][4 * gi + 2 * p + 1])
+                                v8 = fx.Vector.from_elements(
+                                    [fx.Float32(x[v]) for v in range_constexpr(4) for x in (ve_, vo_)], fx.Float32)
+                                off = row * (N * 2) + (nblk * BN + wn * 128 + gi * 64 + p * 32) * 2 + lg * 16
+                                hw.bstore((v8 * wv8).to(fx.BFloat16), r_o, ok.select(off, fx.Int32(0x7FFFFF00)),
+                                          cm=cm_o)
+                    else:
+                        # lane holds rows lg*4 + v, columns gb + 32p + 2*l16, +1: weighted bf16 pairs
+                        # -> private LDS (16 rows x 256 B, 16 B chunk c of row r at c ^ (r & 12))
+                        # -> 16 B/lane row stores (16 lanes per row).
+                        wv = wvs[rb]
+                        for v in range_constexpr(4):
+                            rl = lg * 4 + v
+                            w = fx.Float32(wv[v])
+                            for gi in range_constexpr(CG):
+                                for p in range_constexpr(2):
+                                    xe = fx.Vector(acc[rb][4 * gi + 2 * p])
+                                    xo = fx.Vector(acc[rb][4 * gi + 2 * p + 1])
+                                    pk = fx.Vector.from_elements([fx.Float32(xe[v]) * w, fx.Float32(xo[v]) * w],
+                                                                 fx.Float32).to(fx.BFloat16)
+                                    c = (fx.Int32(gi * 8 + p * 4) + l16 // 4) ^ (rl & 12)
+                                    hw.lds_store(pk, lds_base, sw + rl * 256 + c * 16 + (l16 % 4) * 4, align=4)
+                        for it in range_constexpr(4):
+                            rl = fx.Int32(it * 4) + lane // 16
+                            c = lane % 16
+                            v16 = hw.lds_load(lds_base, sw + rl * 256 + ((c ^ (rl & 12)) * 16), T.i32x4)
+                            row = rb0 * 16 + fx.Int32(rb * 16) + rl
+                            off = row * (N * 2) + (nblk * BN + wn * 128) * 2 + c * 16
+                            hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
+                for op in pro_ops[MBW * per:]:
+                    op()
             else:
                 # W2 columns are even/odd interleaved per 32: tiles (0,1) and (2,3) of
                 # this wave give each lane output columns (gb + 2c, gb + 2c + 1).
