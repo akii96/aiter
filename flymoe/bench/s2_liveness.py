@@ -1,7 +1,8 @@
 """Live-register profile of a compiled GEMM kernel's final ISA (round 4, A1).
 
 Backward liveness over the ISA in program order (branches ignored: the stage-2 K loop
-is straight-line), counting VGPRs and AGPRs separately. At the peak-pressure
+is straight-line), counting VGPRs and AGPRs separately. Not valid for PERS kernels, whose
+dynamic tile loop has a back-edge, and returning atomics are treated as defining no register. At the peak-pressure
 instruction, every live register is attributed to the opcode class of its reaching
 definition, e.g. "global B load" (buffer_load_dwordx4 into VGPRs), "LDS read",
 "MFMA acc". For hybrid2, each K step's B tile is 16 VGPRs, so

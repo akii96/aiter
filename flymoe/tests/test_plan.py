@@ -7,6 +7,8 @@ expert and its (token, slot) via inv, and compares every spec's tile list and ti
 Outputs are re-poisoned before the second call, so it cannot pass on the first call's results.
 
 usage: python tests/test_plan.py   (needs /workspace/flymoe_v4_pkg or FLYMOE_V4_PATH)
+build the frozen package from the tag:
+  mkdir -p PKG && git archive flymoe-v4 flymoe/flymoe | tar -x -C PKG && mv PKG/flymoe/flymoe PKG/flymoe_v4
 """
 import importlib
 import os
