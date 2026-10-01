@@ -139,3 +139,33 @@ binding limit (I=384, T >= 8192): the y_rows write. Stage 2 writes R*H*2 B (T=32
   measured 5.23 TB/s row-write rate) plus 0.16 GB of W2 / h reads: floor ~415 us vs 475 us measured (87%;
   T=8192: 125 vs 131 us, 95%); the combine (455 us) reads the same 2.01 GB and writes 0.4 GB at ~5.3 TB/s.
   Fusing them (FC) keeps the round trip (iteration 1); removing it needs atomics or lossy rows (excluded).
+
+== S2-B  persistent stage 2 on the non-il4 pipes (next-tile prefetch before the stores) ==
+logs: r5_s2b_pers.log; traces att_r5/s2b768 (I=768 T=8192 BM64 non-persistent), att_r5/s2bpf (PF, per tile)
+iterations (BM64 hybrid2 wpe3+s2nt+ag64 = the S2-A arm as reference; s2 us, serial GPU 0):
+  1    plain PERS2=1/2/3 (grid = CUs x PERS, tile loop)                     -> -39 .. -150%: 36 spills (LICM hoists
+                                                                               the n_rows-derived offsets out of the
+                                                                               tile loop)
+  2    per-tile opaque copies (as IL4P) for every PERS build: 0 spills      -> 0 .. -4% vs non-persistent
+  3    trace (non-persistent, I=768 T=8192): per CTA prologue 6.7k / loop 9.2k (16.8% MFMA duty, gaps behind
+       the B register loads) / epilogue 3.7k cycles; 72 CTAs per CU in ~24 rounds of 3, HBM ~3.6 TB/s ->
+       per-CTA latency bound. pf: tile w+1's A DMAs into the ring during tile w's epilogue (row staging moved
+       after the ring), issued after the router-weight loads (vmcnt in order). 3 waves/SIMD: 8-13 spills,
+       98-117 us vs 93; 2 waves/SIMD (wpe2): 91.7-92.1 vs 92.5 (T=2048), 245.7 vs 235.6 (T=8192)
+                                                                            -> prefetch = one more wave, not both
+  4    pfb: also tile w+1's first DB steps of B registers, carried in the tile state (2 waves, 0 spills)
+                                                                            -> 91.5 vs 93.1 (T=2048), 254.7 vs 237.7
+                                                                               (T=8192), I=1536 T=4096 -4.9%
+  5    async2 + pf (B through LDS, so the prefetch is register-free)        -> LDS 98-120 KB, 1 CTA/CU:
+                                                                               -2.5 .. -46%
+  6    pfl: next-tile DMAs after the row staging (no hoisted weights): 3 waves, 5-9 spills
+                                                                            -> 98.3 vs 93.4 (T=2048), 267.6 vs 236.2
+  7    I=384 T=32768 (store-bound, S2-A): PERS2=2/3 -1.1 / -2.3%, async2+pf -19 .. -24%
+verdict: REJECT persistent stage 2 on the non-il4 pipes (no cell gains > 1.5% over the non-persistent S2-A /
+  v5 configs). Kept as additive diags (pf, pfb, pfl; opaque copies for every PERS build); correctness at
+  T=4097 (test_options) and T=40000 (test_large) OK, bit-identical to the non-persistent kernel.
+binding limit (I=768 T=2048..8192, BM64 hybrid2): per-CTA latency of the B global->register loads (1.5k cycles
+  per K step vs 256 MFMA cycles). It is hidden either by a third wave per SIMD (VGPR budget 168) or by
+  cross-tile prefetch state (A ring + staging LDS, B registers), not both: with the prefetch the third wave
+  spills (iterations 3, 6) and with B in LDS the ring caps residency at 1 CTA/CU (5). At I=384 the y_rows
+  stores bind (S2-A).

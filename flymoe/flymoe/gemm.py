@@ -197,8 +197,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     YTL = stage == 2 and "ytl" in DG
     assert not YTL or (S2W and "nofcb" not in DG), "ytl needs the LDS-staged rows / batched FC epilogues"
     ROWS_W = MBW * 16
+    # Persistent prefetch (hybrid2 / async2 rows): tile w+1's prologue DMAs land in the ring
+    # during tile w's epilogue, so the row staging area sits after the ring.
+    PF = (bool(PERS) and "pf" in DG and stage == 2 and epi == "rows" and S2W
+          and pipe in ("hybrid2", "async2"))
+    PFB = PF and pipe == "hybrid2" and "pfb" in DG
+    S2W_BASE = lds_bytes if PF else 0
     if S2W:
-        lds_bytes = max(lds_bytes, NW * ROWS_W * 128)
+        lds_bytes = max(lds_bytes, S2W_BASE + NW * ROWS_W * 128)
     if HTW:
         lds_bytes = max(lds_bytes, NW * max(ROWS_W, 64) * 16)
     assert not S1S or CG == 2
@@ -269,10 +275,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             # Returns the state of the tile it set up ("pro") or of tile `nxt` ("main").
             # Per-tile opaque copies: LICM would otherwise hoist every n_rows-derived
             # per-step scale offset out of the tile loop and spill them.
-            n_rows = hw.s_opaque(n_rows_k, work) if const_expr(IL4P) else n_rows_k
-            n_a_rows = hw.s_opaque(n_a_rows_k, work) if const_expr(IL4P) else n_a_rows_k
-            lane = hw.v_opaque(lane_k, work) if const_expr(IL4P) else lane_k
-            wave = hw.s_opaque(wave_k, work) if const_expr(IL4P) else wave_k
+            n_rows = hw.s_opaque(n_rows_k, work) if const_expr(PERS) else n_rows_k
+            n_a_rows = hw.s_opaque(n_a_rows_k, work) if const_expr(PERS) else n_a_rows_k
+            lane = hw.v_opaque(lane_k, work) if const_expr(PERS) else lane_k
+            wave = hw.s_opaque(wave_k, work) if const_expr(PERS) else wave_k
             wm, wn = wave // WN, wave % WN
             if const_expr(PERS and mode == "full"):
                 gpu.barrier()  # previous tile's LDS use is finished before the ring refills
@@ -352,7 +358,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     toks = [fx.Int32(hw.bload(r_tok, (row_start + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
                             for it in range_constexpr(A_IT)]
                     st_out = [e, row_start, nrows] + toks
-                elif const_expr(IL4P and st is None):
+                elif const_expr((IL4P or PF) and st is None):
                     st_out = [e, row_start, nrows]
                 for it in range_constexpr(A_IT):
                     row = (wave + it * NW) * 16 + lane // 4
@@ -488,19 +494,35 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     bb = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm) for j in range_constexpr(4)]
                     return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP, cm=b_cm)
 
-                breg = {}
-                if const_expr(not b_lds):
+                def b_state():
+                    # pfb: the first DB steps' B registers, carried in the tile state
+                    out = []
                     for p in range_constexpr(DB):
-                        breg[p] = issue_b(p)
+                        bb, bsp = issue_b(p)
+                        out += [fx.Vector(b) for b in bb] + [fx.Int32(bsp)]
+                    return out
+
+                breg = {}
+                if const_expr(not b_lds and mode != "pro"):
+                    for p in range_constexpr(DB):
+                        if const_expr(PFB and st is not None):
+                            q = st[3 + 5 * p:8 + 5 * p]
+                            breg[p] = ([hw.raw(v) for v in q[:4]], q[4])
+                        else:
+                            breg[p] = issue_b(p)
                 if const_expr(mode == "pro" and defer):
                     # (issue order) the prologue's DMAs + asyncmarks, for the caller to spread
                     thunks = []
-                    for p in range_constexpr(min(NSTG, KS)):
+                    for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS)):
                         thunks += dma_ops(p) + [rocdl.asyncmark]
+                    if const_expr(PFB):
+                        thunks.append(lambda: st.extend(b_state()))
                     return thunks
                 for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS) if mode != "main" else 0):
                     issue(p)
                 if const_expr(mode == "pro"):
+                    if const_expr(PFB):
+                        st_out += b_state()
                     return st_out
 
                 # Per-kind LDS read bases (lane-varying part + region start), computed once.
@@ -737,6 +759,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     # LDS operands for step s+1 are read while step s's MFMAs run.
                     rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 1)))
                     gpu.barrier()
+                    if const_expr(mode == "main"):
+                        tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
                     cur = read_a(0)
                     cur0 = cur
                     for s in range_constexpr(KS):
@@ -757,6 +781,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             if const_expr(s + NSTG - 1 < KS and "nodma" not in DG):
                                 issue(s + NSTG - 1)
                             cur = cur0 if const_expr("nolds" in DG) else read_a(s + 1)
+                    if const_expr(mode == "main"):
+                        st_out = [fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q]))) for q in range_constexpr(3)]
+                        gpu.barrier()  # every wave is past its last ring read
+                        pro_ops = _tile_body(nxt, "pro", st=st_out, defer=True)
                 for s in range_constexpr(KS if not (prefetch or pipe in ("pingpong", "il4")) else 0):
                     rocdl.wait_asyncmark(min(NSTG - 2, KS - 1 - s))
                     gpu.barrier()
@@ -1078,12 +1106,21 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                        * fx.Int64(BN * 2), fx.Int64(n_rows - row_start) * fx.Int64(BN * 2))
                 col0 = nblk * BN + wn * 64 + l16 * 2
                 if const_expr(S2W):
-                    gpu.barrier()  # every wave is done reading the LDS ring
-                    wb = wave * (ROWS_W * 128)
+                    if const_expr(not PF):
+                        gpu.barrier()  # every wave is done reading the LDS ring
+                    wb = S2W_BASE + wave * (ROWS_W * 128)
+                    # pfl: the next tile's DMAs after the row staging (weights consumed, no
+                    # hoisted weight registers), else right after the hoisted weight loads.
+                    PFE = PF and "pfl" not in DG
+                    wvs = [fx.Vector(hw.bload(r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + lg * 4) * 4,
+                                              T.vec(4, T.f32))) for rb in range_constexpr(MBW if PFE else 0)]
+                    # after the weight loads: vmcnt drains in order
+                    for op in (pro_ops if PFE else []):
+                        op()
                     for rb in range_constexpr(MBW):
                         vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
                         r4 = rb0 * 16 + fx.Int32(rb * 16) + lg * 4
-                        wv = fx.Vector(hw.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32)))
+                        wv = wvs[rb] if const_expr(PFE) else fx.Vector(hw.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32)))
                         for v in range_constexpr(4):
                             rl = fx.Int32(rb * 16) + lg * 4 + v  # wave-local row
                             w = fx.Float32(wv[v])
@@ -1093,6 +1130,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                                     fx.Float32).to(fx.BFloat16)
                                 ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
                                 hw.lds_store(pk, lds_base, wb + rl * 128 + ch * 16 + (l16 % 4) * 4, align=4)
+                    for op in (pro_ops if not PFE else []):
+                        op()
                     cm_o = hw.NT if const_expr(S2NT) else 0
                     if const_expr(epi == "fused"):
                         # Shared-expert tile: out[t] = own row + the token's routed rows
@@ -1210,8 +1249,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         xr = bound % 8
         xc = bid % 8
         xstart = xc * xq + fx.min(xc, xr)
-        if const_expr(IL4P):
-            # Persistent il4: tile w+1's prologue DMAs overlap tile w's epilogue. The next
+        if const_expr(IL4P or PF):
+            # Persistent il4 / PF: tile w+1's prologue DMAs overlap tile w's epilogue. The next
             # work index is clamped (the last tile re-fetches itself), so nothing branches.
             gx = fx.Int32(gpu.grid_dim.x) // 8
             wend = xstart + xq + (xc < xr).select(fx.Int32(1), fx.Int32(0))
