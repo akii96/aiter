@@ -52,6 +52,7 @@ def main():
     ap.add_argument("--arms", nargs="+", required=True)
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--notime", action="store_true", help="gate only")
+    ap.add_argument("--flush", action="store_true", help="flush L2/MALL before every timed launch")
     ap.add_argument("--out")
     ap.add_argument("--nogate", action="store_true", help="time diagnostic arms whose output is wrong")
     a = ap.parse_args()
@@ -92,7 +93,7 @@ def main():
         k = rep % len(names)
         for n in names[k:] + names[:k]:
             for s in STAGES:
-                t[n][s].append(sample(getattr(runs[n], s), 10, False) if hasattr(runs[n], s) else 0.0)
+                t[n][s].append(sample(getattr(runs[n], s), 10, a.flush) if hasattr(runs[n], s) else 0.0)
     med = {n: {s: statistics.median(v) for s, v in d.items()} for n, d in t.items()}
     b = med["table"]["stage2"] + med["table"]["combine"]
     res = []

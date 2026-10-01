@@ -1,0 +1,232 @@
+I=  384 T=    32 table                                                            s1    94.3 s2    50.1 total   171.5 | s1  +0.0% vs table
+I=  384 T=    32 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1    93.4 s2    50.0 total   170.0 | s1  +1.0% vs table
+I=  384 T=    32 BM=16,NW=1,pipe=async,D=8,EF=1,MV=1                              s1    94.4 s2    50.4 total   171.5 | s1  -0.1% vs table
+I=  384 T=    32 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1    94.4 s2    50.0 total   171.5 | s1  -0.1% vs table
+I=  384 T=    32 BM=16,NW=2,pipe=async,D=6,EF=1,MV=1                              s1    96.6 s2    50.2 total   173.9 | s1  -2.4% vs table
+I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    92.2 s2    50.0 total   168.8 | s1  +2.3% vs table
+I=  384 T=    32 BM=32,NW=1,pipe=async,D=6,EF=1,MV=1                              s1    95.0 s2    50.6 total   173.3 | s1  -0.8% vs table
+I=  384 T=   256 table                                                            s1   119.9 s2    71.4 total   224.1 | s1  +0.0% vs table
+I=  384 T=   256 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   120.4 s2    71.2 total   224.4 | s1  -0.5% vs table
+I=  384 T=   256 BM=16,NW=1,pipe=async,D=8,EF=1,MV=1                              s1   122.4 s2    71.7 total   226.8 | s1  -2.1% vs table
+I=  384 T=   256 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1   121.3 s2    71.9 total   225.4 | s1  -1.2% vs table
+I=  384 T=   256 BM=16,NW=2,pipe=async,D=6,EF=1,MV=1                              s1   119.3 s2    71.2 total   223.2 | s1  +0.5% vs table
+I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   118.7 s2    71.6 total   222.3 | s1  +1.0% vs table
+I=  384 T=   256 BM=32,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   122.5 s2    71.6 total   227.9 | s1  -2.2% vs table
+I= 1536 T=    32 table                                                            s1   202.6 s2   143.9 total   373.4 | s1  +0.0% vs table
+I= 1536 T=    32 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   197.3 s2   143.9 total   368.1 | s1  +2.6% vs table
+I= 1536 T=    32 BM=16,NW=1,pipe=async,D=8,EF=1,MV=1                              s1   196.5 s2   143.0 total   365.8 | s1  +3.0% vs table
+I= 1536 T=    32 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1   195.4 s2   143.0 total   365.9 | s1  +3.5% vs table
+I= 1536 T=    32 BM=16,NW=2,pipe=async,D=6,EF=1,MV=1                              s1   196.0 s2   142.8 total   365.4 | s1  +3.3% vs table
+I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   194.9 s2   143.3 total   365.3 | s1  +3.8% vs table
+I= 1536 T=    32 BM=32,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   204.6 s2   142.8 total   375.6 | s1  -1.0% vs table
+I= 1536 T=   256 table                                                            s1   274.1 s2   187.9 total   495.5 | s1  +0.0% vs table
+I= 1536 T=   256 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   273.7 s2   187.1 total   494.3 | s1  +0.1% vs table
+I= 1536 T=   256 BM=16,NW=1,pipe=async,D=8,EF=1,MV=1                              s1   272.0 s2   186.2 total   492.1 | s1  +0.8% vs table
+I= 1536 T=   256 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1   273.3 s2   186.6 total   493.4 | s1  +0.3% vs table
+I= 1536 T=   256 BM=16,NW=2,pipe=async,D=6,EF=1,MV=1                              s1   273.7 s2   186.4 total   494.2 | s1  +0.1% vs table
+I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   272.4 s2   186.4 total   492.6 | s1  +0.6% vs table
+I= 1536 T=   256 BM=32,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   281.8 s2   186.5 total   501.7 | s1  -2.8% vs table
+I=  384 T=   32 stage1: warm    50.4  flush   101.4  flush+tlb   101.2
+I=  384 T=   32 stage2: warm    32.0  flush    56.2  flush+tlb    56.3
+I=  384 T=  256 stage1: warm    68.7  flush   125.0  flush+tlb   123.8
+I=  384 T=  256 stage2: warm    42.6  flush    78.0  flush+tlb    77.4
+I= 1536 T=   32 stage1: warm   152.7  flush   209.0  flush+tlb   200.8
+I= 1536 T=   32 stage2: warm    90.2  flush   148.1  flush+tlb   144.3
+I= 1536 T=  256 stage1: warm   226.5  flush   276.1  flush+tlb   271.1
+I= 1536 T=  256 stage2: warm   139.4  flush   188.4  flush+tlb   185.5
+I=  384 T=   32 stage1: warm    49.8  flush   102.3  flush+tlb   102.2
+I=  384 T=   32 stage2: warm    31.8  flush    56.5  flush+tlb    56.8
+I=  384 T=   32 stage1: warm    47.9  flush    99.6  flush+tlb    99.8
+I=  384 T=   32 stage2: warm    31.0  flush    53.1  flush+tlb    53.8
+I=  384 T=   32 stage1: warm    48.2  flush    98.6  flush+tlb    97.8  rflush    55.3
+I=  384 T=   32 stage2: warm    30.7  flush    53.0  flush+tlb    53.2  rflush    35.7
+I=  384 T=  256 stage1: warm    69.0  flush   126.4  flush+tlb   123.6  rflush    71.4
+I=  384 T=  256 stage2: warm    42.7  flush    75.7  flush+tlb    75.3  rflush    50.6
+I= 1536 T=   32 stage1: warm   153.6  flush   209.1  flush+tlb   200.0  rflush   152.8
+I= 1536 T=   32 stage2: warm    84.5  flush   138.8  flush+tlb   134.7  rflush    86.0
+I= 1536 T=  256 stage1: warm   228.8  flush   280.2  flush+tlb   272.6  rflush   227.0
+I= 1536 T=  256 stage2: warm   129.0  flush   179.0  flush+tlb   176.1  rflush   127.5
+rflush I=  384 T=    32 table                                                            s1    50.8 s2    30.0 total   108.0 | s1  +0.0% vs table
+rflush I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    47.8 s2    30.2 total   104.5 | s1  +5.9% vs table
+rflush I=  384 T=    32 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1    50.0 s2    30.3 total   107.3 | s1  +1.6% vs table
+rflush I=  384 T=    32 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1    50.9 s2    30.1 total   107.9 | s1  -0.3% vs table
+rflush I=  768 T=    32 table                                                            s1    83.0 s2    46.3 total   156.6 | s1  +0.0% vs table
+rflush I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    76.7 s2    46.3 total   150.1 | s1  +7.6% vs table
+rflush I=  768 T=    32 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1    78.3 s2    46.5 total   151.4 | s1  +5.7% vs table
+rflush I=  768 T=    32 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1    77.4 s2    46.5 total   150.6 | s1  +6.7% vs table
+rflush I= 1536 T=    32 table                                                            s1   146.9 s2    81.8 total   255.8 | s1  +0.0% vs table
+rflush I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   141.5 s2    82.0 total   250.4 | s1  +3.7% vs table
+rflush I= 1536 T=    32 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   143.5 s2    82.1 total   252.0 | s1  +2.3% vs table
+rflush I= 1536 T=    32 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1   143.4 s2    82.2 total   252.5 | s1  +2.4% vs table
+rflush I= 1536 T=    64 table                                                            s1   198.1 s2   108.2 total   333.3 | s1  +0.0% vs table
+rflush I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   194.5 s2   109.1 total   330.6 | s1  +1.8% vs table
+rflush I= 1536 T=    64 BM=16,NW=1,pipe=async,D=6,EF=1,MV=1                              s1   196.1 s2   108.5 total   331.6 | s1  +1.0% vs table
+rflush I= 1536 T=    64 BM=16,NW=1,pipe=async2,D=6,EF=1,MV=1                             s1   195.6 s2   108.5 total   330.6 | s1  +1.3% vs table
+s1 warm I=  384 T=    32 table                                                            s1    38.2 s2    20.2 total    87.3 | s1  +0.0% vs table
+s1 warm I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    36.9 s2    20.3 total    86.1 | s1  +3.3% vs table
+s1 warm I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    37.0 s2    20.2 total    86.0 | s1  +3.1% vs table
+s2 warm I=  384 T=    32 table                                                                  s1    38.1 s2    20.3 cb    7.5 total    85.5 | s2+cb  +0.0% vs table
+s2 warm I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    38.6 s2    19.1 cb    7.5 total    85.0 | s2+cb  +4.4% vs table
+s2 warm I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    38.5 s2    19.2 cb    7.6 total    85.1 | s2+cb  +3.8% vs table
+s2 warm I=  384 T=    32 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    38.3 s2    20.8 cb    7.5 total    86.7 | s2+cb  -2.0% vs table
+s1 --flush I=  384 T=    32 table                                                            s1    50.0 s2    30.1 total   106.9 | s1  +0.0% vs table
+s1 --flush I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    47.4 s2    30.3 total   104.3 | s1  +5.1% vs table
+s1 --flush I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    47.7 s2    30.2 total   104.6 | s1  +4.5% vs table
+s2 --flush I=  384 T=    32 table                                                                  s1    50.5 s2    29.9 cb   10.2 total   107.0 | s2+cb  +0.0% vs table
+s2 --flush I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    50.3 s2    28.2 cb   10.2 total   105.2 | s2+cb  +4.4% vs table
+s2 --flush I=  384 T=    32 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    50.0 s2    28.1 cb   10.3 total   104.8 | s2+cb  +4.2% vs table
+s2 --flush I=  384 T=    32 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    50.2 s2    30.2 cb   10.2 total   107.1 | s2+cb  -0.5% vs table
+s1 warm I=  384 T=    64 table                                                            s1    47.2 s2    25.9 total   100.1 | s1  +0.0% vs table
+s1 warm I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    47.9 s2    25.8 total   100.2 | s1  -1.4% vs table
+s1 warm I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    46.3 s2    26.0 total    99.1 | s1  +1.9% vs table
+s2 warm I=  384 T=    64 table                                                                  s1    46.5 s2    25.8 cb    7.7 total   100.2 | s2+cb  +0.0% vs table
+s2 warm I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    46.2 s2    23.9 cb    7.4 total    97.8 | s2+cb  +6.5% vs table
+s2 warm I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    46.0 s2    24.1 cb    7.4 total    97.8 | s2+cb  +5.8% vs table
+s2 warm I=  384 T=    64 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    46.1 s2    26.5 cb    7.4 total   100.3 | s2+cb  -1.4% vs table
+s1 --flush I=  384 T=    64 table                                                            s1    57.5 s2    37.9 total   122.1 | s1  +0.0% vs table
+s1 --flush I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    57.6 s2    37.7 total   122.5 | s1  -0.2% vs table
+s1 --flush I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    56.6 s2    38.3 total   121.9 | s1  +1.6% vs table
+s2 --flush I=  384 T=    64 table                                                                  s1    57.4 s2    36.8 cb   10.4 total   120.9 | s2+cb  +0.0% vs table
+s2 --flush I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    57.4 s2    34.5 cb   10.3 total   118.2 | s2+cb  +5.2% vs table
+s2 --flush I=  384 T=    64 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    57.2 s2    34.9 cb   10.3 total   118.6 | s2+cb  +4.3% vs table
+s2 --flush I=  384 T=    64 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    56.9 s2    36.4 cb   10.3 total   119.8 | s2+cb  +1.0% vs table
+s1 warm I=  384 T=   128 table                                                            s1    55.1 s2    29.1 total   111.0 | s1  +0.0% vs table
+s1 warm I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    54.8 s2    29.1 total   111.0 | s1  +0.6% vs table
+s1 warm I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    55.1 s2    29.2 total   111.1 | s1  +0.0% vs table
+s2 warm I=  384 T=   128 table                                                                  s1    54.3 s2    28.9 cb    7.5 total   110.8 | s2+cb  +0.0% vs table
+s2 warm I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    54.4 s2    27.7 cb    7.6 total   109.9 | s2+cb  +3.1% vs table
+s2 warm I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    54.6 s2    27.8 cb    7.3 total   110.2 | s2+cb  +3.7% vs table
+s2 warm I=  384 T=   128 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    54.3 s2    30.2 cb    7.3 total   112.0 | s2+cb  -2.9% vs table
+s1 --flush I=  384 T=   128 table                                                            s1    63.6 s2    39.9 total   131.2 | s1  +0.0% vs table
+s1 --flush I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    62.3 s2    40.1 total   129.7 | s1  +2.0% vs table
+s1 --flush I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    62.6 s2    40.0 total   130.5 | s1  +1.7% vs table
+s2 --flush I=  384 T=   128 table                                                                  s1    63.6 s2    39.9 cb   10.8 total   131.5 | s2+cb  +0.0% vs table
+s2 --flush I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    63.7 s2    37.7 cb   11.1 total   129.3 | s2+cb  +3.7% vs table
+s2 --flush I=  384 T=   128 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    63.6 s2    37.8 cb   10.8 total   129.4 | s2+cb  +4.2% vs table
+s2 --flush I=  384 T=   128 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    63.6 s2    40.6 cb   10.6 total   131.9 | s2+cb  -1.1% vs table
+s1 warm I=  384 T=   256 table                                                            s1    58.7 s2    31.3 total   116.5 | s1  +0.0% vs table
+s1 warm I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    58.0 s2    31.3 total   115.6 | s1  +1.2% vs table
+s1 warm I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    58.5 s2    31.5 total   116.2 | s1  +0.4% vs table
+s2 warm I=  384 T=   256 table                                                                  s1    57.7 s2    31.3 cb    7.7 total   117.7 | s2+cb  +0.0% vs table
+s2 warm I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    57.7 s2    30.3 cb    7.8 total   117.1 | s2+cb  +2.1% vs table
+s2 warm I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    57.9 s2    30.8 cb    7.6 total   117.3 | s2+cb  +1.4% vs table
+s2 warm I=  384 T=   256 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    57.6 s2    32.9 cb    7.5 total   118.9 | s2+cb  -3.7% vs table
+s1 --flush I=  384 T=   256 table                                                            s1    65.3 s2    41.8 total   137.0 | s1  +0.0% vs table
+s1 --flush I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    64.0 s2    42.0 total   135.7 | s1  +1.9% vs table
+s1 --flush I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    64.7 s2    42.2 total   136.6 | s1  +0.9% vs table
+s2 --flush I=  384 T=   256 table                                                                  s1    65.3 s2    43.6 cb   11.5 total   138.7 | s2+cb  +0.0% vs table
+s2 --flush I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    64.7 s2    41.6 cb   11.4 total   136.2 | s2+cb  +3.9% vs table
+s2 --flush I=  384 T=   256 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    65.1 s2    41.4 cb   11.4 total   135.8 | s2+cb  +4.5% vs table
+s2 --flush I=  384 T=   256 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    64.9 s2    44.8 cb   11.5 total   139.7 | s2+cb  -1.9% vs table
+s1 warm I=  768 T=    32 table                                                            s1    75.4 s2    31.9 total   135.1 | s1  +0.0% vs table
+s1 warm I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    69.8 s2    31.9 total   130.1 | s1  +7.4% vs table
+s1 warm I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    70.4 s2    32.0 total   130.3 | s1  +6.7% vs table
+s2 warm I=  768 T=    32 table                                                                  s1    75.9 s2    31.9 cb    7.8 total   136.7 | s2+cb  +0.0% vs table
+s2 warm I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    74.4 s2    31.9 cb    7.8 total   135.2 | s2+cb  -0.1% vs table
+s2 warm I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    75.8 s2    31.2 cb    7.8 total   136.1 | s2+cb  +1.7% vs table
+s2 warm I=  768 T=    32 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    76.5 s2    32.5 cb    7.7 total   138.0 | s2+cb  -1.3% vs table
+s1 --flush I=  768 T=    32 table                                                            s1    82.0 s2    45.3 total   154.6 | s1  +0.0% vs table
+s1 --flush I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    75.7 s2    45.2 total   148.6 | s1  +7.7% vs table
+s1 --flush I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    76.9 s2    45.5 total   149.1 | s1  +6.3% vs table
+s2 --flush I=  768 T=    32 table                                                                  s1    81.2 s2    45.4 cb   10.7 total   154.4 | s2+cb  +0.0% vs table
+s2 --flush I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    80.3 s2    42.5 cb   10.5 total   150.6 | s2+cb  +5.4% vs table
+s2 --flush I=  768 T=    32 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    81.0 s2    42.3 cb   10.4 total   151.3 | s2+cb  +6.0% vs table
+s2 --flush I=  768 T=    32 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    80.2 s2    45.0 cb   10.6 total   153.4 | s2+cb  +1.0% vs table
+s1 warm I=  768 T=    64 table                                                            s1    97.5 s2    47.3 total   172.3 | s1  +0.0% vs table
+s1 warm I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1    95.2 s2    47.4 total   170.4 | s1  +2.3% vs table
+s1 warm I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1    96.5 s2    47.2 total   171.9 | s1  +1.1% vs table
+s2 warm I=  768 T=    64 table                                                                  s1    97.3 s2    47.4 cb    7.9 total   173.6 | s2+cb  +0.0% vs table
+s2 warm I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1    97.0 s2    44.7 cb    8.0 total   170.6 | s2+cb  +4.8% vs table
+s2 warm I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1    96.8 s2    44.1 cb    7.9 total   170.0 | s2+cb  +6.1% vs table
+s2 warm I=  768 T=    64 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1    96.5 s2    46.0 cb    7.7 total   171.2 | s2+cb  +2.9% vs table
+s1 --flush I=  768 T=    64 table                                                            s1   103.2 s2    58.9 total   188.9 | s1  +0.0% vs table
+s1 --flush I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   101.1 s2    58.6 total   186.6 | s1  +2.1% vs table
+s1 --flush I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   103.2 s2    59.2 total   189.9 | s1  +0.1% vs table
+s2 --flush I=  768 T=    64 table                                                                  s1   103.0 s2    59.0 cb   10.5 total   188.9 | s2+cb  +0.0% vs table
+s2 --flush I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   103.3 s2    56.0 cb   10.6 total   186.5 | s2+cb  +4.3% vs table
+s2 --flush I=  768 T=    64 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   102.6 s2    55.9 cb   10.6 total   186.3 | s2+cb  +4.3% vs table
+s2 --flush I=  768 T=    64 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   102.6 s2    57.5 cb   10.6 total   187.7 | s2+cb  +2.0% vs table
+s1 warm I=  768 T=   128 table                                                            s1   111.9 s2    58.2 total   197.6 | s1  +0.0% vs table
+s1 warm I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   110.7 s2    57.6 total   195.8 | s1  +1.1% vs table
+s1 warm I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   117.1 s2    57.9 total   202.3 | s1  -4.6% vs table
+s2 warm I=  768 T=   128 table                                                                  s1   110.5 s2    58.0 cb    7.6 total   196.7 | s2+cb  +0.0% vs table
+s2 warm I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   111.2 s2    60.1 cb    7.5 total   199.6 | s2+cb  -3.1% vs table
+s2 warm I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   110.9 s2    58.2 cb    7.7 total   197.9 | s2+cb  -0.6% vs table
+s2 warm I=  768 T=   128 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   110.0 s2    61.9 cb    7.6 total   200.3 | s2+cb  -5.9% vs table
+s1 --flush I=  768 T=   128 table                                                            s1   115.9 s2    64.9 total   208.0 | s1  +0.0% vs table
+s1 --flush I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   114.5 s2    68.1 total   210.3 | s1  +1.2% vs table
+s1 --flush I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   121.0 s2    68.7 total   217.1 | s1  -4.4% vs table
+s2 --flush I=  768 T=   128 table                                                                  s1   117.6 s2    64.7 cb   10.5 total   209.4 | s2+cb  +0.0% vs table
+s2 --flush I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   117.6 s2    62.9 cb   10.4 total   208.3 | s2+cb  +2.5% vs table
+s2 --flush I=  768 T=   128 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   117.9 s2    62.6 cb   10.6 total   207.5 | s2+cb  +2.7% vs table
+s2 --flush I=  768 T=   128 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   116.8 s2    65.3 cb   10.6 total   209.5 | s2+cb  -0.9% vs table
+s1 warm I=  768 T=   256 table                                                            s1   116.4 s2    63.6 total   207.5 | s1  +0.0% vs table
+s1 warm I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   114.9 s2    63.6 total   206.0 | s1  +1.3% vs table
+s1 warm I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   120.4 s2    63.8 total   211.6 | s1  -3.4% vs table
+s2 warm I=  768 T=   256 table                                                                  s1   116.5 s2    63.7 cb    7.7 total   208.9 | s2+cb  +0.0% vs table
+s2 warm I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   116.1 s2    61.4 cb    7.6 total   205.9 | s2+cb  +3.3% vs table
+s2 warm I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   114.6 s2    61.7 cb    7.8 total   205.0 | s2+cb  +2.6% vs table
+s2 warm I=  768 T=   256 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   116.7 s2    64.3 cb    7.6 total   209.5 | s2+cb  -0.8% vs table
+s1 --flush I=  768 T=   256 table                                                            s1   122.0 s2    68.1 total   219.6 | s1  +0.0% vs table
+s1 --flush I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   120.3 s2    68.2 total   218.4 | s1  +1.4% vs table
+s1 --flush I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   127.1 s2    68.3 total   224.9 | s1  -4.2% vs table
+s2 --flush I=  768 T=   256 table                                                                  s1   122.0 s2    68.3 cb   11.4 total   219.7 | s2+cb  +0.0% vs table
+s2 --flush I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   121.2 s2    67.0 cb   11.3 total   217.4 | s2+cb  +1.8% vs table
+s2 --flush I=  768 T=   256 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   120.0 s2    66.9 cb   11.4 total   216.6 | s2+cb  +1.7% vs table
+s2 --flush I=  768 T=   256 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   122.2 s2    68.9 cb   11.3 total   220.5 | s2+cb  -0.7% vs table
+s1 warm I= 1536 T=    32 table                                                            s1   144.4 s2    80.1 total   252.4 | s1  +0.0% vs table
+s1 warm I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   139.3 s2    80.3 total   246.8 | s1  +3.6% vs table
+s1 warm I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   140.3 s2    80.0 total   247.5 | s1  +2.8% vs table
+s2 warm I= 1536 T=    32 table                                                                  s1   142.0 s2    79.7 cb    7.6 total   249.7 | s2+cb  +0.0% vs table
+s2 warm I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   141.9 s2    76.7 cb    7.6 total   246.8 | s2+cb  +3.4% vs table
+s2 warm I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   141.9 s2    75.4 cb    7.4 total   245.1 | s2+cb  +5.1% vs table
+s2 warm I= 1536 T=    32 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   141.9 s2    76.8 cb    7.4 total   246.7 | s2+cb  +3.6% vs table
+s1 --flush I= 1536 T=    32 table                                                            s1   148.3 s2    85.9 total   261.0 | s1  +0.0% vs table
+s1 --flush I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   142.9 s2    86.2 total   256.1 | s1  +3.6% vs table
+s1 --flush I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   144.9 s2    86.0 total   257.3 | s1  +2.3% vs table
+s2 --flush I= 1536 T=    32 table                                                                  s1   148.4 s2    85.4 cb   10.4 total   260.8 | s2+cb  +0.0% vs table
+s2 --flush I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   149.4 s2    83.1 cb   10.4 total   259.5 | s2+cb  +2.4% vs table
+s2 --flush I= 1536 T=    32 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   149.4 s2    81.4 cb   10.3 total   257.5 | s2+cb  +4.4% vs table
+s2 --flush I= 1536 T=    32 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   148.9 s2    82.8 cb   10.5 total   259.1 | s2+cb  +2.7% vs table
+s1 warm I= 1536 T=    64 table                                                            s1   195.8 s2   104.0 total   327.4 | s1  +0.0% vs table
+s1 warm I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   192.3 s2   104.2 total   324.3 | s1  +1.8% vs table
+s1 warm I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   195.6 s2   103.9 total   327.0 | s1  +0.1% vs table
+s2 warm I= 1536 T=    64 table                                                                  s1   196.1 s2   103.7 cb    7.5 total   326.8 | s2+cb  +0.0% vs table
+s2 warm I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   195.6 s2   103.1 cb    7.4 total   325.5 | s2+cb  +0.6% vs table
+s2 warm I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   196.1 s2   101.0 cb    7.6 total   324.3 | s2+cb  +2.3% vs table
+s2 warm I= 1536 T=    64 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   195.4 s2   100.7 cb    7.5 total   323.1 | s2+cb  +2.7% vs table
+s1 --flush I= 1536 T=    64 table                                                            s1   200.5 s2   109.6 total   337.0 | s1  +0.0% vs table
+s1 --flush I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   196.5 s2   109.8 total   333.1 | s1  +2.0% vs table
+s1 --flush I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   200.7 s2   110.2 total   338.0 | s1  -0.1% vs table
+s2 --flush I= 1536 T=    64 table                                                                  s1   199.8 s2   109.8 cb   10.5 total   336.2 | s2+cb  +0.0% vs table
+s2 --flush I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   199.0 s2   108.9 cb   10.5 total   334.6 | s2+cb  +0.8% vs table
+s2 --flush I= 1536 T=    64 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   199.9 s2   107.7 cb   10.4 total   334.5 | s2+cb  +1.9% vs table
+s2 --flush I= 1536 T=    64 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   200.4 s2   106.6 cb   10.7 total   334.2 | s2+cb  +2.6% vs table
+s1 warm I= 1536 T=   128 table                                                            s1   213.9 s2   112.7 total   354.2 | s1  +0.0% vs table
+s1 warm I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   214.5 s2   119.5 total   361.6 | s1  -0.3% vs table
+s1 warm I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   215.4 s2   118.4 total   361.5 | s1  -0.7% vs table
+s2 warm I= 1536 T=   128 table                                                                  s1   214.5 s2   113.3 cb    7.6 total   355.5 | s2+cb  +0.0% vs table
+s2 warm I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   214.3 s2   119.2 cb    7.4 total   361.2 | s2+cb  -4.8% vs table
+s2 warm I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   213.3 s2   117.7 cb    7.3 total   359.0 | s2+cb  -3.5% vs table
+s2 warm I= 1536 T=   128 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   212.8 s2   118.1 cb    7.4 total   358.7 | s2+cb  -3.9% vs table
+s1 --flush I= 1536 T=   128 table                                                            s1   219.0 s2   117.7 total   364.6 | s1  +0.0% vs table
+s1 --flush I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   219.9 s2   124.2 total   371.4 | s1  -0.4% vs table
+s1 --flush I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   220.8 s2   124.0 total   372.1 | s1  -0.8% vs table
+s2 --flush I= 1536 T=   128 table                                                                  s1   216.5 s2   117.4 cb   10.5 total   362.3 | s2+cb  +0.0% vs table
+s2 --flush I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   214.9 s2   124.5 cb   10.8 total   368.1 | s2+cb  -5.8% vs table
+s2 --flush I= 1536 T=   128 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   215.0 s2   122.9 cb   10.8 total   366.5 | s2+cb  -4.5% vs table
+s2 --flush I= 1536 T=   128 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   215.2 s2   123.8 cb   10.7 total   367.5 | s2+cb  -5.1% vs table
+s1 warm I= 1536 T=   256 table                                                            s1   216.2 s2   127.8 total   370.0 | s1  +0.0% vs table
+s1 warm I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   214.0 s2   128.4 total   368.2 | s1  +1.0% vs table
+s1 warm I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   215.3 s2   128.2 total   369.3 | s1  +0.4% vs table
+s2 warm I= 1536 T=   256 table                                                                  s1   216.9 s2   127.7 cb    7.4 total   371.6 | s2+cb  +0.0% vs table
+s2 warm I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   216.0 s2   130.7 cb    7.6 total   374.4 | s2+cb  -2.3% vs table
+s2 warm I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   216.8 s2   129.7 cb    7.4 total   374.3 | s2+cb  -1.5% vs table
+s2 warm I= 1536 T=   256 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   216.4 s2   128.2 cb    7.4 total   372.4 | s2+cb  -0.4% vs table
+s1 --flush I= 1536 T=   256 table                                                            s1   224.8 s2   131.5 total   386.1 | s1  +0.0% vs table
+s1 --flush I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1                            s1   222.9 s2   132.0 total   385.0 | s1  +0.8% vs table
+s1 --flush I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=6,EF=1,MV=1                            s1   225.1 s2   131.6 total   386.6 | s1  -0.1% vs table
+s2 --flush I= 1536 T=   256 table                                                                  s1   220.9 s2   131.4 cb   11.3 total   382.0 | s2+cb  +0.0% vs table
+s2 --flush I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=2,diag=nos2w                                 s1   220.6 s2   136.8 cb   11.5 total   388.6 | s2+cb  -4.0% vs table
+s2 --flush I= 1536 T=   256 BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w                                 s1   219.3 s2   135.3 cb   11.3 total   385.1 | s2+cb  -2.8% vs table
+s2 --flush I= 1536 T=   256 BM=16,NW=1,pipe=async,D=3,diag=nos2w                                   s1   219.2 s2   133.6 cb   11.3 total   383.1 | s2+cb  -1.5% vs table

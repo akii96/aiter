@@ -196,3 +196,29 @@ binding limit (stage 1, T <= 8192): W13 weight streaming at the HBM limit (warm:
   fp32 partial traffic (BM*BN*4 per unit and split) and duplicated prologues. Flushed small T is
   latency-bound below the floor (I=384 T=32: 95 us for ~170 MB of touched weights) but not CTA-limited:
   more units do not help there either (iteration 4) -> ST-1.
+
+== ST-1  small-T deep prefetch / CTA shape (flushed and warm) ==
+logs: r5_st1.log; bench/tlb_probe.py; compare.flush now has FLYMOE_FLUSH=read (clean flush)
+iterations (serial GPU 0, us vs the v5 table cell in-run):
+  1    write flush (compare.flush: fill_ of 512 MB), stage 1 BM16/32 NW1/2 async D6/D8, async2 D6, hybrid2 D4
+       at I=384 / 1536 T=32 / 256                                            -> -2.8 .. +3.8% s1 (best hybrid2 D4)
+  2    flushed penalty ~50 us per stage at every width / T (I=384 T=32 s1 48 -> 99, I=1536 T=32 153 -> 209):
+       constant, not proportional to touched bytes -> not in-flight depth. Touching one dword per 4 KB page of
+       W13/W2 after the flush (TLB warm, data cold): -0..-8 us                -> TLB not binding
+  3    read flush (sum over the same 512 MB, caches end holding clean lines): s1 55.3 / s2 35.7 at I=384 T=32
+       (warm 48.2 / 30.7), 152.8 / 86.0 at I=1536 T=32 (warm 153.6 / 84.5)   -> the write-flush penalty is the
+       write-back of the dirty MALL lines the flush leaves, paid by the next kernel's reads (benchmark artifact)
+  4    clean-flushed and warm sweep, stage 1 hybrid2 BM16 NW1 D4/D6 at T=32..256, all widths:
+         I=384 T=32 +3.3 / +5.1% (warm / clean flush), I=768 T=32 +7.4 / +7.7, T=64 +2.3 / +2.1,
+         I=1536 T=32 +3.6 / +3.6, T=64 +1.8 / +2.0; T >= 128 -0.4 .. +2.0; D6 never better than D4
+  5    stage 2 BM16 NW1 nos2w, hybrid2 D2 / D3 and async D3 at T=32..256, all widths (s2+cb):
+         I=384 hybrid2 +2.1 .. +6.5% at every T (both flush modes), I=768 T=32 +1.7 / +6.0 (D3), T=64 +6.1 /
+         +4.3 (D3), T=256 +3.3 / +1.8 (D2), I=1536 T=32 +5.1 / +4.4 (D3), T=64 async +2.7 / +2.6;
+         I=1536 T=128 / 256 and I=768 T=128 -0.6 .. -5.8
+verdict: SHIP (into make_tiles_v6 via the pick sweeps, > +1.5% warm): stage 1 hybrid2 BM16 NW1 D4 at
+  I=384 / 768 / 1536 T=32, I=768 T=64, I=1536 T=64; stage 2 BM16 NW1 hybrid2 nos2w (D2/D3 per cell) at
+  I=384 T=32..256, I=768 T=64 / 256, I=1536 T=32, async D3 at I=1536 T=64. Deeper prefetch (D6/D8) rejected.
+binding limit (T <= 256): with a clean flush the cells run within 0..15% of warm, i.e. at the warm
+  weight-streaming rate (S1-D); the remaining gains come from the 16-row CTA (more CTAs in flight over the
+  ~T*5/128 rows per expert), not from prefetch depth. The ~50 us per-stage flushed penalty in the round-4/5
+  flushed numbers is the dirty write-back of compare.flush; the final A/B reports both flush modes.

@@ -34,6 +34,7 @@ STAGES = ("prologue", "stage1", "stage2", "combine")
 REF_TABLES = {"v1": "tiles_I{I}.json", "v3": "tiles_v3_I{I}.json", "v4pre": "tiles_v4_I{I}.json",
               "v4": "tiles_v4_I{I}.json", "v5": "tiles_v5_I{I}.json"}
 _flush_buf = None
+_flush_sink = None
 
 
 def load_ref(ref):
@@ -54,10 +55,17 @@ def table_cfg(path, I, T):
 
 
 def flush():
-    global _flush_buf
+    """FLYMOE_FLUSH=read: evict by reading the buffer (caches left holding clean lines). The
+    default write flush leaves ~256 MB of dirty MALL lines whose write-back the next kernel's
+    reads pay (~50 us per stage at small T; r5_st1.log)."""
+    global _flush_buf, _flush_sink
     if _flush_buf is None:
-        _flush_buf = torch.empty(512 * 1024 * 1024 // 4, dtype=torch.float32, device="cuda")
-    _flush_buf.fill_(1.0)
+        _flush_buf = torch.ones(512 * 1024 * 1024 // 4, dtype=torch.float32, device="cuda")
+        _flush_sink = torch.zeros(1, device="cuda")
+    if os.environ.get("FLYMOE_FLUSH") == "read":
+        _flush_sink.add_(_flush_buf.sum())
+    else:
+        _flush_buf.fill_(1.0)
 
 
 def sample(fn, inner, do_flush):
