@@ -1,0 +1,260 @@
+[
+ {
+  "I": 768,
+  "T": 16384,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 66.18450284004211,
+   "stage1": 412.3469829559326,
+   "stage2": 601.4042854309082,
+   "combine": 2.175999991595745
+  },
+  "total": 1082.1117712184787,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 768,
+  "T": 16384,
+  "arm": "table_null",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 65.82450270652771,
+   "stage1": 411.63501739501953,
+   "stage2": 604.5244216918945,
+   "combine": 2.0760999992489815
+  },
+  "total": 1084.0600417926908,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 768,
+  "T": 16384,
+  "arm": "diag1=bar8+s1tr",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 64.96449708938599,
+   "stage1": 404.2749881744385,
+   "stage2": 609.4725131988525,
+   "combine": 2.1719999611377716
+  },
+  "total": 1080.8839984238148,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 768,
+  "T": 16384,
+  "arm": "diag1=bar8+s1tr+epg2",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr+epg2",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 65.62849879264832,
+   "stage1": 398.4628915786743,
+   "stage2": 601.7323017120361,
+   "combine": 2.419999986886978
+  },
+  "total": 1068.2436920702457,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 768,
+  "T": 16384,
+  "arm": "diag1=bar8+s1tr+epg4",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr+epg4",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 62.7843976020813,
+   "stage1": 401.94292068481445,
+   "stage2": 602.6803970336914,
+   "combine": 2.1800000220537186
+  },
+  "total": 1069.5877153426409,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 768,
+  "T": 16384,
+  "arm": "diag1=bar8+s1tr+epg8",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr+epg8",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 65.56450128555298,
+   "stage1": 401.86290740966797,
+   "stage2": 600.240421295166,
+   "combine": 2.1479999646544456
+  },
+  "total": 1069.8158299550414,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ }
+]

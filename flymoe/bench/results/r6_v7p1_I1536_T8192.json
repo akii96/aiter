@@ -1,0 +1,260 @@
+[
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "table",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 40.5362993478775,
+   "stage1": 510.2996826171875,
+   "stage2": 442.0271873474121,
+   "combine": 1.679999940097332
+  },
+  "total": 994.5431692525744,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "table_null",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 40.22029936313629,
+   "stage1": 507.65581130981445,
+   "stage2": 447.23520278930664,
+   "combine": 1.7240999266505241
+  },
+  "total": 996.8354133889079,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "diag1=bar8+s1tr",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 40.19230008125305,
+   "stage1": 509.9156856536865,
+   "stage2": 443.06721687316895,
+   "combine": 1.7720000818371773
+  },
+  "total": 994.9472026899457,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "diag1=bar8+s1tr+epg2",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr+epg2",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 40.232300758361816,
+   "stage1": 498.6755847930908,
+   "stage2": 444.5631980895996,
+   "combine": 1.624000072479248
+  },
+  "total": 985.0950837135315,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "diag1=bar8+s1tr+epg4",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr+epg4",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 40.22420048713684,
+   "stage1": 502.35562324523926,
+   "stage2": 440.4390811920166,
+   "combine": 1.616000011563301
+  },
+  "total": 984.634904935956,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ },
+ {
+  "I": 1536,
+  "T": 8192,
+  "arm": "diag1=bar8+s1tr+epg8",
+  "cfg": {
+   "BM1": 256,
+   "NW1": 4,
+   "WM1": 2,
+   "pipe1": "il4",
+   "D1": 3,
+   "EF1": 1,
+   "diag1": "bar8+s1tr+epg8",
+   "PERS1": 1,
+   "BM2": 256,
+   "NW2": 4,
+   "WM2": 2,
+   "pipe2": "il4",
+   "D2": 3,
+   "PERS2": 1,
+   "diag2": "s2nt",
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "median_us": {
+   "prologue": 40.24829864501953,
+   "stage1": 500.8756160736084,
+   "stage2": 442.3391819000244,
+   "combine": 1.6039999201893806
+  },
+  "total": 985.0670965388417,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "5acbd51e"
+ }
+]

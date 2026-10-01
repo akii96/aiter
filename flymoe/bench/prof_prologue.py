@@ -21,11 +21,12 @@ if __name__ == "__main__":
     ap.add_argument("--I", type=int, default=384)
     ap.add_argument("--T", type=int, nargs="+", default=[32768])
     ap.add_argument("--iters", type=int, default=20)
+    ap.add_argument("--table", default=os.path.join(HERE, "..", "configs", "tiles_v4_I{I}.json"))
     a = ap.parse_args()
     for T in a.T:
         x, ids, w, wts = make_problem(T, a.I)
         r = moe.MoERun(x, ids, w, moe.MoEWeights(*wts),
-                       **table_cfg(os.path.join(HERE, "..", "configs", "tiles_v4_I{I}.json"), a.I, T))
+                       **table_cfg(a.table, a.I, T))
         r.forward()
         torch.cuda.synchronize()
         for _ in range(a.iters):

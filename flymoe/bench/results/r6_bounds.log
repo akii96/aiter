@@ -1,0 +1,51 @@
+Round 6 phase 0: bounds for the large-T levers (T >= 4096). flymoe-v6 tables (tiles_v6), serial GPU 0
+(flock /tmp/gpu0_timing.lock), s1_sweep.py / s2_sweep.py --reps 3 (median), micro_r6.py, dma_bw.py.
+Knock-outs give wrong results (timing only); % = time saved vs the v6 table cell in the same run.
+Raw log: r6_bounds_raw.log (not committed; numbers copied below).
+
+== stage 1, il4 PERS1 (v6 cell everywhere at T >= 4096) ==
+                        s1 us   kod     nodmaA  nodmaB  kob    noepi   nopro
+  I= 384 T= 4096        90.7   +17.6%   +3.0%   +8.6%  +1.7%  +13.0%   -0.4%
+  I= 384 T=32768       414.5   +18.3%  +10.0%   +9.3%  +4.6%  +15.5%   -3.2%
+  I= 768 T= 4096       173.4   +19.4%   +5.0%  +12.0%  +2.4%  +15.5%   -2.9%
+  I= 768 T=32768       774.6   +19.8%  +10.5%  +10.6%  +3.9%  +13.7%   -3.4%
+  I=1536 T=32768      1525.0   +20.2%   +8.8%  +10.6%  +2.0%  +14.0%   -2.8%
+  (I=1536 T=4096: skipped in this batch, FlyDSL source parse error while gemm.py was being edited.)
+  kod = no loop DMAs; nodmaA / nodmaB = no A / B loop DMAs; kob = no B LDS re-reads; noepi = no epilogue;
+  nopro = no next-tile prologue overlap (it is slower: the persistent overlap is worth ~3%).
+  later knock-out (GPU 3 screen, I=1536 T=32768): kosa = no A-scale LDS re-reads -> +1.9% (noise ~1%).
+reading: the loop DMAs bound S1 at ~20% (A and B ~equal shares, ~10% each, not additive), the epilogue
+  at ~14-15%. A packed A-scale read is bounded at ~2%.
+
+== stage 2 ==
+  I=1536 T=32768 (il4 PERS2 routed + FC hybrid shared launch), s2 1406 us:
+    routed noepi +22.0%, routed kod +8.2%, routed nodmaA +6.1%;
+    shared fcnor (no routed-row gather) +21.1% (-296 us), shared noepi +28.0%
+  I=384 T=32768 (BM64 hybrid2 wpe3+s2nt rows + combine), s2 486 + cb 480 us:
+    noepi +26.5% of s2+cb (s2 486 -> 230 us: the 2 GB y_rows store), nodmaA +5.0%, nodmaB +1.1%
+reading: at I=384 the rows store is the stage-2 time (store traffic, not epilogue instructions); at I=1536
+  the routed epilogue (~300 us) and the FC gather (~296 us for 1.6 GB = 5.4 TB/s) are the two big shares.
+
+== micro (micro_r6.py, GPU 0) ==
+MALL reuse (one buffer written then read, repeated):
+  size MB          32    64    96   128   160   192   256   512  2048
+  write+read TB/s 3.87  4.81  5.60  5.99  6.35  6.55  6.81  4.96  5.42
+  -> a <= 256 MB reused buffer gains ~1.25x over HBM; below 128 MB launch overhead eats the gain.
+random 12 KB-row gather (piece 512 B - 2 KB, 4-16 in flight, VGPR or DMA, 2-4 CTAs/CU): 2.2-3.8 TB/s.
+  The real FC gather already runs at ~5.4 TB/s (fcnor bound above), above this micro.
+DMA to LDS (dma_bw.py, L2-resident): contiguous 1 KB 50.0-54.8 B/clk/CU; gathered 16 x 64 B 32.3-33.7;
+  gathered 8 x 128 B 37.3-39.1.
+
+== S2-W bound (windowed stage 2 + combine, rows ring MALL-resident, I=384 T=32768) ==
+  y_rows round trip = 2.0 GB written + 2.0 GB read; today s2 + cb = 966 us.
+  Token windows are required for a lossless combine (each token's k slots summed in slot order); every
+  token window touches all 129 experts, so W2 (152 MB at I=384) is re-read per window. Window budget with
+  W2 + 2 ring slots in 256 MB MALL: <= ~50 MB of rows per slot -> 2.0 GB / 50 MB = 40 windows x 152 MB =
+  6 GB of extra W2 reads (~1.1 ms at 5.5 TB/s) against a best-case round-trip saving of 4 GB at 6.8 vs
+  ~4.1 TB/s effective (~390 us). Expert windows avoid the W2 re-read but split a token's slots across
+  windows (summation order changes -> not lossless).
+  -> S2-W rejected by bound.
+
+== S2-G bound ==
+  fcnor saves 296 us at I=1536 T=32768 (21% of s2); the gather already moves 1.6 GB at ~5.4 TB/s, near the
+  large-buffer HBM read rate (5.7-5.9 TB/s): at most ~25-40 us (2-3% of s2) left from gather throughput.

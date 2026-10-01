@@ -1,0 +1,245 @@
+{
+ "32": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 8,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {
+   "QF": 1
+  },
+  "note": "r5 pass 3: arm 'BM1=16,NW1=1,pipe1=hybrid2,D1=8,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QF=1' +2.7% / +1.4% vs the tiles_v6b cell in-run (null 0.6/0.2%), r5_v6p3_I768_T32.json"
+ },
+ "64": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 4,
+   "EF": 1,
+   "MV": 1,
+   "diag": "s1st"
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 3,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "note": "r5 pass 2: arm 'BM=16,NW=1,pipe=hybrid2,D=3,diag=nos2w' +4.9% vs the tiles_v6a cell in-run (null 0.2%), r5_v6p2_I768_T64.json"
+ },
+ "128": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 2,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {
+   "QP": 1
+  },
+  "note": "r5 pass 3: arm 'BM1=16,NW1=1,pipe1=hybrid2,D1=2,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QP=1' +4.0% / +3.1% vs the tiles_v6b cell in-run (null 0.0/0.4%), r5_v6p3_I768_T128.json"
+ },
+ "256": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt+ag32"
+  },
+  "global": {},
+  "note": "r5 pass 2: arm 'BM=32,NW=2,pipe=hybrid2,D=2,diag=wpe3+s2nt+ag32' +8.3% vs the tiles_v6a cell in-run (null 0.2%), r5_v6p2_I768_T256.json"
+ },
+ "512": {
+  "s1": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt+ag64"
+  },
+  "global": {},
+  "note": "r5 pass 2: arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt+ag64' +9.1% vs the tiles_v6a cell in-run (null 0.4%), r5_v6p2_I768_T512.json"
+ },
+ "1024": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt+ag64"
+  },
+  "global": {},
+  "note": "r5 pass 2: arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt+ag64' +8.7% vs the tiles_v6a cell in-run (null 0.6%), r5_v6p2_I768_T1024.json"
+ },
+ "2048": {
+  "s1": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt+ag64"
+  },
+  "global": {},
+  "note": "r5 pass 2: arm 'BM=64,NW=4,pipe=hybrid2,D=2,diag=wpe3+s2nt+ag64' +2.9% vs the tiles_v6a cell in-run (null 0.2%), r5_v6p2_I768_T2048.json"
+ },
+ "4096": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8+s1tr+epg4",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 4
+  },
+  "global": {},
+  "note": "r6 pass 1: arm 'diag1=bar8+s1tr+epg4' +1.6% vs the tiles_v6 cell in-run (null 0.2%), r6_v7p1_I768_T4096.json"
+ },
+ "8192": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8+s1tr+epg4",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "PERS": 1,
+   "diag": "s2nt"
+  },
+  "global": {
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3,
+   "diagF": "agf136"
+  },
+  "note": "r6 pass 1: arm 'diag1=bar8+s1tr+epg4' +1.8% vs the tiles_v6 cell in-run (null 0.6%), r6_v7p1_I768_T8192.json"
+ },
+ "16384": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8+s1tr+epg2",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "PERS": 1,
+   "diag": "s2nt"
+  },
+  "global": {
+   "HT": 1,
+   "FC": 1,
+   "pipeF": "hybrid",
+   "BMF": 128,
+   "NWF": 4,
+   "WMF": 1,
+   "DF": 3
+  },
+  "note": "r6 pass 1: arm 'diag1=bar8+s1tr+epg2' +3.4% vs the tiles_v6 cell in-run (null 0.2%), r6_v7p1_I768_T16384.json"
+ },
+ "32768": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8+s1tr+epg8",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 4
+  },
+  "global": {
+   "FC": 1
+  },
+  "note": "r6 pass 1: arm 'diag1=bar8+s1tr+epg8' +4.0% vs the tiles_v6 cell in-run (null 0.8%), r6_v7p1_I768_T32768.json"
+ }
+}

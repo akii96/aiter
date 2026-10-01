@@ -66,6 +66,16 @@ CONFIGS = [
     dict(BM1=32, NW1=2, pipe1="async", D1=4, EF1=1, MV1=1, diag1="s1st", **H2),
     dict(PP, **H2, diag1="s1st+s1sd"),
     dict(SM, diag1="s1st", QP=1),
+    # round 6
+    dict(IL4, PERS1=1, diag1="bar8+ap", **H2),
+    dict(IL4, PERS1=1, diag1="bar8+s1tr", **H2),
+    dict(IL4, PERS1=1, diag1="bar8+s1tr+epg4", HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1,
+         diag2="s2nt+s2tl+s2db"),
+    dict(IL4, PERS1=1, diag1="bar8+epg2+stg5", HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1,
+         diag2="s2nt+s2tl+stg2"),
+    dict(IL4, PERS1=1, diag1="bar8+s1tr+epg8", HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1,
+         diag2="s2nt+s2db", FC=1, pipeF="hybrid", BMF=128, NWF=4, WMF=1, DF=3, diagF="agf136+fcsk"),
+    dict(PP, **H2, FC=1, diagF="fcsk+fcnt+fcp2"),
 ]
 
 

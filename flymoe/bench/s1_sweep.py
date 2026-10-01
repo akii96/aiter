@@ -25,7 +25,7 @@ from compare import STAGES, h_rows, sample, table_cfg  # noqa: E402
 from flymoe import hw, moe  # noqa: E402
 from tests.test_moe import make_problem  # noqa: E402
 
-GLOBAL = ("HT", "FC", "TB1", "TB2", "QAST", "epi")
+GLOBAL = ("HT", "FC", "TB1", "TB2", "QAST", "QP", "epi")
 
 
 def arm_cfg(base, spec):

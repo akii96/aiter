@@ -540,11 +540,15 @@ def run_scale_t(a_s, row_tok, a_s_t, stream=None):
 
 
 @functools.lru_cache(maxsize=None)
-def build_quant(H: int, threads: int = 256, k: int = 0, even: bool = False):
+def build_quant(H: int, threads: int = 256, k: int = 0, even: bool = False, ap: bool = False):
     """k > 0: also write K-step-major compact A scales ([H/128][R][4 B]) for the token's k
-    compact rows (via inv, so the plan must run first); replaces the scale_t kernel."""
+    compact rows (via inv, so the plan must run first); replaces the scale_t kernel.
+    ap (k > 0): q_ptr is a_q_t [H/128][R][64 B]: each 64 B K step of the token's fp4 row is
+    stored to its k compact rows (the gemm "ap" A layout) instead of token-major."""
     G = H // 32
-    name = f"flymoe_quant_h{H}" + (f"_ast{k}" if k else "") + ("_se" if even else "") + f"_{hw.SRC_HASH}"
+    assert not ap or k > 0
+    name = (f"flymoe_quant_h{H}" + (f"_ast{k}" if k else "") + ("_ap" if ap else "") + ("_se" if even else "")
+            + f"_{hw.SRC_HASH}")
 
     @flyc.kernel(name=name, known_block_size=[threads, 1, 1])
     def kern(x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64, n_groups: fx.Int32,
@@ -553,9 +557,13 @@ def build_quant(H: int, threads: int = 256, k: int = 0, even: bool = False):
             pass
         gid = fx.Int32(gpu.block_id("x")) * threads + fx.Int32(gpu.thread_id("x"))
         r_x = hw.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64))
-        r_q = hw.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16))
+        r_q = hw.rsrc(q_ptr, fx.Int64(n_rows) * fx.Int64(G * 16) if const_expr(ap)
+                      else fx.Int64(n_groups) * fx.Int64(16))
         r_s = hw.rsrc(s_ptr, fx.Int64(n_groups))
-        bexp = hw.quant_group(r_x, r_q, r_s, gid, even)
+        if const_expr(ap):
+            bexp, qv = hw.quant_group(r_x, None, r_s, gid, even)
+        else:
+            bexp = hw.quant_group(r_x, r_q, r_s, gid, even)
         if const_expr(k > 0):
             # 4 consecutive lanes = the 4 groups of one 128-K step: pack their scale bytes
             # into one dword and store it to each of the token's k compact rows.
@@ -572,6 +580,9 @@ def build_quant(H: int, threads: int = 256, k: int = 0, even: bool = False):
             for sl in range_constexpr(k):
                 row = fx.Int32(hw.bload(r_inv, (tok * k + sl) * 4, T.i32))
                 hw.bstore(word, r_ast, ok.select((step * n_rows + row) * 4, fx.Int32(0x7FFFFFF0)))
+                if const_expr(ap):
+                    hw.bstore(qv, r_q, (gid < n_groups).select((step * n_rows + row) * 64 + l4 * 16,
+                                                               fx.Int32(0x7FFFFFC0)))
 
     @flyc.jit
     def launch(x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64, n_groups: fx.Int32,
@@ -593,7 +604,7 @@ def _run(key, launch, args):
         _cf[key](*args)
 
 
-def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0, even=False):
+def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0, even=False, ap=False):
     import torch
 
     Tn, H = x.shape
@@ -603,7 +614,8 @@ def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0, even=False):
     stream = torch.cuda.current_stream() if stream is None else stream
     kk = k if a_s_t is not None else 0
     R = inv.numel() if inv is not None else 0
-    _run(("q", H, kk, even), build_quant(H, 256, kk, even),
+    assert not ap or (kk and q.numel() * 2 == R * H), "ap: q is a_q_t [H/128][R][64 B]"
+    _run(("q", H, kk, even, ap), build_quant(H, 256, kk, even, ap),
          (x.data_ptr(), q.data_ptr(), s.data_ptr(), ng,
           (inv if kk else s).data_ptr(), (a_s_t if kk else s).data_ptr(), R, grid, stream))
 

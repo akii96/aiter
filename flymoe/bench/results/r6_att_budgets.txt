@@ -1,0 +1,144 @@
+== r6_s1base
+128 regions, median-free mean span 14983 cycles; 2394 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1512      5.9
+  v_pk_mul_f32                           192.0     1359      7.1
+  v_max_u32_dpp                          256.0     1141      4.5
+  v_med3_f32                             128.0      983      7.7
+  v_exp_f32_e32                          128.0      833      6.5
+  v_rcp_f32_e32                          128.0      815      6.4
+largest single issue delays (mean per region, by instruction text, region position %):
+      310  @ 30%  v_maximum3_f32 v31, |v24|, |v25|, |v25|
+      273  @ 50%  v_pk_mul_f32 v[16:17], v[12:13], s[44:45] op_sel_hi:[1,0]
+      272  @ 10%  v_med3_f32 v28, v1, s66, v83
+132 tiles | median cycles: prologue 0  main loop 64734  between tiles 15140 | MFMAs 3072  loop MFMA duty 75.9%
+share of wave time: prologue 0.4%  loop 81.1%  between 18.6%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s1ap
+128 regions, median-free mean span 15087 cycles; 2386 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1822      7.1
+  v_max_u32_dpp                          256.0     1145      4.5
+  v_pk_mul_f32                           192.0      944      4.9
+  v_exp_f32_e32                          128.0      817      6.4
+  ds_write_b8                             64.0      795     12.4
+  v_rcp_f32_e32                          128.0      790      6.2
+largest single issue delays (mean per region, by instruction text, region position %):
+      526  @ 90%  s_mov_b32 s33, s57
+      372  @ 30%  v_maximum3_f32 v33, |v20|, |v21|, |v21|
+      290  @ 50%  buffer_load_dwordx4 v2, s[24:27], s43 offen lds
+132 tiles | median cycles: prologue 0  main loop 64566  between tiles 15084 | MFMAs 3072  loop MFMA duty 76.1%
+share of wave time: prologue 0.3%  loop 80.9%  between 18.7%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_epg4
+128 regions, median-free mean span 16594 cycles; 2648 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1585      6.2
+  s_add_i32                               31.0     1207     38.9
+  v_mov_b32_dpp                          256.0     1203      4.7
+  v_max_u32_e32                          256.0     1116      4.4
+  ds_write_b8                             64.0     1030     16.1
+  v_pk_mul_f32                           192.0      824      4.3
+largest single issue delays (mean per region, by instruction text, region position %):
+      285  @ 90%  v_readlane_b32 s1, v150, 1
+      273  @  0%  s_add_i32 m0, s74, 0x4000
+      271  @ 30%  ds_write_b8 v74, v11 offset:96
+132 tiles | median cycles: prologue 0  main loop 65570  between tiles 16594 | MFMAs 3072  loop MFMA duty 75.0%
+share of wave time: prologue 0.4%  loop 79.6%  between 20.0%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s1tr
+128 regions, median-free mean span 11987 cycles; 1934 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1640      6.4
+  v_pk_mul_f32                           192.0     1198      6.2
+  v_exp_f32_e32                          128.0      805      6.3
+  v_rcp_f32_e32                          128.0      781      6.1
+  v_med3_f32                             128.0      735      5.7
+  v_minimum3_f32                         128.0      645      5.0
+largest single issue delays (mean per region, by instruction text, region position %):
+      260  @ 10%  v_pk_mul_f32 v[24:25], v[28:29], v[24:25]
+      215  @ 90%  v_readlane_b32 s1, v129, 1
+      162  @ 40%  v_accvgpr_read_b32 v26, a139
+132 tiles | median cycles: prologue 0  main loop 64418  between tiles 12044 | MFMAs 3072  loop MFMA duty 76.3%
+share of wave time: prologue 0.4%  loop 84.1%  between 15.5%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s1tr4
+128 regions, median-free mean span 13292 cycles; 1926 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1520      5.9
+  s_add_i32                               31.0     1178     38.0
+  v_pk_mul_f32                           192.0      840      4.4
+  v_exp_f32_e32                          128.0      775      6.1
+  v_rcp_f32_e32                          128.0      773      6.0
+  v_minimum3_f32                         128.0      756      5.9
+largest single issue delays (mean per region, by instruction text, region position %):
+      376  @ 40%  v_maximum3_f32 v24, v24, |v21|, |v22|
+      252  @  0%  s_add_i32 m0, s47, 0x4000
+      229  @ 90%  v_readlane_b32 s1, v129, 1
+132 tiles | median cycles: prologue 0  main loop 64550  between tiles 13228 | MFMAs 3072  loop MFMA duty 76.1%
+share of wave time: prologue 0.3%  loop 82.8%  between 16.9%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s1tr4b
+128 regions, median-free mean span 12147 cycles; 1945 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1509      5.9
+  v_pk_mul_f32                           192.0     1133      5.9
+  v_exp_f32_e32                          128.0      801      6.3
+  v_rcp_f32_e32                          128.0      784      6.1
+  v_med3_f32                             128.0      685      5.4
+  v_pk_add_f32                           128.0      657      5.1
+largest single issue delays (mean per region, by instruction text, region position %):
+      399  @ 90%  v_readlane_b32 s1, v129, 1
+      254  @ 10%  v_pk_mul_f32 v[20:21], v[24:25], v[20:21]
+      112  @ 70%  v_cvt_scalef32_pk_fp4_f32 v0, v26, v27, v6 op_sel:[0,0,1,0]
+132 tiles | median cycles: prologue 0  main loop 64040  between tiles 12168 | MFMAs 3072  loop MFMA duty 76.8%
+share of wave time: prologue 0.5%  loop 83.7%  between 15.8%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s2base
+212 regions, median-free mean span 11620 cycles; 1474 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     1841      7.2
+  ds_write_b32                           128.0     1597     12.5
+  ds_read_b128                            44.0     1075     24.4
+  buffer_store_dwordx4                    32.0      962     30.1
+  s_nop                                  167.0      807      4.8
+  v_pk_mul_f32                           128.0      782      6.1
+largest single issue delays (mean per region, by instruction text, region position %):
+      231  @  0%  v_pk_mul_f32 v[28:29], v[28:29], v[32:33] op_sel_hi:[1,0]
+      136  @ 90%  buffer_load_dwordx3 v[36:38], v5, s[16:19], 0 offen
+      105  @  0%  buffer_load_dwordx4 v[4:7], v0, s[28:31], 0 offen offset:384
+216 tiles | median cycles: prologue 0  main loop 16050  between tiles 10932 | MFMAs 768  loop MFMA duty 76.6%
+share of wave time: prologue 0.5%  loop 60.7%  between 38.8%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s2tl
+208 regions, median-free mean span 11573 cycles; 1239 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     2137      8.3
+  v_add_u32_e32                           96.0     1641     17.1
+  ds_read_b128                            44.0     1049     23.8
+  v_pk_mul_f32                           128.0      992      7.7
+  s_add_i32                               37.0      799     21.6
+  v_cvt_pk_bf16_f32                      128.0      642      5.0
+largest single issue delays (mean per region, by instruction text, region position %):
+      341  @ 10%  v_pk_mul_f32 v[28:29], v[26:27], v[14:15] op_sel_hi:[1,0]
+      222  @ 60%  v_add_u32_e32 v4, 0x5c, v1
+      202  @ 90%  buffer_load_dwordx3 v[36:38], v5, s[16:19], 0 offen
+212 tiles | median cycles: prologue 0  main loop 16454  between tiles 10208 | MFMAs 768  loop MFMA duty 74.7%
+share of wave time: prologue 0.5%  loop 59.8%  between 39.7%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):
+== r6_s2db
+212 regions, median-free mean span 10590 cycles; 1239 instructions per region
+  opcode                                 count   cycles  cyc/ins
+  v_accvgpr_read_b32                     256.0     2024      7.9
+  v_add_u32_e32                           96.0     1395     14.5
+  v_pk_mul_f32                           128.0      956      7.5
+  ds_read_b128                            44.0      782     17.8
+  buffer_store_dwordx4                    32.0      676     21.1
+  v_cvt_pk_bf16_f32                      128.0      644      5.0
+largest single issue delays (mean per region, by instruction text, region position %):
+      308  @ 10%  v_pk_mul_f32 v[28:29], v[26:27], v[14:15] op_sel_hi:[1,0]
+      140  @ 90%  buffer_load_dwordx3 v[36:38], v5, s[16:19], 0 offen
+      122  @ 60%  v_add_u32_e32 v4, 0x5c, v1
+216 tiles | median cycles: prologue 0  main loop 16348  between tiles 9962 | MFMAs 768  loop MFMA duty 75.2%
+share of wave time: prologue 0.6%  loop 62.8%  between 36.6%
+loop gaps beyond back-to-back MFMA, by the instruction before the late MFMA (cycles/tile):

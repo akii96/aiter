@@ -1,0 +1,6 @@
+I=  768 T=  8192             +7.5%  null       1.6%  diag2=s2nt+s2tl+s2db,diagF=agf136+fcsk
+I=  768 T= 16384             +8.4%  null       0.0%  diag2=s2nt+s2tl+s2db,diagF=fcsk
+I=  768 T= 32768             +8.6%  null       0.1%  BM=256,NW=4,WM=2,pipe=il4,D=3,PERS=1,HT=1,FC=1,pipeF=hybrid,BMF=128,NWF=4,WMF=1,DF=3,diag=s2nt+s2tl+s2db,diagF=fcsk
+I= 1536 T=  8192             +6.4%  null       0.2%  diag2=s2nt+s2tl+s2db,diagF=fcsk
+I= 1536 T= 16384             +5.8%  null       0.3%  diag2=s2nt+s2tl,diagF=agf136+fcsk
+I= 1536 T= 32768             +5.8%  null       0.5%  diag2=s2nt+s2tl+s2db,diagF=agf136+fcsk

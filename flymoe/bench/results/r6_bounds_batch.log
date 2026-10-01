@@ -1,0 +1,169 @@
+### micro_r6 mall
+mall    32 MB: write+read   3.87 TB/s | write alone (rewritten)   2.43 | read alone   3.05 TB/s
+mall    64 MB: write+read   4.81 TB/s | write alone (rewritten)   3.86 | read alone   3.75 TB/s
+mall    96 MB: write+read   5.60 TB/s | write alone (rewritten)   4.71 | read alone   4.49 TB/s
+mall   128 MB: write+read   5.99 TB/s | write alone (rewritten)   5.34 | read alone   5.02 TB/s
+mall   160 MB: write+read   6.35 TB/s | write alone (rewritten)   5.77 | read alone   5.33 TB/s
+mall   192 MB: write+read   6.55 TB/s | write alone (rewritten)   6.12 | read alone   5.58 TB/s
+mall   256 MB: write+read   6.81 TB/s | write alone (rewritten)   6.64 | read alone   5.84 TB/s
+mall   512 MB: write+read   4.96 TB/s | write alone (rewritten)   4.93 | read alone   5.69 TB/s
+mall  2048 MB: write+read   5.42 TB/s | write alone (rewritten)   5.35 | read alone   5.93 TB/s
+### micro_r6 gather
+gather piece= 512 inflight= 4 vgpr ctas/CU=2:   2.58 TB/s
+gather piece= 512 inflight= 4 vgpr ctas/CU=4:   3.65 TB/s
+gather piece= 512 inflight= 4 dma  ctas/CU=2:   2.42 TB/s
+gather piece= 512 inflight= 4 dma  ctas/CU=4:   2.60 TB/s
+gather piece= 512 inflight= 8 vgpr ctas/CU=2:   2.37 TB/s
+gather piece= 512 inflight= 8 vgpr ctas/CU=4:   3.74 TB/s
+gather piece= 512 inflight= 8 dma  ctas/CU=2:   2.64 TB/s
+gather piece= 512 inflight= 8 dma  ctas/CU=4:   2.78 TB/s
+gather piece= 512 inflight=16 vgpr ctas/CU=2:   2.43 TB/s
+gather piece= 512 inflight=16 vgpr ctas/CU=4:   3.78 TB/s
+gather piece=1024 inflight= 4 vgpr ctas/CU=2:   2.29 TB/s
+gather piece=1024 inflight= 4 vgpr ctas/CU=4:   2.73 TB/s
+gather piece=1024 inflight= 4 dma  ctas/CU=2:   2.80 TB/s
+gather piece=1024 inflight= 4 dma  ctas/CU=4:   2.95 TB/s
+gather piece=1024 inflight= 8 vgpr ctas/CU=2:   2.40 TB/s
+gather piece=1024 inflight= 8 vgpr ctas/CU=4:   2.94 TB/s
+gather piece=1024 inflight= 8 dma  ctas/CU=2:   3.00 TB/s
+gather piece=1024 inflight= 8 dma  ctas/CU=4:   3.10 TB/s
+gather piece=1024 inflight=16 vgpr ctas/CU=2:   2.88 TB/s
+gather piece=1024 inflight=16 vgpr ctas/CU=4:   3.27 TB/s
+gather piece=2048 inflight= 4 vgpr ctas/CU=2:   2.16 TB/s
+gather piece=2048 inflight= 4 vgpr ctas/CU=4:   2.68 TB/s
+gather piece=2048 inflight= 4 dma  ctas/CU=2:   2.77 TB/s
+gather piece=2048 inflight= 4 dma  ctas/CU=4:   2.93 TB/s
+gather piece=2048 inflight= 8 vgpr ctas/CU=2:   2.33 TB/s
+gather piece=2048 inflight= 8 vgpr ctas/CU=4:   2.90 TB/s
+gather piece=2048 inflight= 8 dma  ctas/CU=2:   2.97 TB/s
+gather piece=2048 inflight= 8 dma  ctas/CU=4:   3.07 TB/s
+gather piece=2048 inflight=16 vgpr ctas/CU=2:   2.90 TB/s
+gather piece=2048 inflight=16 vgpr ctas/CU=4:   3.28 TB/s
+### dma_bw
+dma   ctas/CU~1:  26.90 TB/s aggregate,   50.0 B/clk/CU (at 2.1 GHz)
+dma   ctas/CU~2:  29.48 TB/s aggregate,   54.8 B/clk/CU (at 2.1 GHz)
+gdma  ctas/CU~1:  17.36 TB/s aggregate,   32.3 B/clk/CU (at 2.1 GHz)
+gdma  ctas/CU~2:  18.10 TB/s aggregate,   33.7 B/clk/CU (at 2.1 GHz)
+g128dma ctas/CU~1:  20.07 TB/s aggregate,   37.3 B/clk/CU (at 2.1 GHz)
+g128dma ctas/CU~2:  21.04 TB/s aggregate,   39.1 B/clk/CU (at 2.1 GHz)
+### s1 knockouts I=384 T=4096
+OK     table: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+OK     table_null: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+REJECT diag1=bar8+kod: h_q mismatched bytes 3764208, h_s 1002, out rel diff 1.77e+00
+REJECT diag1=bar8+nodmaA: h_q mismatched bytes 3813382, h_s 4728, out rel diff 1.46e+00
+REJECT diag1=bar8+nodmaB: h_q mismatched bytes 3800504, h_s 31446, out rel diff 1.26e+00
+REJECT diag1=bar8+kob: h_q mismatched bytes 3795898, h_s 6565, out rel diff 1.31e+00
+REJECT diag1=bar8+noepi: h_q mismatched bytes 3888273, h_s 165934, out rel diff nan
+OK     diag1=bar8+nopro: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+I=  384 T=  4096 table                                                            s1    90.7 s2    78.8 total   252.7 | s1  +0.0% vs table
+I=  384 T=  4096 table_null                                                       s1    90.8 s2    79.2 total   254.6 | s1  -0.1% vs table
+I=  384 T=  4096 diag1=bar8+kod                                                   s1    74.8 s2    79.4 total   237.4 | s1 +17.6% vs table
+I=  384 T=  4096 diag1=bar8+nodmaA                                                s1    88.0 s2    79.5 total   251.5 | s1  +3.0% vs table
+I=  384 T=  4096 diag1=bar8+nodmaB                                                s1    82.9 s2    79.3 total   244.4 | s1  +8.6% vs table
+I=  384 T=  4096 diag1=bar8+kob                                                   s1    89.2 s2    79.4 total   251.6 | s1  +1.7% vs table
+I=  384 T=  4096 diag1=bar8+noepi                                                 s1    78.9 s2    78.8 total   241.2 | s1 +13.0% vs table
+I=  384 T=  4096 diag1=bar8+nopro                                                 s1    91.1 s2    79.5 total   253.0 | s1  -0.4% vs table
+### s1 knockouts I=384 T=32768
+OK     table: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+OK     table_null: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+REJECT diag1=bar8+kod: h_q mismatched bytes 30109437, h_s 7775, out rel diff 1.77e+00
+REJECT diag1=bar8+nodmaA: h_q mismatched bytes 30526038, h_s 18979, out rel diff 1.48e+00
+REJECT diag1=bar8+nodmaB: h_q mismatched bytes 30436805, h_s 103923, out rel diff 1.29e+00
+REJECT diag1=bar8+kob: h_q mismatched bytes 30366311, h_s 49377, out rel diff 1.31e+00
+REJECT diag1=bar8+noepi: h_q mismatched bytes 31103795, h_s 1966080, out rel diff 1.00e+00
+OK     diag1=bar8+nopro: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+I=  384 T= 32768 table                                                            s1   414.5 s2   482.2 total  1504.4 | s1  +0.0% vs table
+I=  384 T= 32768 table_null                                                       s1   413.5 s2   477.7 total  1499.0 | s1  +0.2% vs table
+I=  384 T= 32768 diag1=bar8+kod                                                   s1   338.5 s2   470.2 total  1418.2 | s1 +18.3% vs table
+I=  384 T= 32768 diag1=bar8+nodmaA                                                s1   373.1 s2   470.8 total  1454.6 | s1 +10.0% vs table
+I=  384 T= 32768 diag1=bar8+nodmaB                                                s1   375.9 s2   474.7 total  1459.4 | s1  +9.3% vs table
+I=  384 T= 32768 diag1=bar8+kob                                                   s1   395.3 s2   479.7 total  1484.0 | s1  +4.6% vs table
+I=  384 T= 32768 diag1=bar8+noepi                                                 s1   350.4 s2   445.9 total  1406.5 | s1 +15.5% vs table
+I=  384 T= 32768 diag1=bar8+nopro                                                 s1   427.8 s2   478.7 total  1514.6 | s1  -3.2% vs table
+### s1 knockouts I=768 T=4096
+OK     table: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+OK     table_null: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+REJECT diag1=bar8+kod: h_q mismatched bytes 7528107, h_s 2070, out rel diff 1.77e+00
+REJECT diag1=bar8+nodmaA: h_q mismatched bytes 7604972, h_s 52953, out rel diff 1.45e+00
+REJECT diag1=bar8+nodmaB: h_q mismatched bytes 7587030, h_s 94628, out rel diff 1.25e+00
+REJECT diag1=bar8+kob: h_q mismatched bytes 7591833, h_s 12758, out rel diff 1.31e+00
+REJECT diag1=bar8+noepi: h_q mismatched bytes 7776165, h_s 491520, out rel diff 1.00e+00
+OK     diag1=bar8+nopro: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+I=  768 T=  4096 table                                                            s1   173.4 s2   155.4 total   407.9 | s1  +0.0% vs table
+I=  768 T=  4096 table_null                                                       s1   173.7 s2   152.3 total   404.3 | s1  -0.2% vs table
+I=  768 T=  4096 diag1=bar8+kod                                                   s1   139.8 s2   147.6 total   366.1 | s1 +19.4% vs table
+I=  768 T=  4096 diag1=bar8+nodmaA                                                s1   164.8 s2   154.5 total   397.5 | s1  +5.0% vs table
+I=  768 T=  4096 diag1=bar8+nodmaB                                                s1   152.5 s2   148.2 total   378.7 | s1 +12.0% vs table
+I=  768 T=  4096 diag1=bar8+kob                                                   s1   169.3 s2   152.8 total   400.8 | s1  +2.4% vs table
+I=  768 T=  4096 diag1=bar8+noepi                                                 s1   146.5 s2   153.5 total   378.9 | s1 +15.5% vs table
+I=  768 T=  4096 diag1=bar8+nopro                                                 s1   178.4 s2   150.9 total   407.4 | s1  -2.9% vs table
+### s1 knockouts I=768 T=32768
+OK     table: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+OK     table_null: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+REJECT diag1=bar8+kod: h_q mismatched bytes 60223415, h_s 15721, out rel diff 1.77e+00
+REJECT diag1=bar8+nodmaA: h_q mismatched bytes 61036528, h_s 26668, out rel diff 1.46e+00
+REJECT diag1=bar8+nodmaB: h_q mismatched bytes 60882602, h_s 186545, out rel diff 1.28e+00
+REJECT diag1=bar8+kob: h_q mismatched bytes 60726977, h_s 104020, out rel diff 1.30e+00
+REJECT diag1=bar8+noepi: h_q mismatched bytes 62206089, h_s 3932160, out rel diff 1.00e+00
+OK     diag1=bar8+nopro: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+I=  768 T= 32768 table                                                            s1   774.6 s2  1204.0 total  2110.1 | s1  +0.0% vs table
+I=  768 T= 32768 table_null                                                       s1   770.0 s2  1202.2 total  2101.0 | s1  +0.6% vs table
+I=  768 T= 32768 diag1=bar8+kod                                                   s1   620.9 s2  1185.0 total  1935.2 | s1 +19.8% vs table
+I=  768 T= 32768 diag1=bar8+nodmaA                                                s1   693.2 s2  1198.0 total  2020.5 | s1 +10.5% vs table
+I=  768 T= 32768 diag1=bar8+nodmaB                                                s1   692.1 s2  1186.9 total  2008.1 | s1 +10.6% vs table
+I=  768 T= 32768 diag1=bar8+kob                                                   s1   744.1 s2  1201.1 total  2074.4 | s1  +3.9% vs table
+I=  768 T= 32768 diag1=bar8+noepi                                                 s1   668.4 s2  1191.5 total  1988.0 | s1 +13.7% vs table
+I=  768 T= 32768 diag1=bar8+nopro                                                 s1   801.2 s2  1197.0 total  2127.6 | s1  -3.4% vs table
+### s1 knockouts I=1536 T=4096
+SKIP table: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe579bbc150>
+SKIP table_null: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba1d50>
+SKIP diag1=bar8+kod: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba1450>
+SKIP diag1=bar8+nodmaA: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba1a90>
+SKIP diag1=bar8+nodmaB: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba1790>
+SKIP diag1=bar8+kob: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba1810>
+SKIP diag1=bar8+noepi: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba0ed0>
+SKIP diag1=bar8+nopro: AssertionError: unexpected ast node <ast.ClassDef object at 0x7fe56fba0dd0>
+### s1 knockouts I=1536 T=32768
+OK     table: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+OK     table_null: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+REJECT diag1=bar8+kod: h_q mismatched bytes 120442021, h_s 31334, out rel diff 1.77e+00
+REJECT diag1=bar8+nodmaA: h_q mismatched bytes 122064210, h_s 59254, out rel diff 1.46e+00
+REJECT diag1=bar8+nodmaB: h_q mismatched bytes 121765839, h_s 392177, out rel diff 1.29e+00
+REJECT diag1=bar8+kob: h_q mismatched bytes 121460351, h_s 204873, out rel diff 1.31e+00
+REJECT diag1=bar8+noepi: h_q mismatched bytes 121044729, h_s 1635938, out rel diff nan
+OK     diag1=bar8+nopro: h_q mismatched bytes 0, h_s 0, out rel diff 0.00e+00
+I= 1536 T= 32768 table                                                            s1  1511.1 s2  1412.7 total  3052.9 | s1  +0.0% vs table
+I= 1536 T= 32768 table_null                                                       s1  1525.0 s2  1394.3 total  3049.3 | s1  -0.9% vs table
+I= 1536 T= 32768 diag1=bar8+kod                                                   s1  1206.2 s2  1398.7 total  2733.3 | s1 +20.2% vs table
+I= 1536 T= 32768 diag1=bar8+nodmaA                                                s1  1377.6 s2  1411.4 total  2918.1 | s1  +8.8% vs table
+I= 1536 T= 32768 diag1=bar8+nodmaB                                                s1  1350.1 s2  1387.5 total  2866.4 | s1 +10.6% vs table
+I= 1536 T= 32768 diag1=bar8+kob                                                   s1  1480.4 s2  1403.9 total  3014.1 | s1  +2.0% vs table
+I= 1536 T= 32768 diag1=bar8+noepi                                                 s1  1299.1 s2  1373.9 total  2802.9 | s1 +14.0% vs table
+I= 1536 T= 32768 diag1=bar8+nopro                                                 s1  1553.3 s2  1404.5 total  3087.0 | s1  -2.8% vs table
+### s2 knockouts I=1536 T=32768
+OK     table: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: False
+OK     table_null: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=s2nt+noepi: rel diff 8.17e-01 vs table arm; bit-identical to previous arm: False
+OK     diag2=s2nt+kod: rel diff 1.16e+00 vs table arm; bit-identical to previous arm: False
+OK     diag2=s2nt+nodmaA: rel diff 1.02e+00 vs table arm; bit-identical to previous arm: False
+OK     diagF=agf136+fcnor: rel diff 7.56e-01 vs table arm; bit-identical to previous arm: False
+OK     diagF=agf136+noepi: rel diff nan vs table arm; bit-identical to previous arm: False
+I= 1536 T= 32768 table                                                                  s1  1523.9 s2  1406.3 cb    1.5 total  3059.5 | s2+cb  +0.0% vs table
+I= 1536 T= 32768 table_null                                                             s1  1531.9 s2  1402.9 cb    1.5 total  3063.4 | s2+cb  +0.2% vs table
+I= 1536 T= 32768 diag2=s2nt+noepi                                                       s1  1518.9 s2  1096.3 cb    1.5 total  2744.6 | s2+cb +22.0% vs table
+I= 1536 T= 32768 diag2=s2nt+kod                                                         s1  1526.1 s2  1291.6 cb    1.5 total  2946.4 | s2+cb  +8.2% vs table
+I= 1536 T= 32768 diag2=s2nt+nodmaA                                                      s1  1523.0 s2  1320.7 cb    1.2 total  2971.5 | s2+cb  +6.1% vs table
+I= 1536 T= 32768 diagF=agf136+fcnor                                                     s1  1519.2 s2  1109.7 cb    1.5 total  2758.4 | s2+cb +21.1% vs table
+I= 1536 T= 32768 diagF=agf136+noepi                                                     s1  1523.3 s2  1012.4 cb    1.6 total  2665.3 | s2+cb +28.0% vs table
+### s2 knockouts I=384 T=32768
+OK     table: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: False
+OK     table_null: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: True
+OK     diag2=wpe3+s2nt+noepi: rel diff 1.00e+00 vs table arm; bit-identical to previous arm: False
+OK     diag2=wpe3+s2nt+nodmaA: rel diff 1.42e+00 vs table arm; bit-identical to previous arm: False
+OK     diag2=wpe3+s2nt+nodmaB: rel diff 0.00e+00 vs table arm; bit-identical to previous arm: False
+I=  384 T= 32768 table                                                                  s1   415.0 s2   485.8 cb  480.1 total  1510.4 | s2+cb  +0.0% vs table
+I=  384 T= 32768 table_null                                                             s1   414.2 s2   480.6 cb  478.5 total  1501.3 | s2+cb  +0.7% vs table
+I=  384 T= 32768 diag2=wpe3+s2nt+noepi                                                  s1   414.1 s2   230.0 cb  480.2 total  1253.5 | s2+cb +26.5% vs table
+I=  384 T= 32768 diag2=wpe3+s2nt+nodmaA                                                 s1   417.1 s2   439.1 cb  478.6 total  1464.0 | s2+cb  +5.0% vs table
+I=  384 T= 32768 diag2=wpe3+s2nt+nodmaB                                                 s1   413.0 s2   476.5 cb  478.6 total  1496.3 | s2+cb  +1.1% vs table
+DONE

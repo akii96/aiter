@@ -31,7 +31,16 @@ for cfg in (dict(IL4, HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1),
             dict(BM1=64, NW1=4, pipe1="hybrid2", D1=3, EF1=1, MV1=1, diag1="s1st", BM2=64, NW2=4,
                  pipe2="hybrid2", D2=2),
             dict(BM1=16, NW1=1, pipe1="hybrid2", D1=8, BM2=16, NW2=1, pipe2="hybrid2", D2=2, QP=1, CF=1),
-            dict(BM1=16, NW1=1, pipe1="hybrid2", D1=8, BM2=16, NW2=1, pipe2="hybrid2", D2=2, QF=1, CF=1)):
+            dict(BM1=16, NW1=1, pipe1="hybrid2", D1=8, BM2=16, NW2=1, pipe2="hybrid2", D2=2, QF=1, CF=1),
+            # round 6
+            dict(IL4, diag1="bar8+ap", BM2=128, pipe2="hybrid2", D2=4),
+            dict(IL4, diag1="bar8+s1tr+epg4", HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1,
+                 diag2="s2nt+s2tl+s2db"),
+            dict(IL4, diag1="bar8+s1tr+epg2+stg5", HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1,
+                 diag2="s2nt+s2tl+stg2"),
+            dict(IL4, diag1="bar8+s1tr+epg8", HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1,
+                 diag2="s2nt+s2db", FC=1, pipeF="hybrid", BMF=128, NWF=4, WMF=1, DF=3, diagF="agf136+fcsk"),
+            dict(PP, BM2=128, pipe2="hybrid2", D2=2, diag2="wpe2+s2nt+agf136", FC=1, diagF="fcsk+fcnt+fcp2")):
     run = moe.MoERun(x, ids, w, moe.MoEWeights(*wts), **cfg)
     run.forward()
     y = run.forward()

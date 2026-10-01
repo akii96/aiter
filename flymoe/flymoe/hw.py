@@ -52,7 +52,7 @@ def e8m0_even(amax):
 def quant_group(r_x, r_q, r_s, gid, even, ok=None, cm=0):
     """MXFP4-quantize one 32-element group: bf16 x[gid * 32 : +32] -> fp4 q[gid * 16 : +16] and
     e8m0 s[gid] (even: e8m0_even, else ceil_pow2(amax / 6)). ok: lanes with ok False touch
-    nothing. Returns the scale byte (i32)."""
+    nothing. Returns the scale byte (i32); r_q None: q is not stored, returns (scale, q vector)."""
     from flydsl.expr import math as fmath
 
     def at(o):
@@ -79,9 +79,11 @@ def quant_group(r_x, r_q, r_s, gid, even, ok=None, cm=0):
             pk = rocdl.cvt_scalef32_pk_fp4_f32(
                 T.i32, pk, raw(vals[wi * 8 + 2 * p]), raw(vals[wi * 8 + 2 * p + 1]), raw(qs), p)
         words.append(fx.Int32(pk))
-    bstore(fx.Vector.from_elements(words, fx.Int32), r_q, at(gid * 16), cm=cm)
+    qv = fx.Vector.from_elements(words, fx.Int32)
+    if r_q is not None:
+        bstore(qv, r_q, at(gid * 16), cm=cm)
     bstore(bexp.to(fx.Int8), r_s, at(gid), cm=cm)
-    return bexp
+    return bexp if r_q is not None else (bexp, qv)
 
 
 def e8m0_even_small(amax):
@@ -287,6 +289,24 @@ def row16_max_nonneg_f32_multi(xs):
     return [v.bitcast(fx.Float32) for v in vs]
 
 
+def _permlane_swap(name, v):
+    """v_permlane{16,32}_swap_b32 with both operands = v: returns the (vdst, vsrc) results."""
+    v = raw(fx.Int32(v))
+    st = llvm.StructType.get_literal([T.i32, T.i32])
+    r = llvm.call_intrinsic(st, name, [v, v, raw(fx.Boolean(False)), raw(fx.Boolean(False))], [], [])
+    return (fx.Int32(llvm.extractvalue(T.i32, r, [0])), fx.Int32(llvm.extractvalue(T.i32, r, [1])))
+
+
+def rows4_max_nonneg_f32_multi(xs):
+    """Max over the 4 lanes l, l^16, l^32, l^48 (the four 16-lane rows) for non-negative floats,
+    several independent values level by level: permlane32_swap then permlane16_swap."""
+    vs = [fx.Float32(x).bitcast(fx.Int32) for x in xs]
+    for name in ("llvm.amdgcn.permlane32.swap", "llvm.amdgcn.permlane16.swap"):
+        ps = [_permlane_swap(name, v) for v in vs]
+        vs = [(fx.Uint32(a) > fx.Uint32(b)).select(a, b) for a, b in ps]
+    return [v.bitcast(fx.Float32) for v in vs]
+
+
 def fast_rcp(x):
     return fx.Float32(rocdl.rcp(T.f32, raw(fx.Float32(x))))
 
@@ -379,7 +399,9 @@ def gptr(addr_i64):
     return llvm.IntToPtrOp(ir.Type.parse("!llvm.ptr<1>"), raw(fx.Int64(addr_i64))).result
 
 
-def gload(addr_i64, res_ty, align=16):
+def gload(addr_i64, res_ty, align=16, nt=False):
+    if nt:
+        return llvm.LoadOp(res_ty, gptr(addr_i64), alignment=align, nontemporal=True).result
     return llvm.LoadOp(res_ty, gptr(addr_i64), alignment=align).result
 
 

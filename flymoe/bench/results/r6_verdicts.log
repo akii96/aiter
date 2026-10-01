@@ -1,0 +1,116 @@
+Round 6 verdicts (large T only, T >= 4096; lossless: h_q / h_s / output bit-identical to the v6 table).
+Timing: GPU 0 only, serial, flock /tmp/gpu0_timing.lock, s1_sweep.py / s2_sweep.py, medians (exploratory
+batches r6_s1_batch.log / r6_s2_batch.log / r6_bounds_batch.log: --reps 3; pick sweeps: 5, re-times: 7),
+v6 tables in-run (table + table_null). Screens marked "GPU 3" are exploratory only (not used for picks); their raw output was not
+kept, only the verdict. Every GPU 0 number is in r6_v7p*_timing.log / r6_final_vs_v6.log or the
+batch logs above.
+Traces: rocprofv3 ATT on one CU (GPUs 3-4), bench/att_budget.py (per-tile loop / between-tile budget)
+and bench/att_between.py (new: per-opcode budget of the region between tiles); the per-trace output of
+both is in r6_att_budgets.txt. Bounds: r6_bounds.log.
+Every new option is an additive diag token, off by default; correctness at T=40000 (tests/test_large.py)
+and in tests/test_options.py.
+
+== S1-E  stage-1 A path (pre-gathered step-major A / 128 B granule) ==
+iterations:
+  1  ap: the quant writes A pre-gathered in plan-row order, K-step-major (a_q_t[H/128][R][64 B], the
+     h_t layout), stage 1 reads it with the HTA addressing (contiguous 1 KB DMAs, no token loads)
+                                                -> bit-identical; s1 GPU 0: -2.8 .. +2.2% (12 cells),
+                                                   forward +1 .. +198 us slower (the quant's 5 x 64 B
+                                                   scattered stores per K step per token)
+  2  trace ap vs v6 (I=1536 T=32768): K loop 64.6k vs 64.7k cycles per tile, MFMA duty 76.1 vs 75.9%
+     -> the gathered A addressing is not what binds the loop
+  3  knock-out kosa (no A-scale LDS re-reads; ds_read_u8 is the top attributed loop gap, 6.9k cyc/tile)
+                                                -> +1.9% s1 (GPU 3): the gap attribution is in-order
+                                                   position, not cost
+  4  bound: ap's best case (free prologue) is <= ~1.5% of s1 (~20 us at I=1536 T=32k); writing the
+     0.5 GB pre-gathered A costs >= 85 us at HBM rate in any placement     -> pre-gather rejected
+  5  bound: a 128 B gathered granule (g128) lies between the 64 B gather and fully contiguous A (ap),
+     so it is bounded by ap's ~1.5%                                     -> not built
+verdict: REJECT (ap kept as a diag). binding limit (trace + knock-outs): the loop DMAs cost ~20% of s1
+  (kod), A and B ~10% each (nodmaA / nodmaB) independent of the address pattern: per-instruction DMA
+  issue / TA-queue back-pressure (buffer_load gaps 6.6k cyc/tile), not gather efficiency.
+
+== S1-F  il4 stage-1 epilogue (between-tile region: epilogue + spread next-tile prologue) ==
+iterations:
+  1  epgN: N row blocks per epilogue batch (16 / 32 chains in flight)     -> bit-identical; I=1536 T=32k
+     (GPU 3 screen): no gain. Trace epg4: region 15.1k -> 16.6k cycles, the DPP max no longer fuses
+     (v_mov_b32_dpp + v_max_u32: 2394 -> 2648 instructions)                     -> rejected alone
+  2  trace v6 (att_between): 2394 instructions per region in 15.0k cycles (6.3 cyc/instr at 1 wave per
+     SIMD); top costs: 256 accvgpr reads, 192 pk_mul, 256 DPP max, 128 each med3 / exp / rcp, 64
+     ds_write_b8; no single stall dominates (largest ~0.3k cycles)      -> VALU-issue bound
+  3  I-cache: the kernel is 84 KB of code (> 64 KB per 2 CUs), SQC misses 0.1% + 0.6% duplicate; large loop delays are
+     MFMA operand waits at varying code addresses                         -> secondary, not pursued
+  4  s1tr: stage-1 MFMAs with A/B swapped (C^T, as s2tr); a lane owns 8 consecutive h values of one row
+     and group: local max + 2-level cross-row max (v_permlane32/16_swap), 16 e8m0 per lane instead of
+     64, 4 B LDS writes instead of 1 B                                    -> bit-identical; trace: region
+     15.1k -> 12.0k cycles, 2394 -> 1934 instructions, loop unchanged (64.4k)
+  5  s1tr + epgN with the next-tile prologue ops spread per row block (epg4 had bunched 13 DMAs per
+     batch: s_add m0 waits of 38 cyc)                                     -> trace epg4: 13.2k -> 12.2k
+  6  stg5: every other CTA starts half a tile late (desynchronise CU phases) -> no effect (GPU 3 screen),
+     rejected
+  GPU 0, s1 vs v6 (best of s1tr / s1tr+epg2/4/8 per cell): I=1536 +2.8 (32k) .. +2.5 (8k) .. +1.7 (4k)%,
+  I=768 +2.3 (32k) .. +4.5 (4k)%, I=384 +1.5 .. +2.5%; nulls -2.5 .. +1.7%
+verdict: SHIP s1tr (+ epgN per cell) where the pick sweep adopts it (tiles_v7 pass 1).
+  The accumulator drain to LDS overlapping the next tile is rejected by budget: a wave holds 64 KB of
+  fp32 accumulators (256 AGPRs); the CU has <= ~40 KB of LDS free past the ring and ~150 free VGPRs.
+binding limit: between tiles 12.0k cycles at ~6.2 cyc/instr (1934 VALU-dominated instructions, 256
+  accvgpr reads irreducible, SwiGLU math fixed by bit-identity); the K loop is 84% of the tile at 76%
+  MFMA duty (DMA issue + LDS operand waits, S1-E).
+
+== S2-E  il4 stage-2 rows epilogue (routed launch) ==
+iterations:
+  1  trace v6 (I=1536 T=32768): loop 16.1k, between tiles 11.6k (39%); 1474 instructions per region:
+     256 accvgpr reads 1.8k cyc, 128 ds_write_b32 1.6k, 44 ds_read_b128 1.1k, 32 row stores 1.0k
+  2  s2tl: C^T MFMAs (s2tr) but rows through the private LDS buffer: one 16 B write per tile pair (32
+     instead of 128 LDS writes), 256 B row stores kept, swizzle chunk ^ (row & 7)
+                                                -> bit-identical; 1474 -> 1239 instructions, span ~same
+                                                   (stores now stall the VALU on store-data VGPRs)
+  3  stg1 / stg2 (half the CTAs start late so store phases do not align) -> no effect (GPU 3 screen),
+     rejected
+  4  s2db: two row-block buffers per wave                               -> bit-identical; trace with
+                                                   s2tl: region 11.6k -> 10.6k cycles
+  5  GPU 0, s2 + cb vs v6: s2tl +0.8 .. +2.9%, s2db -0.4 .. +1.2%, s2tl+s2db +1.0 .. +3.1% (5 il4
+     cells; nulls 0.0 .. 2.1%)
+verdict: SHIP s2tl (+ s2db) where the pick sweep adopts it (tiles_v7 pass 2).
+binding limit: the y_rows store stream (32 x 16 B/lane stores per wave per tile) and 256 accvgpr reads
+  at 1 wave per SIMD; noepi bound 22% of s2 at I=1536 T=32k.
+
+== S2-W  windowed stage 2 -> combine with a MALL-resident rows ring (I=384) ==
+verdict: REJECT by bound (r6_bounds.log): a reused <= 256 MB buffer gains only ~1.25x (6.5-6.8 vs
+  5.0-5.4 TB/s); lossless combine needs token windows, which re-read W2 (152 MB) per window: ~6 GB of
+  extra reads vs a best-case ~390 us saving. Expert windows avoid the re-read but change the
+  summation order (not lossless).
+
+== S2-G  FC routed-row gather (shared-expert launch) ==
+iterations:
+  1  bound: fcnor saves 296 us (21% of s2, I=1536 T=32k); 1.6 GB routed rows at ~5.4 TB/s
+  2  micro: random 12 KB-row piece gathers (512 B - 2 KB) 2.2-3.8 TB/s, below the real kernel
+  3  fcsk: the FCB epilogue loaded all k slots and dropped the token's own (shared) slot -- a
+     never-written y_rows row, i.e. 0.4 GB of cold HBM reads. fcsk points that load at another slot
+     of the token (an L2 hit)                                            -> bit-identical; +4.7% s2 (GPU 3)
+  4  fcnt: non-temporal routed-row loads                                 -> neutral over fcsk (GPU 3 screen)
+  5  fcp2: routed rows prefetched 2 iterations ahead                     -> neutral over fcsk (GPU 3 screen)
+verdict: SHIP fcsk on the FC cells (tiles_v7 pass 2); fcnt / fcp2 kept as diags.
+binding limit: the 1.6 GB routed-row gather at ~5.4 TB/s, at the large-buffer HBM read rate (5.7-5.9).
+
+== PL  large-T plan kernels ==
+measure (rocprofv3, prologue only, v6 cells): T=32768 quant 91.7 us (503 MB, ~5.5 TB/s: at the HBM
+  floor), scatter 12.2, scale_t 11.1, prefix 5.7, hist 4.7 us; T=4096 quant 11.1, scatter 7.6,
+  scale_t 3.9, hist 3.8, prefix 3.3 us.
+  QP (quant inside the hist launch) at I=1536 T=32768 / 4096: neutral (GPU 3 screen).
+verdict: REJECT by bound: removing the scale_t launch entirely saves <= 3.9 us (0.6% at T=4096) /
+  11 us (0.4% at T=32k); merging hist + prefix <= 3.3 us; both below the 1.5% adoption threshold.
+
+== S2-D re-pick, I=768 T=32768 (reps 7) ==
+  il4 PERS2 + HT + FC (shared launch hybrid BMF128): +6.2% s2+cb (null 0.2%; round 5: +2.9% at a
+  3.5% null); with s2tl+s2db +7.4%                                       -> re-picked in tiles_v7 pass 2
+
+== tiles_v7 pick sweeps (bench/v7_sweeps.py + make_tiles_v7.py, GPU 0, SRC_HASH as timed) ==
+pass 1 (stage 1, s1tr / s1tr+epg2/4/8 on every il4 cell, T >= 4096; r6_v7_pass1.log): 10 of 12 adopted,
+  +1.6 .. +4.0% of s1 (nulls 0.0 .. 0.8%). Kept v6: I=384 T=4096 (+2.9%, null 1.7%) and I=1536 T=4096
+  (+0.8%). I=384 T=4096, I=1536 T=4096 and I=1536 T=32768 were re-timed at reps 7 because their reps-5
+  nulls (1.4 / 1.0 / 0.8%) set thresholds above every arm (first runs kept as *_reps5.json); the
+  re-time adopted I=1536 T=32768 s1tr+epg2 at +3.4% (null 0.4%; reps 5: +1.5%, null 0.8%).
+pass 2 (stage 2 + combine, every il4 / FC cell; r6_v7_pass2.log): 6 of 6 adopted, +5.8 .. +8.6%
+  (nulls 0.0 .. 1.6%); every pick includes fcsk (fcsk alone +4.2 .. +6.3%), s2tl or s2tl+s2db adds
+  +0.8 .. +2.4% over fcsk alone; I=768 T=32768 moves to il4 + HT + FC (+8.6% of s1 + s2 + cb, HT changes s1's stores).

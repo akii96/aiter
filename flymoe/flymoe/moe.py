@@ -166,6 +166,13 @@ class MoERun:
         # AST: stage-1 A scales in K-step-major compact-row layout ([H/128, R, 4 B]).
         # +64 B allocation slack: a 16 B/lane scale DMA's last lanes may cover up to 3 rows past R.
         self.a_s_t = torch.empty(R * (H // 32) + 64, dtype=torch.uint8, device=dev) if self.AST else None
+        # ap (diag1): the quant writes stage-1 A pre-gathered, K-step-major ([H/128][R][64 B]).
+        self.AP = "ap" in diag1.split("+")
+        if self.AP:
+            assert self.AST and not self.QF and not self.QP and not self.FZ and not TB1, \
+                "ap: step-major A scales, quant in its own launch, one stage-1 launch"
+            assert R * H // 2 < 2**31, "ap: 32-bit offsets into a_q_t"
+        self.a_q_t = torch.empty(R * H // 2, dtype=torch.uint8, device=dev) if self.AP else None
         self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
         # split-K stage 1 (diag skN): fp32 partial workspace + per-tile arrival counters (the
         # last arriving unit re-arms its counter, so they are zeroed only here).
@@ -197,7 +204,10 @@ class MoERun:
                           self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch,
                           shared_last=self.FC, epoch=self.QF or self.CF,
                           quant=(self.x, self.a_q, self.a_s, self.SE) if self.QP else None)
-        if self.AST and self.QAST:
+        if self.AP:
+            prologue.run_quant(self.x, self.a_q_t, self.a_s, inv=self.inv, a_s_t=self.a_s_t, k=self.k,
+                               even=self.SE, ap=True)
+        elif self.AST and self.QAST:
             prologue.run_quant(self.x, self.a_q, self.a_s, inv=self.inv, a_s_t=self.a_s_t, k=self.k,
                                even=self.SE)
         else:
@@ -215,9 +225,10 @@ class MoERun:
         for b, c in self.launches1:
             tp, ntp = self._tl(b)
             ws, cnt = self.sk1.get(b, (self.dummy, self.dummy))
-            args = (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
+            args = ((self.a_q_t if self.AP else self.a_q).data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
                     tp, ntp, self.row_tok.data_ptr(), cnt.data_ptr(),
-                    self.h_q.data_ptr(), self.h_s.data_ptr(), ws.data_ptr(), self.T, self.R, self.T)
+                    self.h_q.data_ptr(), self.h_s.data_ptr(), ws.data_ptr(), self.R if self.AP else self.T,
+                    self.R, self.T)
             kw = dict(K=self.H, N=2 * self.I, BM=c["BM"], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
                       diag="+".join(t for t in (c["diag"], "se" if self.SE else "", "qf" if self.QF else "") if t),
                       WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT, PERS=c.get("PERS", 0))
