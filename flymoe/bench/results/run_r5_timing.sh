@@ -7,7 +7,7 @@ export HIP_VISIBLE_DEVICES=0
 R=bench/results
 python -c "import sys; sys.path.insert(0, '.'); from flymoe import hw; print('SRC_HASH', hw.SRC_HASH)" > $R/r5_timing_srchash.txt
 sha1sum configs/tiles_v6_I*.json flymoe/*.py >> $R/r5_timing_srchash.txt
-git rev-parse HEAD > $R/r5_timing_commit.txt
+git -c safe.directory="*" rev-parse HEAD > $R/r5_timing_commit.txt
 ALL="32 64 128 256 512 1024 2048 4096 8192 16384 32768"
 for I in 384 768 1536; do
   python -u bench/compare.py --ref v5 --table "configs/tiles_v6_I{I}.json" --I $I --T $ALL \

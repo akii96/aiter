@@ -296,3 +296,11 @@ verdict: SHIP s1st as a per-cell pick in make_tiles_v6 (non-HT, non-persistent s
 binding limit: at mid / small T stage 1 is bound by the weight-load latency (MFMA duty 13%, epilogue 1.4% of
   wave time), so the store path cannot move it; on the pingpong the epilogue is 8-10% of wave time and VALU-
   bound after the store fix (SwiGLU + e8m0 quant, ~220 VALU ops per 32 output values per lane).
+
+== r5-report: tiles_v6 (bench/v6_sweeps.py -> bench/make_tiles_v6.py; SRC_HASH aafb9ff6) ==
+pick passes (gain > max(1.5%, 3 x |null|), gated, same SRC_HASH): stage 1 17 cells, stage 2 19, forward (QP / QF /
+  small-T pairs, warm + clean flush) 6; r5_v6_pass{1,2,3}.log. Kept by the rule: I=768 T=32768 il4+FC (+4.8% vs
+  table, +8.0% vs null; null 3.5% -> threshold 10.5%).
+final serial A/B vs flymoe-v5 (r5_final_vs_v5.log): 20 of 33 win, 13 noise, 0 loss; T=32768 +2.4 / +6.1 / +11.8%
+  (I=384 / 768 / 1536), T=32 +13.0 / +8.2 / +3.7%. Clean flush T<=256: 5 win, 7 noise, 0 loss; write flush: 4 win,
+  8 noise, 0 loss. vs v1: +15.4 .. +29.8%. Output bit-identical to v5 in 31 of 33 (2 FC summation-order cells).
