@@ -50,7 +50,7 @@ GEMM template knobs:
 | `D` | integer | pipeline depth |
 | XCD remap | on/off | keeps each XCD's work contiguous so an expert's weights stay in one L2 |
 
-`flymoe.configs.select_cfg(I, T)` returns `MoERun` kwargs for any T: the smallest tuned power-of-two bucket ≥ T, clamped to 32–32768. It reads `configs/tiles_v5_I{384,768,1536}.json`. These are the v4 tables (`bench/tune.py` picks curated by serial A/B) with round 4's stage-2 changes (see "Round 4"). `tests/test_tables.py` checks every cell. Older tables (`tiles_I*`, `tiles_v2_*` to `tiles_v4_*`) are kept for the frozen comparisons.
+`flymoe.configs.select_cfg(I, T)` returns `MoERun` kwargs for any T: the smallest tuned power-of-two bucket ≥ T, clamped to 32–32768. It reads `configs/tiles_v6_I{384,768,1536}.json`: the v5 tables with round 5's per-cell picks (see "Round 5"). `tests/test_tables.py` checks every cell. Older tables (`tiles_I*`, `tiles_v2_*` to `tiles_v5_*`, and the intermediate `tiles_v6a_*` / `tiles_v6b_*`) are kept for the frozen comparisons and the pick provenance.
 
 ## Correctness
 
@@ -494,3 +494,129 @@ The prefix also drops from 7.8 to 2.6 µs at T=32. The quant kernel (92.8 µs) i
 - "Bit-identical" above means `rel_diff_vs_ref` = 0 against v4 on `compare.py`'s single random uniform-routing input. That holds in every cell except I=768 T=8192 and I=1536 T=4096, 8192, 16384 and 32768.
 
 The superseded sweeps `r4_s2_sweep_*`, `r4_s2b_*` and `r4_s2c_*` predate the prologue rewrite and are not used by `make_tiles_v5.py`. The empty `r4_s2_sweep.log` was removed.
+
+## Round 5 (v6, `configs/tiles_v6_I*.json`): toward the on-chip floor
+
+Timing protocol as in round 4 (`bench/compare.py`, serial on GPU 0 under a lock, one process, round-robin arms with a null arm, prologue included, total = sum of per-stage medians). Script: `bench/results/run_r5_timing.sh`. Commit: `r5_timing_commit.txt`. Kernel source hash and table checksums: `r5_timing_srchash.txt`. The reference is the frozen `flymoe-v5` tag. Every lever's iterations, binding limit and verdict are in `bench/results/r5_verdicts.log`.
+
+### Result: v6 vs v5 (`r5_final_vs_v5.log`, per-width JSON)
+
+Total µs, warm:
+
+| T | I=384 | I=768 | I=1536 |
+|---:|---:|---:|---:|
+| 32 | 86 -> 75 (+13.0%) | 136 -> 124 (+8.2%) | 250 -> 241 (+3.7%) |
+| 64 | 99 -> 92 (+7.2%) | 173 -> 167 (+2.9%) | 330 -> 328 (+0.5%, noise) |
+| 128 | 110 -> 110 (-0.4%, noise) | 202 -> 194 (+4.0%) | 360 -> 359 (+0.3%, noise) |
+| 256 | 117 -> 110 (+6.1%) | 212 -> 205 (+3.6%) | 374 -> 371 (+1.0%, noise) |
+| 512 | 124 -> 120 (+3.7%) | 221 -> 216 (+2.4%) | 387 -> 389 (-0.5%, noise) |
+| 1024 | 142 -> 143 (-1.1%, noise) | 243 -> 238 (+2.0%, noise) | 426 -> 428 (-0.5%, noise) |
+| 2048 | 180 -> 182 (-1.1%, noise) | 298 -> 294 (+1.5%, noise) | 483 -> 476 (+1.4%, noise) |
+| 4096 | 261 -> 254 (+2.6%) | 413 -> 407 (+1.4%, noise) | 660 -> 638 (+3.3%) |
+| 8192 | 440 -> 425 (+3.3%) | 682 -> 656 (+3.8%) | 1079 -> 984 (+8.8%) |
+| 16384 | 792 -> 778 (+1.8%, noise) | 1182 -> 1079 (+8.7%) | 1894 -> 1685 (+11.0%) |
+| 32768 | 1528 -> 1492 (+2.4%) | 2238 -> 2102 (+6.1%) | 3464 -> 3056 (+11.8%) |
+
+20 of 33 cells win, 13 are within noise (max(2×null, 2%)), none lose. Output is bit-identical to v5 in 31 cells; I=768 T=2048 (FC dropped, rel diff 4e-9) and T=8192 (FC added, 5e-7) differ only in summation order. The large-T gains are stage 1 on il4 at every width plus stage 2 on il4+FC at I=1536 / I=768; the small-T gains are the 16-row hybrid2 cells and QP / QF (QP removes the quant launch: prologue 18.8 -> 13.3 µs at I=384 T=32).
+
+**Flushed small T.** Two flushes, 7 reps. The round-4 write flush (`r5_flush_vs_v5.log`) leaves about 256 MB of dirty MALL lines whose write-back the next kernel pays, roughly 50 µs per stage (`r5_st1.log`), so it measures that artifact more than the kernels. The clean read flush (`FLYMOE_FLUSH=read`, `r5_flushread_vs_v5.log`) leaves the caches holding clean lines:
+
+| T | I=384 | I=768 | I=1536 |
+|---:|---:|---:|---:|
+| 32 | 109 -> 102 (+6.4%) | 159 -> 146 (+8.2%) | 265 -> 250 (+5.6%) |
+| 64 | 123 -> 117 (+5.2%) | 188 -> 187 (+0.9%, noise) | 339 -> 334 (+1.4%, noise) |
+| 128 | 133 -> 130 (+1.8%, noise) | 211 -> 211 (-0.3%, noise) | 376 -> 370 (+1.7%, noise) |
+| 256 | 139 -> 136 (+1.8%, noise) | 224 -> 219 (+2.4%) | 389 -> 385 (+1.1%, noise) |
+
+5 win, 7 noise, 0 loss; bit-identical in all 12.
+
+Write flush:
+
+| T | I=384 | I=768 | I=1536 |
+|---:|---:|---:|---:|
+| 32 | 173 -> 164 (+5.4%) | 251 -> 240 (+4.1%) | 375 -> 369 (+1.7%, noise) |
+| 64 | 204 -> 198 (+2.8%) | 299 -> 294 (+1.9%, noise) | 458 -> 454 (+0.8%, noise) |
+| 128 | 220 -> 216 (+1.7%, noise) | 322 -> 320 (+0.8%, noise) | 486 -> 487 (-0.2%, noise) |
+| 256 | 225 -> 220 (+2.2%) | 330 -> 330 (-0.0%, noise) | 506 -> 498 (+1.5%, noise) |
+
+4 win, 8 noise, 0 loss; bit-identical in all 12.
+
+**Against frozen v1** (`r5_vs_v1.log`):
+
+| T | I=384 | I=768 | I=1536 |
+|---:|---:|---:|---:|
+| 4096 | 323 -> 255 (+20.9%) | 480 -> 406 (+15.4%) | 777 -> 640 (+17.7%) |
+| 32768 | 1971 -> 1506 (+23.6%) | 2731 -> 2118 (+22.4%) | 4401 -> 3088 (+29.8%) |
+
+v1 predates the `SR="even"` scale rule, so its output differs by rel_diff 0.12, as in rounds 3 and 4.
+
+### What changed (all lossless; additive options, off unless a table cell selects them)
+
+- **Stage 1, T ≥ 4096: `pipe=il4` persistent (S1-B, S1-C).**
+  - Four waves as 2×2 on a 256×256 tile, each wave holding a 128×128 block in all 256 AGPRs through inline-asm MFMA.
+  - An LDS-staged epilogue with packed SwiGLU.
+  - The next tile's state is loaded mid-loop, and its prologue DMAs are spread over the epilogue.
+  - Pick sweep: +6.3% to +9.9% of stage-1 time at every width.
+  - Binding limit: the token-gathered A DMA path (16 rows × 64 B per instruction at 31–34 B/clk/CU) plus an epilogue that cannot overlap MFMA when every AGPR holds an accumulator.
+- **Stage 2, I=1536 T ≥ 8192 and I=768 T=8192/16384: `pipe2=il4` persistent with HT and FC (S2-D).**
+  - The il4 stage 1 writes h K-step-major, so stage 2 reads contiguous 1 KB A blocks with no token gather.
+  - The fused-combine shared-expert launch runs on `pipeF=hybrid` BM=128.
+  - FCB, a batched fused epilogue, is now the default (S2-C).
+  - `agf136` (`amdgpu-agpr-alloc` on the fused launch) is picked where it measured best.
+  - Pick sweep: +2.3% to +7.1% of stage 2 + combine (stage 1 included in the comparison, since HT changes its stores).
+- **Stage 2, mid T: BM=64/32 `hybrid2` `wpe3+s2nt` with `agN` AGPR caps (S2-A).** I=768 T=256–2048 and I=1536 T=256: +2.9% to +9.1% of stage 2 + combine. The caps remove the 4-VGPR spills that kept `wpe3` off K ≥ 768 in round 4.
+- **Small T (ST-1): 16-row CTAs on `hybrid2`.** Stage 1 uses D=4 or D=8 and stage 2 uses `nos2w` D=2 or D=3. Gains: +2.1% to +7.9% (stage 1) and +1.8% to +5.4% (stage 2 + combine) in the cells listed in `r5_v6_pass1.log` / `r5_v6_pass2.log`. Deeper prefetch did not help; the gain comes from more CTAs in flight.
+- **Launch removal (ST-2).**
+  - **QP:** the activation quant runs as extra CTAs of the plan's histogram launch.
+  - **QF:** the quant runs as the first CTAs of the stage-1 launch, and tiles wait on per-token epoch flags (no atomics, no re-arm).
+  - Picked on the whole forward, warm and clean-flushed: QP at I=384 T=32/256/512 and I=768 T=128; QF at I=384 T=64 and I=768 T=32.
+  - The fused persistent stage 1 + stage 2 kernel and CF (combine as extra stage-2 CTAs) were rejected on measurement.
+- **Rejected after ≥ 5 trace-driven iterations each (kept as diag flags):**
+  - split-K / stream-K for stage 1 (S1-D);
+  - persistent stage 2 on the non-il4 pipes (S2-B);
+  - the readiness-counter interleave and `ytl` layout for FC (S2-C);
+  - `s1sd` outside the pingpong pipe, and `s1st` everywhere: it was neutral to −2.5% in this round's pick sweep, so no cell uses it except the I=768 T=64 and I=1536 T=32 small-T stage-1 arms (S1-A).
+
+### How the v6 cells were chosen
+
+`bench/v6_sweeps.py` runs three pick passes, each against the table the previous pass produced:
+- **Pass 1, stage 1:** `s1_sweep.py` on v5, ranked on stage 1.
+- **Pass 2, stage 2:** `s2_sweep.py` on v6a, ranked on stage 2 + combine, plus stage 1 when an arm changes HT.
+- **Pass 3, launch removal:** `st2_sweep.py` on v6b, ranked on the whole forward.
+
+Pass 3 times T ≤ 256 both warm and clean-flushed and ranks on the mean of the two gains; no mode may lose more than 0.5%.
+
+`bench/make_tiles_v6.py` applies the selection rules:
+- Every sweep times the table cell twice (`table`, `table_null`).
+- An arm is adopted only if its gain exceeds max(1.5%, 3 × |null|).
+- It aborts on any arm timed with a different `SRC_HASH`.
+- Only gated arms are eligible. Stage-1 and whole-forward arms must be byte-identical to the table arm in h_q, h_s (in (token, slot) order) and the output; stage-2 arms must be within rel diff 1e-3, and are 0 except for summation-order changes when FC toggles.
+
+Adoptions: 17 cells in pass 1, 19 in pass 2, 6 in pass 3 (`r5_v6_pass{1,2,3}.log`). The rule kept I=768 T=32768 on its v5 stage 2. There, the il4+FC arm measured +4.8% against the table and +8.0% against the null, but the table cell itself is bimodal (null 3.5%), which sets the threshold at 10.5%.
+
+### On-chip floor (`bench/roofline.py`, `r5_roofline_v6.log`)
+
+The roofline now adds an on-chip floor for stage 1 and stage 2, with rates measured in `r5_micro.log`:
+- LDS ~280 B/ns/CU;
+- MFMA fp4 at 9.2 PF;
+- TA at 27.05 TB/s contiguous and 17.44 TB/s for 16×64 B gathered rows.
+
+The floor is the busiest CU's work units times the per-K-step cost of the binding resource: MFMA issue, LDS bytes for the pipe's staging, or load bytes at the TA rate. It also reports a wave-quantization factor (average units per CU over the busiest CU's units). With `--occ` (`bench/occupancy.py --cfg`), it also reports the resident-CTA rounds.
+
+What it says for v6 (warm, `r5_roofline_v6.log`):
+
+- **T ≤ 512, every width:** the on-chip floors are about 3× below the HBM floors (TA-bound, quantization 0.95–0.98). Stage 1 and stage 2 run at 87–111% of the warm HBM floor, so they are weight-streaming-bound. Above 100% means the weights were MALL-resident.
+- **T=32768, stage 1 (il4):** 51% / 54% / 55% of the MFMA floor at I=384 / 768 / 1536. The on-chip floor at 9.2 PF issue is 202 / 381 / 740 µs, with quantization 0.92–1.00. The measured gap is the gathered-A DMA path and the non-overlapped epilogue (S1-C binding limit), not a resource the floor model counts.
+- **T=32768, stage 2:** 84% of the HBM floor at I=384 (rows + combine; the y_rows round trip binds). At I=768 and I=1536 with FC it is 59% and 55%; the 1.6 GB routed-row gather of the fused launch runs at ~4.4 TB/s (S2-C).
+
+Per-wave cycle budgets for every v5 cell (24 ATT traces, `r5_cycles.log`) show three regimes:
+- **Small T:** stage 1 spends about 2.0k cycles per K step at 3–8% MFMA duty, waiting on weight loads.
+- **Large T:** the pingpong ran about 1.5k cycles per step at ~34% duty per wave. il4 replaces it there, at 72–73% loop duty.
+- **FC cells at T=32768:** the fused-combine epilogue is 47–64% of stage-2 wave time.
+
+### What round 5 does not claim
+
+- No comparison against AITER.
+- No end-to-end model numbers.
+- No `bench/tune.py` output was used; every v6 cell comes from the pick sweeps above.
+- "rel_diff 0" means bit-identical output against v5 on `compare.py`'s single random uniform-routing input, nothing broader.

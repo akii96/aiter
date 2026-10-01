@@ -1,0 +1,167 @@
+[
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "table",
+  "cfg": {
+   "BM1": 32,
+   "NW1": 2,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w"
+  },
+  "fwd_us": 346.38240337371826,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "table_null",
+  "cfg": {
+   "BM1": 32,
+   "NW1": 2,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w"
+  },
+  "fwd_us": 344.95840072631836,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "QP=1",
+  "cfg": {
+   "BM1": 32,
+   "NW1": 2,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w",
+   "QP": 1
+  },
+  "fwd_us": 344.75440979003906,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=8,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 8,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w"
+  },
+  "fwd_us": 349.8584032058716,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=8,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QP=1",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 8,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w",
+   "QP": 1
+  },
+  "fwd_us": 349.23839569091797,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=2,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QP=1",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 2,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w",
+   "QP": 1
+  },
+  "fwd_us": 349.6984004974365,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ }
+]

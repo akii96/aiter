@@ -1,0 +1,21 @@
+I=384 T=5 {'BM1': 16, 'BM2': 16, 'NW1': 1, 'NW2': 1, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.348e-03 OK
+I=384 T=5 {'BM1': 32, 'BM2': 32, 'NW1': 1, 'NW2': 2, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.348e-03 OK
+I=384 T=5 {'BM1': 64, 'BM2': 32, 'NW1': 2, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'async', 'D1': 3, 'D2': 2}: 2.348e-03 OK
+I=384 T=5 {'BM1': 128, 'BM2': 64, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.348e-03 OK
+I=384 T=5 {'BM1': 256, 'BM2': 128, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.348e-03 OK
+I=384 T=300 {'BM1': 16, 'BM2': 16, 'NW1': 1, 'NW2': 1, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.354e-03 OK
+I=384 T=300 {'BM1': 32, 'BM2': 32, 'NW1': 1, 'NW2': 2, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.354e-03 OK
+I=384 T=300 {'BM1': 64, 'BM2': 32, 'NW1': 2, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'async', 'D1': 3, 'D2': 2}: 2.354e-03 OK
+I=384 T=300 {'BM1': 128, 'BM2': 64, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.354e-03 OK
+I=384 T=300 {'BM1': 256, 'BM2': 128, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.354e-03 OK
+I=1536 T=5 {'BM1': 16, 'BM2': 16, 'NW1': 1, 'NW2': 1, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.350e-03 OK
+I=1536 T=5 {'BM1': 32, 'BM2': 32, 'NW1': 1, 'NW2': 2, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.350e-03 OK
+I=1536 T=5 {'BM1': 64, 'BM2': 32, 'NW1': 2, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'async', 'D1': 3, 'D2': 2}: 2.350e-03 OK
+I=1536 T=5 {'BM1': 128, 'BM2': 64, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.350e-03 OK
+I=1536 T=5 {'BM1': 256, 'BM2': 128, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.350e-03 OK
+I=1536 T=300 {'BM1': 16, 'BM2': 16, 'NW1': 1, 'NW2': 1, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.354e-03 OK
+I=1536 T=300 {'BM1': 32, 'BM2': 32, 'NW1': 1, 'NW2': 2, 'pipe1': 'async', 'pipe2': 'async', 'D1': 4, 'D2': 2}: 2.354e-03 OK
+I=1536 T=300 {'BM1': 64, 'BM2': 32, 'NW1': 2, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'async', 'D1': 3, 'D2': 2}: 2.354e-03 OK
+I=1536 T=300 {'BM1': 128, 'BM2': 64, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.354e-03 OK
+I=1536 T=300 {'BM1': 256, 'BM2': 128, 'NW1': 4, 'NW2': 4, 'pipe1': 'async', 'pipe2': 'regs', 'D1': 3, 'D2': 2}: 2.354e-03 OK
+ALL OK

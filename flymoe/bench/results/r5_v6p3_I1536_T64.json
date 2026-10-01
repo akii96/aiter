@@ -1,0 +1,195 @@
+[
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "table",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w"
+  },
+  "fwd_us": 313.90209197998047,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "table_null",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w"
+  },
+  "fwd_us": 313.3661985397339,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "QP=1",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 3,
+   "diag2": "nos2w",
+   "QP": 1
+  },
+  "fwd_us": 311.11810207366943,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=8,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 8,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w"
+  },
+  "fwd_us": 314.8340940475464,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=8,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QP=1",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 8,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w",
+   "QP": 1
+  },
+  "fwd_us": 313.326096534729,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=2,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QP=1",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 2,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w",
+   "QP": 1
+  },
+  "fwd_us": 321.05019092559814,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 64,
+  "arm": "BM1=16,NW1=1,pipe1=hybrid2,D1=8,BM2=16,NW2=1,pipe2=hybrid2,D2=2,diag2=nos2w,QF=1",
+  "cfg": {
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 8,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "hybrid2",
+   "D2": 2,
+   "diag2": "nos2w",
+   "QF": 1
+  },
+  "fwd_us": 313.254189491272,
+  "mode": "warm",
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "out_bad": 0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ }
+]

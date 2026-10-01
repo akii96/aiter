@@ -1,0 +1,12 @@
+I=  384 T=    32 | v5    108.6 null    108.2 cand    101.6us | pro   16.7->  15.2 s1    50.5->   47.0 s2    30.9->   29.0 cb   10.5->  10.4 | gain  +6.4% noise  0.3% WIN | diff 0.0e+00
+I=  384 T=    64 | v5    123.4 null    122.4 cand    117.0us | pro   16.9->  14.4 s1    58.8->   56.4 s2    37.6->   35.8 cb   10.2->  10.3 | gain  +5.2% noise  0.7% WIN | diff 0.0e+00
+I=  384 T=   128 | v5    132.6 null    133.5 cand    130.2us | pro   17.1->  16.5 s1    64.2->   64.2 s2    40.9->   39.2 cb   10.4->  10.4 | gain  +1.8% noise  0.7% noise | diff 0.0e+00
+I=  384 T=   256 | v5    138.6 null    139.2 cand    136.1us | pro   19.0->  17.0 s1    65.1->   66.4 s2    43.2->   41.5 cb   11.3->  11.2 | gain  +1.8% noise  0.5% noise | diff 0.0e+00
+I=  768 T=    32 | v5    159.0 null    155.3 cand    146.0us | pro   17.3->  14.4 s1    86.0->   77.4 s2    45.6->   44.0 cb   10.2->  10.2 | gain  +8.2% noise  2.3% WIN | diff 0.0e+00
+I=  768 T=    64 | v5    188.5 null    190.0 cand    186.8us | pro   16.8->  16.9 s1   101.6->   99.8 s2    59.8->   59.8 cb   10.2->  10.3 | gain  +0.9% noise  0.8% noise | diff 0.0e+00
+I=  768 T=   128 | v5    210.8 null    214.6 cand    211.4us | pro   16.7->  15.4 s1   116.4->  117.7 s2    67.2->   67.8 cb   10.4->  10.5 | gain  -0.3% noise  1.8% noise | diff 0.0e+00
+I=  768 T=   256 | v5    224.1 null    223.2 cand    218.8us | pro   18.5->  19.7 s1   121.6->  118.2 s2    72.8->   69.6 cb   11.2->  11.2 | gain  +2.4% noise  0.4% WIN | diff 0.0e+00
+I= 1536 T=    32 | v5    264.7 null    260.5 cand    250.0us | pro   16.2->  16.9 s1   152.0->  142.6 s2    86.2->   80.3 cb   10.2->  10.1 | gain  +5.6% noise  1.6% WIN | diff 0.0e+00
+I= 1536 T=    64 | v5    338.6 null    340.2 cand    333.9us | pro   16.2->  17.2 s1   197.8->  197.4 s2   114.1->  109.2 cb   10.5->  10.2 | gain  +1.4% noise  0.4% noise | diff 0.0e+00
+I= 1536 T=   128 | v5    375.8 null    371.2 cand    369.5us | pro   18.2->  18.1 s1   220.4->  218.6 s2   126.6->  122.3 cb   10.7->  10.6 | gain  +1.7% noise  1.2% noise | diff 0.0e+00
+I= 1536 T=   256 | v5    389.5 null    385.9 cand    385.4us | pro   18.7->  19.8 s1   226.6->  223.9 s2   132.8->  130.0 cb   11.5->  11.6 | gain  +1.1% noise  0.9% noise | diff 0.0e+00
