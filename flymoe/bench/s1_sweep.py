@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 
-from compare import STAGES, sample, table_cfg  # noqa: E402
+from compare import STAGES, h_rows, sample, table_cfg  # noqa: E402
 from flymoe import hw, moe  # noqa: E402
 from tests.test_moe import make_problem  # noqa: E402
 
@@ -69,10 +69,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             print(f"SKIP {n}: {type(e).__name__}: {str(e)[:160]}", flush=True)
             continue
-        # The plan's row order inside an expert is not fixed run to run: compare h in
-        # (token, slot) order through inv.
-        inv = r.inv.long()
-        cur = (r.h_q[inv].clone(), r.h_s[inv].clone(), r.out.float().clone())
+        cur = h_rows(r) + (r.out.float().clone(),)
         if ref is None:
             ref = cur
         hq_bad = int((cur[0] != ref[0]).sum())

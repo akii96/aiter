@@ -54,6 +54,20 @@ def table_cfg(path, I, T):
     return kw
 
 
+def h_rows(run):
+    """The run's stage-1 output (h_q, h_s) gathered into (token, slot) order through inv: the
+    plan's row order inside an expert is not fixed run to run. HT runs hold h K-step-major
+    (h_t[I/128][R][64 B], scales [I/128][R][4 B]); those are returned row-major too, so runs
+    with and without HT compare byte for byte."""
+    inv = run.inv.long()
+    if run.HT:
+        P, R = run.I // 128, run.R
+        hq = run.h_q.view(-1)[: P * R * 64].view(P, R, 64).permute(1, 0, 2).reshape(R, P * 64)
+        hs = run.h_s.view(-1)[: P * R * 4].view(P, R, 4).permute(1, 0, 2).reshape(R, P * 4)
+        return hq[inv].clone(), hs[inv].clone()
+    return run.h_q[inv].clone(), run.h_s[inv].clone()
+
+
 def flush():
     """FLYMOE_FLUSH=read: evict by reading the buffer (caches left holding clean lines). The
     default write flush leaves ~256 MB of dirty MALL lines whose write-back the next kernel's

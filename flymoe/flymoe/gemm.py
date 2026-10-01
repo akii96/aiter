@@ -195,6 +195,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     # With HT the same runs go to h_t / the step-major h scales.
     S1S = stage == 1 and pipe == "il4" and "nos1s" not in DG
     HTW = HT and stage == 1 and not S1S   # stage-1 epilogue writes h_t + step-major h scales
+    # s1st: the row-major (non-HT) h bytes staged per wave in the freed LDS ring, then stored
+    # as one 16 B row slice per lane instead of 1 B per lane per row
+    STW = stage == 1 and not S1S and not HT and "s1st" in DG
+    assert not STW or (CG == 1 and not PERS)
     # Uniform scale DMAs for the 2x4 ping-pong tile: every wave issues exactly one 256 B
     # scale DMA per step (wave-row 0: its B-scale block, wave-row 1: a quarter of the
     # step-major A scales), so all waves carry identical DMA counts and vmcnt is exact.
@@ -243,8 +247,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     S2W_BASE = lds_bytes if PF else 0
     if S2W:
         lds_bytes = max(lds_bytes, S2W_BASE + NW * ROWS_W * 128)
-    if HTW:
-        lds_bytes = max(lds_bytes, NW * max(ROWS_W, 64) * 16)
+    RWP = max(ROWS_W, 64)
+    # s1sd: the s1st staging gets its own LDS past the ring (no barrier before the epilogue)
+    STD = STW and "s1sd" in DG
+    STW_BASE = lds_bytes if STD else 0
+    if HTW or STW:
+        lds_bytes = max(lds_bytes, STW_BASE + NW * RWP * (17 if STW else 16))
     assert not S1S or CG == 2
     S1S_H = ROWS_W * CG * 16
     S1S_W = S1S_H + ROWS_W * CG
@@ -959,9 +967,10 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 hw.bstore(tot, hw.rsrc(o_ptr, 4), fx.Int32(0) * tid)
             elif const_expr(stage == 1):
                 r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
-                if const_expr(HTW):
-                    gpu.barrier()  # all waves done with the LDS ring
-                    hwb = wave * (max(ROWS_W, 64) * 16)
+                if const_expr(HTW or STW):
+                    if const_expr(not STD):
+                        gpu.barrier()  # all waves done with the LDS ring
+                    hwb = STW_BASE + wave * (RWP * (17 if STW else 16))
                 r_os = hw.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
                 lim = fx.Float32(limit)
 
@@ -1081,17 +1090,22 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         valid = row < nrows
                         grow = row_start + row
                         soff_ok = valid & (l16 == fx.Int32(0))
-                        if const_expr(HTW):
+                        if const_expr(HTW or STW):
                             # stage h bytes per wave in LDS (rows x 16 B), stored below as 16 B rows
                             rl = fx.Int32(rb * 16) + lg * 4 + v
                             hw.lds_store(fx.Int32(pk).to(fx.Int8), lds_base, hwb + rl * 16 + l16, align=1)
-                            hs_off = ((g // 4) * n_rows + grow) * 4 + (g % 4)
+                            if const_expr(HTW):
+                                hs_off = ((g // 4) * n_rows + grow) * 4 + (g % 4)
+                            else:
+                                # the 16 lanes of the row write the same byte
+                                hw.lds_store(bexp.to(fx.Int8), lds_base, hwb + RWP * 16 + rl, align=1)
                         else:
                             off = valid.select(grow * (INTER // 2) + g * 16 + l16, fx.Int32(0x7FFFFFF0))
                             hw.bstore(fx.Int32(pk).to(fx.Int8), r_o, off, cm=H_CM)
                             hs_off = grow * (INTER // 32) + g
-                        soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
-                        hw.bstore(bexp.to(fx.Int8), r_os, soff, cm=H_CM)
+                        if const_expr(not STW):
+                            soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
+                            hw.bstore(bexp.to(fx.Int8), r_os, soff, cm=H_CM)
                 if const_expr(S1S):
                     # h[row][g0*16 .. g0*16 + CG*16): CG*16 B per row, 16 B per lane
                     sw = S1S_BASE + wave * S1S_W
@@ -1127,6 +1141,18 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         off = ((g // 4) * n_rows + row_start + row) * 64 + (g % 4) * 16
                         ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
                         hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)), cm=H_CM)
+                if const_expr(STW):
+                    # h[row][g * 16 .. +16): this wave's 16 B column group of each row
+                    for it in range_constexpr((ROWS_W + 63) // 64):
+                        rl = fx.Int32(it * 64) + lane
+                        v16 = hw.lds_load(lds_base, hwb + rl * 16, T.i32x4)
+                        row = rb0 * 16 + rl
+                        off = (row_start + row) * (INTER // 2) + g * 16
+                        ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
+                        hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)), cm=H_CM)
+                        sv = hw.lds_load(lds_base, hwb + RWP * 16 + rl, T.i8, align=1)
+                        hw.bstore(sv, r_os, ok.select((row_start + row) * (INTER // 32) + g, fx.Int32(0x7FFFFFF0)),
+                                  cm=H_CM)
             elif const_expr(S2I):
                 # W2 columns are even/odd interleaved per 32: tiles (4g + 2p, 4g + 2p + 1) give
                 # output columns gb + 32p + 2c, +1 of 64-column group g (gb = wn*128 + 64g).

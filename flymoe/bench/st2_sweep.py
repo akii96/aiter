@@ -20,7 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 
-from compare import sample, table_cfg  # noqa: E402
+from compare import h_rows, sample, table_cfg  # noqa: E402
 from flymoe import hw, moe  # noqa: E402
 from tests.test_moe import make_problem  # noqa: E402
 
@@ -62,8 +62,7 @@ def main():
             for _ in range(a.checks):
                 r.forward()
                 torch.cuda.synchronize()
-                inv = r.inv.long()
-                cur = (r.h_q[inv].clone(), r.h_s[inv].clone(), r.out.clone())
+                cur = h_rows(r) + (r.out.clone(),)
                 if ref is None:
                     ref = cur
                 b = (int((cur[0] != ref[0]).sum()), int((cur[1] != ref[1]).sum()),
