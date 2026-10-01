@@ -58,7 +58,7 @@ class MoERun:
     """Buffers + launches for one token count T. Call forward() per step."""
 
     def __init__(self, x, topk_ids, topk_w, W: MoEWeights, BM1=128, BM2=128, D1=3, D2=2,
-                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0, PERS2=0, SR="even", validate=True,
+                 epi="rows", pipe1="async", pipe2="regs", NW1=4, NW2=4, GM1=1, GM2=1, diag1="", diag2="", WM1=1, WM2=1, EF1=False, EF2=False, MV1=0, MV2=0, AST="auto", TB1=0, TB2=0, HT=False, FC=False, QAST=False, PERS1=0, PERS2=0, SR="even", validate=True, FZ=0, FZS=1, FZK="", QF=False, CF=False, QP=False,
                  BMF=None, NWF=None, DF=None, pipeF=None, diagF=None, WMF=None, GMF=None):
         T, H = x.shape
         k = topk_ids.shape[1]
@@ -132,11 +132,35 @@ class MoERun:
             if TB2:
                 self.launches2.append((spec((TB2, BM2)), dict(_tail_cfg(TB2, 2, self.cfg2), epi=epi)))
         self.bms = tuple(specs)
+        # FZ: stage 1 + stage 2 in one persistent launch of FZ CTAs per CU (gemm.build_fused);
+        # both stages walk the same tile list.
+        self.FZ, self.FZS, self.FZK = int(FZ), int(FZS), FZK
+        if self.FZ:
+            assert not self.FC and not TB1 and not TB2 and BM1 == BM2 and epi == "rows", \
+                "FZ: one tile list (BM1 == BM2, no tail split), rows epilogue, no FC"
+            assert pipe1 not in ("regs", "il4") and pipe2 not in ("regs", "il4") and GM1 == GM2 == 1
+            assert not PERS1 and not PERS2 and gemm.split_k(diag1) == 1
         self.spec_mt = [prologue.spec_max_tiles(b, R, W.E) for b in specs]
         self.MAXT = max(self.spec_mt)
+        # QF: the activation quant runs in the stage-1 launch (gemm "qf"); CF: the combine runs
+        # in the stage-2 launch (gemm "cf"). Their flags re-arm themselves, so zeroed only here.
+        self.QF, self.CF = bool(QF), bool(CF)
+        # QP: the activation quant runs as extra CTAs of the plan's first launch.
+        self.QP = bool(QP)
+        assert not self.QP or (not self.QF and not (self.AST and self.QAST)), "QP: one quant path"
+        # Flags are epoch-valued (the plan bumps the epoch at ntiles + EPOCH_OFF each forward).
+        if self.QF or self.CF:
+            assert len(specs) == 1 and not self.FZ, "QF / CF: one tile list"
+        if self.QF:
+            assert not self.AST and not PERS1 and gemm.split_k(diag1) == 1
+            self.qf_sync = torch.zeros(T * 4 + (8 * 65536 if "qft" in diag1 else 0), dtype=torch.int32, device=dev)
+        if self.CF:
+            assert epi == "rows" and not self.FC and not PERS2
+            self.cf_sync = torch.zeros(R * (H // (64 * NW2 // WM2)), dtype=torch.int32, device=dev)
         self.tiles = torch.zeros(len(specs) * self.MAXT, 4, dtype=torch.int32, device=dev)
-        self.ntiles = torch.zeros(len(specs), dtype=torch.int32, device=dev)
+        self.ntiles = torch.zeros(len(specs) + gemm.EPOCH_OFF // 4, dtype=torch.int32, device=dev)
         self.plan_scratch = prologue.plan_scratch(R, W.E, dev)
+        self.fz_sync = torch.zeros(self.MAXT * gemm.SYNC_STRIDE // 4, dtype=torch.int32, device=dev) if self.FZ else None
         self.h_q = torch.empty(R, I // 2, dtype=torch.uint8, device=dev)
         self.h_s = torch.empty(R, I // 32, dtype=torch.uint8, device=dev)
         # AST: stage-1 A scales in K-step-major compact-row layout ([H/128, R, 4 B]).
@@ -171,52 +195,82 @@ class MoERun:
         # compact A scales; otherwise a separate scale_t launch does (the default, faster).
         prologue.run_plan(self.ids, self.w, self.row_tok, self.row_w, self.inv, self.tiles,
                           self.ntiles, self.W.E, self.k, self.bms, self.MAXT, scratch=self.plan_scratch,
-                          shared_last=self.FC)
+                          shared_last=self.FC, epoch=self.QF or self.CF,
+                          quant=(self.x, self.a_q, self.a_s, self.SE) if self.QP else None)
         if self.AST and self.QAST:
             prologue.run_quant(self.x, self.a_q, self.a_s, inv=self.inv, a_s_t=self.a_s_t, k=self.k,
                                even=self.SE)
         else:
             # Separate transpose measured faster than quant-side strided scale stores
             # (32k: 170 vs 194 us prologue).
-            prologue.run_quant(self.x, self.a_q, self.a_s, even=self.SE)
+            if not self.QF and not self.QP:
+                prologue.run_quant(self.x, self.a_q, self.a_s, even=self.SE)
             if self.AST:
                 prologue.run_scale_t(self.a_s, self.row_tok, self.a_s_t)
 
-    def stage1(self):
+    def _calls1(self):
         W = self.W
         a_s = (self.a_s_t if self.AST else self.a_s).data_ptr()
+        out = []
         for b, c in self.launches1:
             tp, ntp = self._tl(b)
             ws, cnt = self.sk1.get(b, (self.dummy, self.dummy))
-            gemm.run_gemm(
-                1, self.H, 2 * self.I, c["BM"],
-                (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
-                 tp, ntp, self.row_tok.data_ptr(), cnt.data_ptr(),
-                 self.h_q.data_ptr(), self.h_s.data_ptr(), ws.data_ptr(), self.T, self.R, self.T),
-                self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
-                diag="+".join(t for t in (c["diag"], "se" if self.SE else "") if t),
-                WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT, PERS=c.get("PERS", 0),
-            )
+            args = (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
+                    tp, ntp, self.row_tok.data_ptr(), cnt.data_ptr(),
+                    self.h_q.data_ptr(), self.h_s.data_ptr(), ws.data_ptr(), self.T, self.R, self.T)
+            kw = dict(K=self.H, N=2 * self.I, BM=c["BM"], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
+                      diag="+".join(t for t in (c["diag"], "se" if self.SE else "", "qf" if self.QF else "") if t),
+                      WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT, PERS=c.get("PERS", 0))
+            if self.QF:
+                args = args[:7] + (self.qf_sync.data_ptr(),) + args[8:10] + (self.x.data_ptr(),) + args[11:]
+                kw.update(KTOP=self.k, extra=gemm.qf_ctas(self.T, self.H, c["NW"]))
+            out.append((b, args, kw))
+        return out
 
-    def stage2(self):
+    def _calls2(self):
         W = self.W
         dst = self.y_rows if self.epi == "rows" else self.out
-        if self.epi != "rows":
-            self.out.zero_()
+        out = []
         for b, c in self.launches2:
             tp, ntp = self._tl(b)
-            gemm.run_gemm(
-                2, self.I, self.H, c["BM"],
-                (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
-                 tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
-                 dst.data_ptr(), self.out.data_ptr(), self.inv.data_ptr(), self.R, self.R, self.T),
-                self.spec_mt[b], D=c["D"], epi=c.get("epi", self.epi), KTOP=self.k, pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
-                diag=c["diag"], WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.HT, HT=self.HT,
-                PERS=c.get("PERS", 0),
-            )
+            args = (self.h_q.data_ptr(), self.h_s.data_ptr(), W.b2.data_ptr(), W.bs2.data_ptr(),
+                    tp, ntp, self.row_tok.data_ptr(), self.row_w.data_ptr(),
+                    dst.data_ptr(), self.out.data_ptr(), self.inv.data_ptr(), self.R, self.R, self.T)
+            kw = dict(K=self.I, N=self.H, BM=c["BM"], D=c["D"], epi=c.get("epi", self.epi), KTOP=self.k,
+                      pipe=c["pipe"], NW=c["NW"], GM=c["GM"], diag=c["diag"], WM=c["WM"], EF=c["EF"],
+                      MV=c["MV"], AST=self.HT, HT=self.HT, PERS=c.get("PERS", 0))
+            if self.CF:
+                args = args[:6] + (self.cf_sync.data_ptr(),) + args[7:]
+                kw.update(diag="+".join(t for t in (c["diag"], "cf") if t), extra=self.T * gemm.CF_CC)
+            out.append((b, args, kw))
+        return out
+
+    def stage1(self):
+        if self.FZ:
+            (_, a1, k1), = self._calls1()
+            if "tsr" in self.FZK:
+                if getattr(self, "fz_ts", None) is None:
+                    self.fz_ts = torch.zeros(gemm.NUM_CUS * self.FZ * 8, dtype=torch.int64, device=self.x.device)
+                a1 = a1[:10] + (self.fz_ts.data_ptr(),) + a1[11:]
+            (_, a2, k2), = self._calls2()
+            tag = "" if "nocoh" in self.FZK else "fz"  # nocoh: timing knock-out, h races across XCDs
+            fz = lambda k: dict(k, PERS=1, diag="+".join(t for t in (k["diag"], tag) if t))  # noqa: E731
+            gemm.run_fused(fz(k1), fz(k2), a1, a2, self.fz_sync.data_ptr(), gemm.NUM_CUS * self.FZ,
+                           sched=self.FZS, ko=self.FZK)
+            return
+        for b, args, kw in self._calls1():
+            gemm.run_gemm(1, kw.pop("K"), kw.pop("N"), kw.pop("BM"), args, self.spec_mt[b], **kw)
+
+    def stage2(self):
+        if self.epi != "rows":
+            self.out.zero_()
+        if self.FZ:
+            return  # ran inside stage1's fused launch
+        for b, args, kw in self._calls2():
+            gemm.run_gemm(2, kw.pop("K"), kw.pop("N"), kw.pop("BM"), args, self.spec_mt[b], **kw)
 
     def combine(self):
-        if self.epi == "rows" and not self.FC:
+        if self.epi == "rows" and not self.FC and not self.CF:
             combine.run_combine(self.y_rows, self.inv, self.out, self.k)
 
     def forward(self, x=None, topk_ids=None, topk_w=None):

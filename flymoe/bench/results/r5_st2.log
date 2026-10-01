@@ -1,0 +1,339 @@
+warm        I=  384 T=    32 table                                                                    fwd    80.8 |  +0.0% vs table
+warm        I=  384 T=    32 table_null                                                               fwd    81.4 |  -0.8% vs table
+warm        I=  384 T=    32 pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                                    fwd    76.8 |  +4.9% vs table
+warm        I=  384 T=    32 FZ=4                                                                     fwd   217.2 | -169.0% vs table
+warm        I=  384 T=    32 FZ=8                                                                     fwd   348.4 | -331.5% vs table
+warm        I=  384 T=    32 FZ=16                                                                    fwd   390.0 | -383.0% vs table
+warm        I=  384 T=    32 FZ=8,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                               fwd   329.1 | -307.6% vs table
+warm        I=  384 T=    32 FZ=16,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                              fwd   451.5 | -459.1% vs table
+flush-read  I=  384 T=    32 table                                                                    fwd    89.7 |  +0.0% vs table
+flush-read  I=  384 T=    32 table_null                                                               fwd    89.7 |  -0.0% vs table
+flush-read  I=  384 T=    32 pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                                    fwd    85.9 |  +4.2% vs table
+flush-read  I=  384 T=    32 FZ=4                                                                     fwd   223.7 | -149.5% vs table
+flush-read  I=  384 T=    32 FZ=8                                                                     fwd   349.3 | -289.6% vs table
+flush-read  I=  384 T=    32 FZ=16                                                                    fwd   397.9 | -343.8% vs table
+flush-read  I=  384 T=    32 FZ=8,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                               fwd   329.6 | -267.6% vs table
+flush-read  I=  384 T=    32 FZ=16,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                              fwd   459.9 | -412.9% vs table
+warm        I=  384 T=    32 table                                                                    fwd    78.5 |  +0.0% vs table
+warm        I=  384 T=    32 table_null                                                               fwd    78.7 |  -0.3% vs table
+warm        I=  384 T=    32 FZ=4,FZG=8                                                               fwd   272.0 | -246.4% vs table
+warm        I=  384 T=    32 FZ=4,FZG=32                                                              fwd   553.4 | -604.7% vs table
+warm        I=  384 T=    32 FZ=2,FZS=1                                                               fwd   114.2 | -45.4% vs table
+warm        I=  384 T=    32 FZ=4,FZS=1                                                               fwd   101.0 | -28.7% vs table
+warm        I=  384 T=    32 FZ=8,FZS=1                                                               fwd   126.4 | -60.9% vs table
+ko warm        I=  384 T=    32 table                                                                    fwd    79.4 |  +0.0% vs table
+ko warm        I=  384 T=    32 table_null                                                               fwd    80.2 |  -1.0% vs table
+ko warm        I=  384 T=    32 pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                                    fwd    76.5 |  +3.7% vs table
+ko warm        I=  384 T=    32 FZ=4,FZS=1                                                               fwd   103.2 | -30.0% vs table
+ko warm        I=  384 T=    32 FZ=4,FZS=1,FZK=nowait                                                    fwd    94.9 | -19.5% vs table
+ko warm        I=  384 T=    32 FZ=4,FZK=nowait                                                          fwd   177.8 | -123.9% vs table
+ko warm        I=  384 T=    32 FZ=6,FZS=1,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                         fwd   100.7 | -26.8% vs table
+ko warm        I=  384 T=    32 FZ=10,FZS=1,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                        fwd   117.5 | -48.0% vs table
+ko warm        I=  384 T=    32 FZ=10,FZS=1,FZK=nowait,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2             fwd    94.3 | -18.8% vs table
+ko2 SKIP FZ=4,FZS=2,FZK=nocoh+nowait: DSLCompileError: Failure while executing pass pipeline:
+ko2 SKIP FZ=8,FZS=2,FZK=nocoh+nowait,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2: DSLCompileError: Failure while executing pass pipeline:
+ko2 warm        I=  384 T=    32 table                                                                    fwd    78.8 |  +0.0% vs table
+ko2 warm        I=  384 T=    32 table_null                                                               fwd    79.2 |  -0.5% vs table
+ko2 warm        I=  384 T=    32 FZ=4,FZS=1                                                               fwd   101.7 | -29.1% vs table
+ko2 warm        I=  384 T=    32 FZ=4,FZS=2                                                               fwd   103.8 | -31.7% vs table
+ko2 warm        I=  384 T=    32 FZ=4,FZS=2,FZK=nowait                                                    fwd    97.9 | -24.3% vs table
+ko2 warm        I=  384 T=    32 FZ=4,FZS=2,FZK=nocoh                                                     fwd   105.2 | -33.6% vs table
+ko2 warm        I=  384 T=    32 FZ=8,FZS=2,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                         fwd   113.5 | -44.0% vs table
+table                                                                  s2   22.4  combine    4.1  plan    4.2  quant    4.1  s1   40.0
+FZ=4,FZS=1                                                             plan    4.1  quant    4.1  fused   87.2  combine    4.0
+FZ=4,FZS=1,FZK=nowait                                                  plan    4.2  quant    4.0  fused   79.7  combine    4.1
+FZ=4,FZS=1,FZK=nos2                                                    plan    4.1  quant    4.2  fused   61.9  combine    4.0
+FZ=4,FZS=1,FZK=nos1+nowait                                             plan    4.1  quant    3.3  fused   32.9  combine    4.0
+FZ=4,FZS=1,FZK=nos1+nos2                                               plan    3.8  quant    2.4  fused   19.4  combine    4.1
+FZ=8,FZS=1,FZK=nos1+nowait,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2       plan    4.2  quant    4.1  fused   40.3  combine    4.2
+it4 table                                                                  s2   22.8  combine    4.2  plan    4.3  quant    4.3  s1   40.8
+it4 FZ=4,FZS=3                                                             plan    4.4  quant    4.2  fused   90.6  combine    4.4
+it4 FZ=4,FZS=3,FZK=nos1+nos2                                               plan    3.9  quant    2.9  fused   20.7  combine    4.3
+it4 FZ=4,FZS=3,FZK=nos1                                                    plan    4.4  quant    3.5  fused   34.8  combine    4.4
+it4 FZ=6,FZS=3                                                             plan    4.4  quant    4.2  fused   92.7  combine    4.4
+it4 FZ=8,FZS=3,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                       plan    4.4  quant    4.2  fused   98.0  combine    4.4
+it4 FZ=8,FZS=3,pipe1=hybrid2,D1=4                                          plan    4.3  quant    4.2  fused  100.3  combine    4.3
+it5 FZ=4,FZS=3,FZK=nos1+nos2+noexit                                        plan    1.7  quant    2.4  fused    6.8  combine    2.2
+it5 FZ=4,FZS=3,FZK=noexit                                                  plan    4.2  quant    4.0  fused   87.1  combine    4.1
+it5 FZ=4,FZS=1,FZK=noexit                                                  plan    4.4  quant    4.3  fused   82.4  combine    4.3
+it6 table                                                                  s2   23.2  combine    4.2  plan    4.3  quant    4.2  s1   40.2
+it6 FZ=4,FZS=1                                                             plan    4.2  quant    4.0  fused  252.1  combine    4.1
+it6 FZ=4,FZS=3                                                             plan    4.4  quant    4.2  fused   91.5  combine    4.4
+it6 FZ=4,FZS=1,FZK=nos1+nos2                                               plan    4.0  quant    3.9  fused  117.3  combine    4.1
+it6 FZ=7,FZS=1                                                             plan    4.1  quant    4.0  fused  245.0  combine    4.0
+it6 FZ=7,FZS=3                                                             plan    4.1  quant    4.0  fused  103.8  combine    4.0
+it6 FZ=10,FZS=1,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                      plan    4.1  quant    4.0  fused  237.5  combine    4.1
+it6 FZ=12,FZS=3,pipe1=hybrid2,D1=4,pipe2=hybrid2,D2=2                      plan    4.2  quant    4.1  fused  117.1  combine    4.1
+it6 FZ=7,FZS=1,FZK=nowait                                                  plan    4.1  quant    4.1  fused   79.9  combine    4.0
+it7 table                                                                  s2   22.9  combine    4.3  plan    4.3  quant    4.2  s1   41.1
+it7 pipe1=async,D1=2                                                       s2   23.0  combine    4.1  plan    4.2  quant    4.1  s1   42.0
+it7 pipe1=hybrid2,D1=2                                                     s2   22.6  combine    4.2  plan    4.3  quant    4.0  s1   38.1
+it7 FZ=4,FZS=3                                                             plan    4.2  quant    4.0  fused   78.8  combine    4.1
+it7 FZ=8,FZS=3,pipe1=async,D1=2                                            plan    4.3  quant    4.1  fused   71.7  combine    4.2
+it7 FZ=14,FZS=3,pipe1=async,D1=2                                           plan    4.1  quant    4.0  fused   67.0  combine    4.0
+it7 FZ=14,FZS=3,pipe1=hybrid2,D1=2                                         plan    4.2  quant    4.0  fused   61.0  combine    4.1
+it7 FZ=14,FZS=3,FZK=slp2,pipe1=hybrid2,D1=2                                plan    4.2  quant    4.1  fused   62.0  combine    4.1
+it7 FZ=14,FZS=3,FZK=slp32,pipe1=hybrid2,D1=2                               plan    4.4  quant    4.3  fused   60.7  combine    4.3
+it7 FZ=14,FZS=3,FZK=nowait,pipe1=hybrid2,D1=2                              plan    4.3  quant    4.4  fused   65.3  combine    4.2
+it8 pipe1=hybrid2,D1=2                                                     s2   22.8  combine    4.1  plan    4.2  quant    4.0  s1   36.8
+it8 FZ=14,FZS=3,pipe1=hybrid2,D1=2,FZK=nohk                                plan    4.4  quant    4.2  fused   62.1  combine    4.2
+it8 FZ=14,FZS=3,pipe1=hybrid2,D1=2                                         plan    4.2  quant    4.0  fused   62.8  combine    4.1
+it8 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2                      plan    4.3  quant    4.1  fused   60.2  combine    4.2
+it8 FZ=14,FZS=3,pipe1=async,D1=2                                           plan    4.2  quant    4.1  fused   67.0  combine    4.1
+== FZ=14,FZS=3,pipe1=hybrid2,D1=2,FZK=tsr+nocoh
+tiles 88  CTAs 2816  kernel span 59.4 us
+s1 done            0.4    0.4    0.6   35.3   40.0
+wait released     35.9   37.1   38.4   41.6   43.6
+s2 work           13.0   14.8   16.8   18.1   20.5
+s2 item 1          3.3    4.4    5.1    6.0    8.2 (from wait release)
+s2 item 2          4.2    5.4    6.0    6.8    9.8
+s2 item 3          1.5    3.6    5.6    6.4    7.6
+== FZ=14,FZS=3,pipe1=hybrid2,D1=2,FZK=tsr,diag2=nos2w+noepi
+tiles 88  CTAs 2816  kernel span 58.7 us
+s1 done            0.4    0.4    0.6   38.3   42.2
+wait released     38.5   40.0   41.1   43.9   47.2
+s2 work            9.6   11.6   13.0   14.4   17.0
+s2 item 1          1.8    2.6    3.4    4.6    7.0 (from wait release)
+s2 item 2          3.1    4.2    4.9    5.9    8.7
+s2 item 3          1.3    3.4    4.5    5.2    6.8
+== FZ=14,FZS=3,pipe1=hybrid2,D1=2,FZK=tsr,diag2=nos2w+s2nt
+tiles 88  CTAs 2816  kernel span 62.5 us
+s1 done            0.3    0.4    0.6   37.0   41.8
+wait released     37.5   38.7   39.7   43.9   45.6
+s2 work           14.0   16.0   18.5   20.2   22.1
+s2 item 1          3.0    4.4    5.5    6.6    8.8 (from wait release)
+s2 item 2          4.7    5.9    6.8    7.8   10.7
+s2 item 3          1.4    3.2    6.4    7.1    8.6
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,FZK=tsr
+tiles 88  CTAs 2816  kernel span 61.3 us
+s1 done            0.4    0.4    0.6   37.9   43.1
+wait released     38.2   39.8   41.1   43.7   49.0
+s2 work           10.8   14.5   16.2   17.7   20.1
+s2 item 1          2.1    3.0    3.9    5.5    7.8 (from wait release)
+s2 item 2          3.9    5.4    6.5    7.8   10.8
+s2 item 3          1.1    2.8    6.0    6.9    8.4
+it9 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2                                  s2   20.8  combine    4.1  plan    4.2  quant    3.6  s1   37.3
+it9 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                           s2   20.2  combine    4.2  plan    4.2  quant    4.0  s1   35.8
+it9 FZ=14,FZS=3,pipe1=hybrid2,D1=2,FZK=chunk                               plan    4.2  quant    4.1  fused   62.1  combine    4.1
+it9 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk   plan    4.1  quant    4.1  fused   58.4  combine    4.1
+it9 FZ=14,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk   plan    4.2  quant    4.0  fused   59.3  combine    4.1
+it9 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk   plan    4.2  quant    4.0  fused   60.0  combine    4.1
+it9 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf+pfb,FZK=chu plan    4.1  quant    4.1  fused   58.7  combine    4.0
+it9 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=nos2w,FZK=chun plan    4.2  quant    3.9  fused   62.4  combine    4.1
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+    print(f"tiles {n1}  CTAs {ts.shape[0]}  kernel span {ts[:,3].max():.1f} us")
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr+slp64
+    print(f"tiles {n1}  CTAs {ts.shape[0]}  kernel span {ts[:,3].max():.1f} us")
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+tiles 88  CTAs 2816  kernel span 58.3 us
+start              0.0    0.0    0.1    0.2    0.4
+s1 done            0.3    0.4    0.6   35.9   43.1
+wait released     36.4   37.4   38.5   42.6   49.3
+end               49.0   52.4   54.5   56.0   58.3
+s1 work            0.1    0.3    0.4   35.7   43.0
+waiting            1.4    2.8   37.3   40.3   48.7
+s2 work            7.6   13.0   15.4   16.9   18.8
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr+slp64
+tiles 88  CTAs 2816  kernel span 58.6 us
+start              0.0    0.0    0.1    0.1    0.6
+s1 done            0.4    0.4    0.6   36.2   42.6
+wait released     36.7   37.8   39.5   42.6   51.0
+end               48.2   52.6   55.1   56.7   58.6
+s1 work            0.1    0.4    0.5   36.1   42.5
+waiting            1.0    2.5   37.8   41.2   50.4
+s2 work            7.2   13.0   15.1   16.9   19.0
+tiles 88  CTAs 2816  kernel span 58.6 us
+s1 done            0.4    0.5    0.7   36.1   42.5
+wait released     36.3   37.5   39.0   43.5   47.7
+end               47.1   51.8   54.6   56.8   58.6
+s1 work            0.2    0.3    0.4   35.9   42.2
+s2 work            8.3   12.4   14.6   16.7   19.4
+== FZ=4,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+stage-1 CTAs 1024 s1 work quantiles   31.5   32.6   34.0   35.2   58.3   61.7
+tiles 88  CTAs 939  kernel span 75.4 us
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+stage-1 CTAs 1056 s1 work quantiles   32.3   33.4   35.1   36.8   40.3   43.8
+tiles 88  CTAs 2816  kernel span 59.1 us
+== FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+stage-1 CTAs 1056 s1 work quantiles   31.6   33.0   34.8   36.9   39.8   41.7
+tiles 88  CTAs 2816  kernel span 58.9 us
+it10 warm        I=  384 T=    32 table                                                                    fwd    78.6 |  +0.0% vs table
+it10 warm        I=  384 T=    32 table_null                                                               fwd    78.9 |  -0.3% vs table
+it10 warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    72.7 |  +7.5% vs table
+it10 warm        I=  384 T=    32 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk     fwd    75.9 |  +3.4% vs table
+it10 warm        I=  384 T=    32 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf+pfb,FZK=chunk fwd    74.8 |  +4.9% vs table
+it10 flush-read  I=  384 T=    32 table                                                                    fwd    88.5 |  +0.0% vs table
+it10 flush-read  I=  384 T=    32 table_null                                                               fwd    88.5 |  -0.0% vs table
+it10 flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    81.4 |  +8.0% vs table
+it10 flush-read  I=  384 T=    32 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk     fwd    83.2 |  +6.0% vs table
+it10 flush-read  I=  384 T=    32 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf+pfb,FZK=chunk fwd    84.1 |  +4.9% vs table
+it11 warm        I=  384 T=    32 table                                                                    fwd    80.0 |  +0.0% vs table
+it11 warm        I=  384 T=    32 table_null                                                               fwd    79.8 |  +0.3% vs table
+it11 warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    72.8 |  +9.0% vs table
+it11 warm        I=  384 T=    32 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk     fwd    77.7 |  +2.9% vs table
+it11 warm        I=  384 T=    32 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk     fwd    81.4 |  -1.7% vs table
+it11 warm        I=  384 T=    32 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf+pfb,FZK=chunk fwd    81.8 |  -2.2% vs table
+it11 flush-read  I=  384 T=    32 table                                                                    fwd    87.1 |  +0.0% vs table
+it11 flush-read  I=  384 T=    32 table_null                                                               fwd    87.4 |  -0.3% vs table
+it11 flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    81.0 |  +7.0% vs table
+it11 flush-read  I=  384 T=    32 FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk     fwd    84.0 |  +3.6% vs table
+it11 flush-read  I=  384 T=    32 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk     fwd    87.6 |  -0.6% vs table
+it11 flush-read  I=  384 T=    32 FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf+pfb,FZK=chunk fwd    88.9 |  -2.0% vs table
+== FZ=16,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+stage-1 CTAs 1056 s1 work quantiles   31.0   32.8   34.8   37.6   42.9   45.2
+tiles 88  CTAs 4096  kernel span 61.9 us
+s1 done            0.5    0.5    0.7   35.5   45.4
+wait released     35.5   37.7   40.1   47.1   54.8
+end               45.1   50.8   54.0   56.6   61.9
+s2 work            3.5    9.2   12.9   16.0   22.1
+== FZ=12,FZS=3,pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=pf,FZK=chunk+tsr
+stage-1 CTAs 1056 s1 work quantiles   31.9   34.7   36.7   39.7   43.4   44.3
+tiles 88  CTAs 3072  kernel span 61.2 us
+s1 done            0.4    0.4    0.6   38.1   44.5
+wait released     38.4   39.9   42.8   47.5   52.0
+end               47.1   52.4   56.6   58.9   61.2
+s2 work            5.5    9.5   13.5   15.9   18.9
+I=384 T=32 forward   79.4  no prologue   68.2  no combine   76.0  s1+s2 only   65.3  prologue only   20.2  combine only    7.6
+I=384 T=256 forward  118.1  no prologue  104.7  no combine  114.5  s1+s2 only  101.1  prologue only   20.1  combine only    7.7
+I=1536 T=32 forward  236.1  no prologue  224.9  no combine  232.5  s1+s2 only  221.7  prologue only   20.5  combine only    7.8
+I=1536 T=256 forward  359.5  no prologue  346.0  no combine  354.0  s1+s2 only  340.4  prologue only   20.5  combine only    7.6
+atom FZ=4,FZS=1,FZK=nos1+nos2                                               plan    3.9  quant    3.2  fused   25.6  combine    4.0
+atom FZ=4,FZS=1,FZK=nos1+nos2+nowait                                        plan    1.6  quant    2.4  fused    7.5  combine    2.0
+atom FZ=4,FZS=3,FZK=nos1+nos2                                               plan    1.9  quant    2.9  fused    5.7  combine    3.5
+it14 warm        I=  384 T=    32 table                                                                    fwd    80.5 |  +0.0% vs table
+it14 warm        I=  384 T=    32 table_null                                                               fwd    80.8 |  -0.4% vs table
+it14 warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    73.6 |  +8.5% vs table
+it14 warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1                        fwd    75.6 |  +6.1% vs table
+it14 warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,CF=1                        fwd    75.7 |  +5.9% vs table
+it14 warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1,CF=1                   fwd    76.3 |  +5.2% vs table
+it14 flush-read  I=  384 T=    32 table                                                                    fwd    87.6 |  +0.0% vs table
+it14 flush-read  I=  384 T=    32 table_null                                                               fwd    87.7 |  -0.2% vs table
+it14 flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    80.9 |  +7.6% vs table
+it14 flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1                        fwd    81.9 |  +6.5% vs table
+it14 flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,CF=1                        fwd    83.1 |  +5.2% vs table
+it14 flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1,CF=1                   fwd    84.5 |  +3.6% vs table
+it15-epoch warm        I=  384 T=    32 table                                                                    fwd    79.7 |  +0.0% vs table
+it15-epoch warm        I=  384 T=    32 table_null                                                               fwd    79.2 |  +0.6% vs table
+it15-epoch warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    72.9 |  +8.6% vs table
+it15-epoch warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1                        fwd    73.1 |  +8.3% vs table
+it15-epoch warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,CF=1                        fwd    73.7 |  +7.5% vs table
+it15-epoch warm        I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1,CF=1                   fwd    72.3 |  +9.3% vs table
+it15-epoch flush-read  I=  384 T=    32 table                                                                    fwd    87.2 |  +0.0% vs table
+it15-epoch flush-read  I=  384 T=    32 table_null                                                               fwd    87.2 |  -0.1% vs table
+it15-epoch flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                             fwd    80.6 |  +7.5% vs table
+it15-epoch flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1                        fwd    81.1 |  +6.9% vs table
+it15-epoch flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,CF=1                        fwd    82.2 |  +5.7% vs table
+it15-epoch flush-read  I=  384 T=    32 pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1,CF=1                   fwd    82.2 |  +5.7% vs table
+it15-trace pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=                           s2   20.3  combine    4.2  plan    4.2  quant    3.4  s1   36.9
+it15-trace pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1                      plan    4.3  s1   39.1  s2   19.7  combine    4.1
+it15-trace pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,CF=1                      plan    4.2  quant    4.1  s1   36.6  s2   23.6
+it15-trace pipe1=hybrid2,D1=2,pipe2=hybrid2,D2=2,diag2=,QF=1,CF=1                 s2   23.3  plan    4.3  s1   39.2
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                     host/fwd   41.4 us   graph fwd   73.6 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=3                     host/fwd   40.7 us   graph fwd   72.1 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=3,QF=1                host/fwd   34.7 us   graph fwd   72.5 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=3,QF=1,CF=1           host/fwd   29.2 us   graph fwd   72.9 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=4                     host/fwd   41.0 us   graph fwd   73.3 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=4,QF=1                host/fwd   34.8 us   graph fwd   74.3 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=4,QF=1,CF=1           host/fwd   31.4 us   graph fwd   74.1 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=6                     host/fwd   40.9 us   graph fwd   73.3 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=6,QF=1                host/fwd   35.2 us   graph fwd   72.7 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=6,QF=1,CF=1           host/fwd   31.5 us   graph fwd   73.1 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                     host/fwd   41.6 us   graph fwd   72.0 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                host/fwd   34.7 us   graph fwd   70.7 us
+it16-graph I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1,CF=1           host/fwd   31.7 us   graph fwd   71.1 us
+it16-graphrr I=384 T=32                                                                  host/fwd   41.1 us   graph fwd   77.2 us  (q25   77.1)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                     host/fwd   40.2 us   graph fwd   72.1 us  (q25   71.9)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QF=1                host/fwd   34.6 us   graph fwd   71.7 us  (q25   71.6)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,CF=1                host/fwd   35.1 us   graph fwd   72.3 us  (q25   72.1)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                     host/fwd   40.3 us   graph fwd   71.3 us  (q25   71.1)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                host/fwd   34.8 us   graph fwd   69.7 us  (q25   69.5)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1,CF=1           host/fwd   30.0 us   graph fwd   71.0 us  (q25   70.8)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=6,QF=1                host/fwd   34.7 us   graph fwd   72.0 us  (q25   71.7)
+it16-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=3,QF=1                host/fwd   34.5 us   graph fwd   72.1 us  (q25   72.0)
+it17-graphrr I=384 T=32                                                                  host/fwd   43.0 us   graph fwd   77.5 us  (q25   77.4)
+it17-graphrr I=384 T=32 QP=1                                                             host/fwd   35.1 us   graph fwd   77.1 us  (q25   76.9)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                     host/fwd   40.7 us   graph fwd   71.4 us  (q25   71.1)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                     host/fwd   40.3 us   graph fwd   72.4 us  (q25   72.2)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                host/fwd   36.8 us   graph fwd   70.8 us  (q25   70.5)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                host/fwd   36.5 us   graph fwd   71.5 us  (q25   71.4)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                host/fwd   34.8 us   graph fwd   70.7 us  (q25   70.6)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1,CF=1           host/fwd   29.3 us   graph fwd   72.2 us  (q25   72.0)
+it17-graphrr I=384 T=32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=4,QP=1                host/fwd   35.3 us   graph fwd   73.1 us  (q25   72.9)
+it18 warm        I=  384 T=    32 table                                                                    fwd    78.4 |  +0.0% vs table
+it18 warm        I=  384 T=    32 QP=1                                                                     fwd    77.4 |  +1.2% vs table
+it18 warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd    71.5 |  +8.7% vs table
+it18 warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd    70.6 |  +9.9% vs table
+it18 warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd    72.9 |  +7.0% vs table
+it18 warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd    70.9 |  +9.5% vs table
+it18 warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd    71.4 |  +8.9% vs table
+it18 flush-read  I=  384 T=    32 table                                                                    fwd    88.1 |  +0.0% vs table
+it18 flush-read  I=  384 T=    32 QP=1                                                                     fwd    87.1 |  +1.1% vs table
+it18 flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd    82.3 |  +6.6% vs table
+it18 flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd    81.2 |  +7.8% vs table
+it18 flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd    82.8 |  +5.9% vs table
+it18 flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd    81.2 |  +7.8% vs table
+it18 flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd    81.7 |  +7.2% vs table
+it18 warm        I=  384 T=   256 table                                                                    fwd   119.1 |  +0.0% vs table
+it18 warm        I=  384 T=   256 QP=1                                                                     fwd   117.2 |  +1.6% vs table
+it18 warm        I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd   116.5 |  +2.2% vs table
+it18 warm        I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd   114.5 |  +3.9% vs table
+it18 warm        I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd   113.3 |  +4.9% vs table
+it18 warm        I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd   118.1 |  +0.8% vs table
+it18 warm        I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd   111.5 |  +6.4% vs table
+it18 flush-read  I=  384 T=   256 table                                                                    fwd   118.4 |  +0.0% vs table
+it18 flush-read  I=  384 T=   256 QP=1                                                                     fwd   117.0 |  +1.2% vs table
+it18 flush-read  I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd   116.8 |  +1.3% vs table
+it18 flush-read  I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd   114.1 |  +3.6% vs table
+it18 flush-read  I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd   114.2 |  +3.5% vs table
+it18 flush-read  I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd   119.0 |  -0.6% vs table
+it18 flush-read  I=  384 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd   111.8 |  +5.6% vs table
+it18 warm        I= 1536 T=    32 table                                                                    fwd   231.5 |  +0.0% vs table
+it18 warm        I= 1536 T=    32 QP=1                                                                     fwd   231.0 |  +0.2% vs table
+it18 warm        I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd   226.4 |  +2.2% vs table
+it18 warm        I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd   225.8 |  +2.4% vs table
+it18 warm        I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd   226.1 |  +2.3% vs table
+it18 warm        I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd   225.7 |  +2.5% vs table
+it18 warm        I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd   225.5 |  +2.6% vs table
+it18 flush-read  I= 1536 T=    32 table                                                                    fwd   233.6 |  +0.0% vs table
+it18 flush-read  I= 1536 T=    32 QP=1                                                                     fwd   233.7 |  -0.0% vs table
+it18 flush-read  I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd   228.9 |  +2.0% vs table
+it18 flush-read  I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd   228.3 |  +2.3% vs table
+it18 flush-read  I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd   228.5 |  +2.2% vs table
+it18 flush-read  I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd   228.1 |  +2.4% vs table
+it18 flush-read  I= 1536 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd   227.7 |  +2.5% vs table
+it18 warm        I= 1536 T=   256 table                                                                    fwd   351.0 |  +0.0% vs table
+it18 warm        I= 1536 T=   256 QP=1                                                                     fwd   352.4 |  -0.4% vs table
+it18 warm        I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd   354.3 |  -1.0% vs table
+it18 warm        I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd   356.5 |  -1.6% vs table
+it18 warm        I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd   351.9 |  -0.3% vs table
+it18 warm        I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd   351.8 |  -0.2% vs table
+it18 warm        I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd   350.3 |  +0.2% vs table
+it18 flush-read  I= 1536 T=   256 table                                                                    fwd   353.7 |  +0.0% vs table
+it18 flush-read  I= 1536 T=   256 QP=1                                                                     fwd   350.5 |  +0.9% vs table
+it18 flush-read  I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd   354.4 |  -0.2% vs table
+it18 flush-read  I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd   351.8 |  +0.5% vs table
+it18 flush-read  I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd   350.9 |  +0.8% vs table
+it18 flush-read  I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd   350.6 |  +0.9% vs table
+it18 flush-read  I= 1536 T=   256 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd   349.7 |  +1.1% vs table
+it19-qffix warm        I=  384 T=    32 table                                                                    fwd    78.4 |  +0.0% vs table
+it19-qffix warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd    72.1 |  +8.1% vs table
+it19-qffix warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd    71.2 |  +9.3% vs table
+it19-qffix warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd    73.7 |  +6.1% vs table
+it19-qffix warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd    72.1 |  +8.1% vs table
+it19-qffix warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd    72.5 |  +7.6% vs table
+it19-qffix warm        I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1,CF=1                   fwd    72.2 |  +8.0% vs table
+it19-qffix flush-read  I=  384 T=    32 table                                                                    fwd    89.2 |  +0.0% vs table
+it19-qffix flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2                             fwd    82.1 |  +7.9% vs table
+it19-qffix flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=2,QP=1                        fwd    81.5 |  +8.6% vs table
+it19-qffix flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8                             fwd    83.1 |  +6.9% vs table
+it19-qffix flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1                        fwd    80.5 |  +9.7% vs table
+it19-qffix flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QP=1                        fwd    82.0 |  +8.1% vs table
+it19-qffix flush-read  I=  384 T=    32 pipe1=hybrid2,pipe2=hybrid2,D2=2,diag2=,D1=8,QF=1,CF=1                   fwd    81.2 |  +9.0% vs table
+it19-qp-large flush-read  I=  384 T=  4096 table                                                                    fwd   288.3 |  +0.0% vs table
+it19-qp-large flush-read  I=  384 T=  4096 QP=1                                                                     fwd   283.7 |  +1.6% vs table
+it19-qp-large flush-read  I=  384 T= 32768 table                                                                    fwd  1617.3 |  +0.0% vs table
+it19-qp-large flush-read  I=  384 T= 32768 QP=1                                                                     fwd  1602.1 |  +0.9% vs table
+it19-qp-large flush-read  I= 1536 T=  4096 table                                                                    fwd   646.5 |  +0.0% vs table
+it19-qp-large flush-read  I= 1536 T=  4096 QP=1                                                                     fwd   637.9 |  +1.3% vs table
+it19-qp-large flush-read  I= 1536 T= 32768 table                                                                    fwd  3330.3 |  +0.0% vs table
+it19-qp-large flush-read  I= 1536 T= 32768 QP=1                                                                     fwd  3340.8 |  -0.3% vs table

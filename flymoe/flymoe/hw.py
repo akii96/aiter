@@ -49,6 +49,41 @@ def e8m0_even(amax):
     return fx.max(fx.min(e, fx.Int32(254)), fx.Int32(0))
 
 
+def quant_group(r_x, r_q, r_s, gid, even, ok=None, cm=0):
+    """MXFP4-quantize one 32-element group: bf16 x[gid * 32 : +32] -> fp4 q[gid * 16 : +16] and
+    e8m0 s[gid] (even: e8m0_even, else ceil_pow2(amax / 6)). ok: lanes with ok False touch
+    nothing. Returns the scale byte (i32)."""
+    from flydsl.expr import math as fmath
+
+    def at(o):
+        return o if ok is None else ok.select(o, fx.Int32(0x7FFFFFC0))
+    vals = []
+    for c in range(4):
+        v = fx.Vector(bload(r_x, at(gid * 64 + c * 16), T.vec(8, T.bf16))).to(fx.Float32)
+        for i in range(8):
+            vals.append(fx.Float32(v[i]))
+    m = fmath.absf(vals[0])
+    for i in range(1, 32):
+        m = fx.max(m, fmath.absf(vals[i]))
+    if even:
+        bexp = e8m0_even(m)
+    else:
+        bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
+        bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
+        bexp = fx.min(bexp, fx.Int32(254))
+    qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+    words = []
+    for wi in range(4):
+        pk = raw(fx.Int32(0))
+        for p in range(4):
+            pk = rocdl.cvt_scalef32_pk_fp4_f32(
+                T.i32, pk, raw(vals[wi * 8 + 2 * p]), raw(vals[wi * 8 + 2 * p + 1]), raw(qs), p)
+        words.append(fx.Int32(pk))
+    bstore(fx.Vector.from_elements(words, fx.Int32), r_q, at(gid * 16), cm=cm)
+    bstore(bexp.to(fx.Int8), r_s, at(gid), cm=cm)
+    return bexp
+
+
 def e8m0_even_small(amax):
     """e8m0_even for 0 <= amax < 1.75 * 2^125 (bounded, finite: e.g. clamped SwiGLU output):
     the field-255 case and the upper clamp cannot occur; 4 VALU ops instead of 7."""
@@ -361,3 +396,9 @@ def gatomic_add(addr_i64, val, ordering="monotonic", scope="agent"):
 
 def fence(ordering, scope="agent"):
     llvm.FenceOp(getattr(llvm.AtomicOrdering, ordering), syncscope=scope)
+
+
+def realtime():
+    """s_memrealtime: the 100 MHz constant clock (i64), for timeline instrumentation."""
+    return fx.Int64(llvm.InlineAsmOp(T.i64, [], "s_memrealtime $0\n s_waitcnt lgkmcnt(0)", "=s",
+                                     has_side_effects=True).result)

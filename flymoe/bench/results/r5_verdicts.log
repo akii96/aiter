@@ -222,3 +222,52 @@ binding limit (T <= 256): with a clean flush the cells run within 0..15% of warm
   weight-streaming rate (S1-D); the remaining gains come from the 16-row CTA (more CTAs in flight over the
   ~T*5/128 rows per expert), not from prefetch depth. The ~50 us per-stage flushed penalty in the round-4/5
   flushed numbers is the dirty write-back of compare.flush; the final A/B reports both flush modes.
+
+== ST-2  fused persistent s1+s2 small-T kernel; launch-removal (dataflow) extension ==
+logs: r5_st2.log; bench/st2_sweep.py (whole-forward timing, gate: h_q / h_s / out byte-equal to the table
+arm over 3-4 forwards); graph-replay round-robin timing for the sub-us deltas (warm).
+iterations (I=384 T=32 unless noted; serial GPU 0):
+  1-4  fused s1+s2 (gemm.build_fused, FZ CTAs/CU, grid-wide counters): dynamic per-item tickets -170..-460%
+       (same-address atomics serialize at ~14-20 ns), static round robin -29%, skeleton knock-outs: one exit
+       counter x grid = ~14 us; per-tile re-arm + counters 4 KB apart -> break-even
+  5-9  occupancy (hybrid2 D2 stage 1: 103 VGPR, 11 KB -> 14 CTAs/CU), W2-before-wait hook (no gain),
+       s_memrealtime timeline (stage-2 items a 5-6 us serial chain; coherence costs nothing), cross-item PF
+       prefetch 62.4 -> 58.4 us, XCD-contiguous stage-1 order (no gain)
+  10-11 forward level (warm / clean flush): best fused FZ=16 pf+pfb chunk 74.8 / 84.1, best unfused pair
+       (hybrid2 D1=2 + hybrid2 D2=2 nos2w) 72.7 / 81.4 -> fused s1+s2 rejected. Stage-1 items median / max
+       30.6 / 34.7 us alone vs 34.5 / 40.9 with stage 2 running (both stages HBM streams); balanced stage-2
+       chunks start more stage-2 work early and stretch the stage-1 tail to 45 us
+  12-13 launch upper bound and atomics: 8.4k per-item atomics 4 KB apart ~2 us; the per-CTA serial poll
+       latency (~18 us over a persistent CTA's items) is what made the fused waits expensive
+  14   dataflow fusion, non-persistent: QF = activation quant as the first ceil(T*QC/8)*8 CTAs of the stage-1
+       launch (tiles issue their weight loads, wait on per-token flags, read a_q past L2); CF = combine as T*4
+       extra CTAs of the stage-2 launch. Counting flags (consumer atomics + re-arm): QF +2.0, CF +2.1 us
+  15   epoch flags (prefix plan kernel bumps an int32 epoch per forward; flags only grow, no atomics; CF
+       waits on exactly the (row, n-block) flags its column quarter needs): QF+CF 72.3 vs 72.9 warm,
+       82.2 vs 80.6 flushed. Graph replay: host 30-40 us < GPU 71 us; a tiny-kernel boundary costs
+       ~0.5-1 us of GPU time (the 3-4 us rocprof kernel durations overstate it)
+  16   QF + deeper stage-1 weight prefetch (D1=3..8), graph round robin: D1=8 QF 69.7 vs best unfused 71.3;
+       CF +1.3 us on top
+  17   QF timeline (s_memrealtime per CTA): quant flags med 5.4 / max 6.8 us at D1=8 (2.5 / 3.6 at D1=2: the
+       quant's x loads queue behind the ~38 MB weight flood); tiles released med 8.2 us because loads retire
+       in order (the flag poll waits for the CTA's 8 prefetched B steps); the qfnw knock-out (no wait, wrong
+       results) bounds what is left at ~2 us. QP = quant as extra CTAs of the plan's hist launch (ordered
+       before stage 1 by the plan's own boundaries, no flags): -0.4..-0.9 us
+  18   cross-cell (st2_sweep, warm / clean flush, us): I=384 T=32 D1=2 pair 71.5 / 82.3, +QP 70.6 / 81.2;
+       I=384 T=256 D1=8 pair 113.3 / 114.2, +QP 111.5 / 111.8 (+6.4 / +5.6% vs table), +QF 118.1 / 119.0;
+       I=1536 T=32 / 256: every arm within +-1 us of the D1=2 / D1=8 pairs
+  19   after fixing the QF grid (quant CTAs = T*QC, was T): I=384 T=32 flushed D1=8 QF 80.5 vs D1=2 pair 82.1
+       (+2.0%), warm 72.1 vs 72.1; QP at large T (clean flush): I=384 T=4096 +1.6%, T=32768 +0.9%,
+       I=1536 T=4096 +1.3%, T=32768 -0.3%
+verdict: fused persistent s1+s2 REJECTED (best -2..-3 us vs the best unfused pair; target >= 5% not met
+  after 13 iterations). Launch removal: QP SHIPS as a per-cell measured flag in make_tiles_v6 (+0.6..2.7 us
+  at I=384 / 768 small T, +1..1.6% at T=4096); QF ships only where the v6 pick sweep confirms it (I=384 T=32
+  flushed +2.0%); CF never wins (rejected). All three are lossless (gated byte-equal) and covered at
+  T=5 / 300 / 4097 (test_options, all widths) and T=40000 (test_large).
+binding limit: at T <= 256 both GEMMs are single-wave HBM streams (stage 1 ~205 MB of W13 at I=384 T=32 in
+  ~37 us), so overlapping them only shares bandwidth and each stage-2 tile still waits for the slowest of its
+  NB1 stage-1 items. What fusion can remove is the boundary itself, which costs ~0.5-1 us of GPU time per
+  tiny kernel under graph replay. An in-kernel dependency costs about the same: write-through store ack +
+  flag poll + coherent reload ~2-3 us, and loads retire in order, so a poll cannot overtake the weight
+  prefetch. Device-scope atomics serialize at ~14-20 ns per address. The only overlap that pays is
+  dependency-free work riding along in an existing launch (QP).

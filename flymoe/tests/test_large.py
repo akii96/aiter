@@ -25,7 +25,10 @@ for cfg in (dict(IL4, HT=1, BM2=256, NW2=4, WM2=2, pipe2="il4", D2=3, PERS2=1),
             dict(PP, BM2=128, pipe2="async", D2=2, HT=1, FC=1, diag2="s2nt"),
             dict(PP, BM2=64, pipe2="hybrid2", D2=2, diag2="wpe3+s2nt"),
             dict(PP, BM2=128, pipe2="hybrid2", D2=2, diag2="wpe2+s2nt", FC=1),
-            dict(BM1=64, NW1=4, pipe1="async", D1=3, BM2=64, NW2=4, pipe2="regs", D2=2)):
+            dict(BM1=64, NW1=4, pipe1="async", D1=3, BM2=64, NW2=4, pipe2="regs", D2=2),
+            dict(PP, BM2=128, pipe2="hybrid2", D2=4, QP=1),
+            dict(BM1=16, NW1=1, pipe1="hybrid2", D1=8, BM2=16, NW2=1, pipe2="hybrid2", D2=2, QP=1, CF=1),
+            dict(BM1=16, NW1=1, pipe1="hybrid2", D1=8, BM2=16, NW2=1, pipe2="hybrid2", D2=2, QF=1, CF=1)):
     run = moe.MoERun(x, ids, w, moe.MoEWeights(*wts), **cfg)
     run.forward()
     y = run.forward()

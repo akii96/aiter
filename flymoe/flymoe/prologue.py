@@ -12,6 +12,7 @@ quant : x bf16 [T, H] -> MX fp4 [T, H/2] + e8m0 [T, H/32], one thread per 32-gro
 import functools
 
 import flydsl.compiler as flyc
+from flydsl.compiler.ast_rewriter import ASTRewriter
 import flydsl.expr as fx
 from flydsl._mlir.dialects import llvm
 from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
@@ -148,12 +149,16 @@ def spec_max_tiles(b, R, E):
 
 
 @functools.lru_cache(maxsize=None)
-def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
+def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False, epoch: bool = False,
+                   qH: int = 0, qeven: bool = False):
     """Parallel plan in 3 launches (hist -> prefix/tiles -> scatter).
 
     hist   : CTA c counts its CHUNK of topk_ids in LDS, then one global atomic per
              expert returns the CTA's base inside that expert (cbase[c, e]).
     prefix : one CTA turns gcount into expert offsets and tile lists; re-zeroes gcount.
+             epoch: also bumps the int32 at ntiles + 64 B (the forward's epoch, gemm qf / cf).
+    qH > 0: the activation quant (build_quant's ops, hidden size qH) runs as extra CTAs of the
+    hist launch, so it needs no launch of its own and is ordered before stage 1 by the plan.
     scatter: CTA c re-walks its chunk; row = offs[e] + cbase[c, e] + local position.
     """
     NBM = len(bms)
@@ -164,14 +169,28 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
     class HistStorage:
         raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
 
-    kname = f"flymoe_plan_hist_e{E}_{hw.SRC_HASH}"
+    kname = f"flymoe_plan_hist_e{E}" + (f"_q{qH}{'se' if qeven else ''}" if qH else "") + f"_{hw.SRC_HASH}"
 
     @flyc.kernel(name=kname, known_block_size=[TH, 1, 1])
-    def k_hist(ids_ptr: fx.Int64, gcount_ptr: fx.Int64, cbase_ptr: fx.Int64, n_rows: fx.Int32):
+    def k_hist(ids_ptr: fx.Int64, gcount_ptr: fx.Int64, cbase_ptr: fx.Int64, n_rows: fx.Int32,
+               x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64, n_groups: fx.Int32):
         if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
             pass
         tid = fx.Int32(gpu.thread_id("x"))
         c = fx.Int32(gpu.block_id("x"))
+        if const_expr(qH > 0):
+            n_hist = (n_rows + (CHUNK - 1)) // CHUNK
+            if c >= n_hist:
+                gid = (c - n_hist) * TH + tid
+                hw.quant_group(hw.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64)),
+                               hw.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16)),
+                               hw.rsrc(s_ptr, fx.Int64(n_groups)), gid, qeven, ok=gid < n_groups)
+            else:
+                _hist_body(ids_ptr, gcount_ptr, cbase_ptr, n_rows, tid, c)
+        else:
+            _hist_body(ids_ptr, gcount_ptr, cbase_ptr, n_rows, tid, c)
+
+    def _hist_body(ids_ptr, gcount_ptr, cbase_ptr, n_rows, tid, c):
         base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(HistStorage).peek().raw.ptr))
         r_ids = hw.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
         r_cb = hw.rsrc(cbase_ptr)
@@ -192,6 +211,8 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
                 hw.raw(cnt), llvm.AtomicOrdering.monotonic, syncscope="agent").result)
             hw.bstore(prev, r_cb, (c * E + tid) * 4)
 
+    _hist_body = ASTRewriter.transform(_hist_body)
+
     specs = tuple(spec_of(b) for b in bms)  # tuple: part of the JIT cache key (lists are not)
 
     def _nt(c, bm, parent, e):
@@ -209,7 +230,7 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
             return keep.select(n, fx.Int32(0))
         return (c % parent + (bm - 1)) // bm
 
-    ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}_{hw.SRC_HASH}"
+    ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}{'_ep' if epoch else ''}_{hw.SRC_HASH}"
     PT = 256
     NV = NBM + 1  # scanned vectors: row counts + one tile count per spec
     SCAN_B = NV * PT * 4  # one scan buffer; two alternate so each step needs one barrier
@@ -292,6 +313,9 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
         # that consumed them) so an aborted later launch cannot leave gcount dirty.
         if tid < fx.Int32(E):
             hw.bstore(fx.Int32(0), r_gc, tid * 4)
+        if const_expr(epoch):
+            if tid == fx.Int32(0):
+                hw.bstore(fx.Int32(hw.bload(r_nt, 64, T.i32)) + fx.Int32(1), r_nt, 64)
 
     @fx.struct
     class ScatStorage:
@@ -340,9 +364,10 @@ def build_plan_par(E: int, k: int, bms: tuple, shared_last: bool = False):
     def launch(ids_ptr: fx.Int64, w_ptr: fx.Int64, rtok_ptr: fx.Int64, rw_ptr: fx.Int64,
                inv_ptr: fx.Int64, tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64, gcount_ptr: fx.Int64,
                offs_ptr: fx.Int64, cbase_ptr: fx.Int64, n_rows: fx.Int32, n_cta: fx.Int32,
-               max_tiles0: fx.Int32, stream: fx.Stream = fx.Stream(None)):
-        k_hist(ids_ptr, gcount_ptr, cbase_ptr, n_rows).launch(
-            grid=(n_cta, 1, 1), block=(TH, 1, 1), stream=stream)
+               max_tiles0: fx.Int32, x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64,
+               n_groups: fx.Int32, n_qcta: fx.Int32, stream: fx.Stream = fx.Stream(None)):
+        k_hist(ids_ptr, gcount_ptr, cbase_ptr, n_rows, x_ptr, q_ptr, s_ptr, n_groups).launch(
+            grid=(n_cta + n_qcta, 1, 1), block=(TH, 1, 1), stream=stream)
         k_prefix(gcount_ptr, offs_ptr, tiles_ptr, ntiles_ptr, max_tiles0).launch(
             grid=(1, 1, 1), block=(256, 1, 1), stream=stream)
         k_scatter(ids_ptr, w_ptr, offs_ptr, cbase_ptr, rtok_ptr, rw_ptr, inv_ptr, gcount_ptr,
@@ -530,31 +555,7 @@ def build_quant(H: int, threads: int = 256, k: int = 0, even: bool = False):
         r_x = hw.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64))
         r_q = hw.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16))
         r_s = hw.rsrc(s_ptr, fx.Int64(n_groups))
-        vals = []
-        for c in range_constexpr(4):
-            v = fx.Vector(hw.bload(r_x, gid * 64 + c * 16, T.vec(8, T.bf16))).to(fx.Float32)
-            for i in range_constexpr(8):
-                vals.append(fx.Float32(v[i]))
-        m = fmath.absf(vals[0])
-        for i in range_constexpr(1, 32):
-            m = fx.max(m, fmath.absf(vals[i]))
-        if const_expr(even):
-            bexp = hw.e8m0_even(m)
-        else:
-            bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
-            bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
-            bexp = fx.min(bexp, fx.Int32(254))
-        qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
-        words = []
-        for wi in range_constexpr(4):
-            pk = hw.raw(fx.Int32(0))
-            for p in range_constexpr(4):
-                pk = rocdl.cvt_scalef32_pk_fp4_f32(
-                    T.i32, pk, hw.raw(vals[wi * 8 + 2 * p]), hw.raw(vals[wi * 8 + 2 * p + 1]),
-                    hw.raw(qs), p)
-            words.append(fx.Int32(pk))
-        hw.bstore(fx.Vector.from_elements(words, fx.Int32), r_q, gid * 16)
-        hw.bstore(bexp.to(fx.Int8), r_s, gid)
+        bexp = hw.quant_group(r_x, r_q, r_s, gid, even)
         if const_expr(k > 0):
             # 4 consecutive lanes = the 4 groups of one 128-K step: pack their scale bytes
             # into one dword and store it to each of the token's k compact rows.
@@ -608,8 +609,9 @@ def run_quant(x, q, s, stream=None, inv=None, a_s_t=None, k=0, even=False):
 
 
 def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_tiles0, stream=None,
-             scratch=None, shared_last=False):
-    """scratch: (gcount [E] int32 zero-initialised once, offs [E], cbase [n_cta*E])."""
+             scratch=None, shared_last=False, epoch=False, quant=None):
+    """scratch: (gcount [E] int32 zero-initialised once, offs [E], cbase [n_cta*E]).
+    quant: (x, a_q, a_s, even) to run the activation quant inside the hist launch."""
     import torch
 
     stream = torch.cuda.current_stream() if stream is None else stream
@@ -621,6 +623,8 @@ def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_
              (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
               tiles.data_ptr(), ntiles.data_ptr(), n, max_tiles0, stream))
         return
+    assert not epoch or (scratch is not None and len(bms) == 1), "epoch: parallel plan, one spec"
+    assert quant is None or (scratch is not None and n > SMALL_PLAN_MAX_ROWS), "quant: parallel plan only"
     if n <= SMALL_PLAN_MAX_ROWS:
         _run(("ps", E, k, bms, shared_last), build_plan_small(E, k, bms, shared_last),
              (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
@@ -628,10 +632,17 @@ def run_plan(ids_i32, w_f32, row_tok, row_w, inv, tiles, ntiles, E, k, bms, max_
         return
     gcount, offs, cbase = scratch
     n_cta = (n + CHUNK - 1) // CHUNK
-    _run(("pp", E, k, bms, shared_last), build_plan_par(E, k, bms, shared_last),
+    if quant is not None:
+        x, q, s, even = quant
+        qH, ng = x.shape[1], x.numel() // 32
+        assert ng * 64 < 2**31, "quant uses 32-bit byte offsets"
+        qargs = (x.data_ptr(), q.data_ptr(), s.data_ptr(), ng, (ng + 1023) // 1024)
+    else:
+        qH, even, qargs = 0, False, (0, 0, 0, 0, 0)
+    _run(("pp", E, k, bms, shared_last, epoch, qH, even), build_plan_par(E, k, bms, shared_last, epoch, qH, even),
          (ids_i32.data_ptr(), w_f32.data_ptr(), row_tok.data_ptr(), row_w.data_ptr(), inv.data_ptr(),
           tiles.data_ptr(), ntiles.data_ptr(), gcount.data_ptr(), offs.data_ptr(), cbase.data_ptr(),
-          n, n_cta, max_tiles0, stream))
+          n, n_cta, max_tiles0) + qargs + (stream,))
 
 
 def plan_scratch(R, E, device):

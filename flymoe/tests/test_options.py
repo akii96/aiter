@@ -13,6 +13,7 @@ PP = dict(BM1=256, NW1=8, WM1=2, pipe1="pingpong", D1=4, EF1=1, MV1=1)
 H2 = dict(BM2=128, NW2=4, pipe2="hybrid2", D2=4)
 A2 = dict(BM2=128, NW2=4, pipe2="async", D2=2)
 IL4 = dict(BM1=256, NW1=4, WM1=2, pipe1="il4", D1=3, EF1=1, diag1="bar8")
+SM = dict(BM1=16, NW1=1, pipe1="hybrid2", D1=8, BM2=16, NW2=1, pipe2="hybrid2", D2=2)  # small-T pair
 CONFIGS = [
     dict(PP, **H2),
     dict(PP, **H2, diag1="skip"),
@@ -53,6 +54,14 @@ CONFIGS = [
     dict(BM1=128, NW1=4, pipe1="async", D1=3, BM2=64, NW2=4, pipe2="regs", D2=2),
     dict(BM1=128, NW1=4, pipe1="async", D1=3, BM2=64, NW2=4, pipe2="regs", D2=2, HT=1, FC=1),
     dict(BM1=64, NW1=4, pipe1="async", D1=3, AST=0, BM2=32, NW2=2, pipe2="async", D2=2),
+    dict(PP, **H2, QP=1),
+    dict(PP, **H2, QP=1, QAST=0, AST=1),
+    dict(SM, QP=1),
+    dict(SM, QF=1),
+    dict(SM, CF=1),
+    dict(SM, QF=1, CF=1),
+    dict(SM, QP=1, CF=1),
+    dict(BM1=32, NW1=2, pipe1="hybrid2", D1=4, BM2=32, NW2=2, pipe2="async", D2=2, QF=1, CF=1),
 ]
 
 
