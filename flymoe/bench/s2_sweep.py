@@ -59,7 +59,7 @@ def main():
     x, ids, w, wts = make_problem(a.T, a.I)
     W = moe.MoEWeights(*wts)
     base = table_cfg(a.table, a.I, a.T)
-    cfgs = {"table": base}
+    cfgs = {"table": base, "table_null": dict(base)}
     for s in a.arms:
         cfgs[s] = arm_cfg(base, s)
     runs, diffs, ref_out, prev_out = {}, {}, None, None

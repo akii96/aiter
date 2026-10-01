@@ -1,0 +1,196 @@
+[
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "table",
+  "cfg": {
+   "BM1": 32,
+   "NW1": 2,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w"
+  },
+  "median_us": {
+   "prologue": 19.088099896907806,
+   "stage1": 208.61339569091797,
+   "stage2": 119.50479745864868,
+   "combine": 7.135999947786331
+  },
+  "total": 354.3422929942608,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "table_null",
+  "cfg": {
+   "BM1": 32,
+   "NW1": 2,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w"
+  },
+  "median_us": {
+   "prologue": 19.31619942188263,
+   "stage1": 207.88938999176025,
+   "stage2": 119.67689990997314,
+   "combine": 7.21609964966774
+  },
+  "total": 354.09858897328377,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1",
+  "cfg": {
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w",
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1
+  },
+  "median_us": {
+   "prologue": 19.252200424671173,
+   "stage1": 210.23740768432617,
+   "stage2": 119.18890476226807,
+   "combine": 7.023999840021133
+  },
+  "total": 355.70251271128654,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1,diag=s1st",
+  "cfg": {
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w",
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "diag1": "s1st"
+  },
+  "median_us": {
+   "prologue": 19.120199978351593,
+   "stage1": 210.04540920257568,
+   "stage2": 118.37279796600342,
+   "combine": 6.92799985408783
+  },
+  "total": 354.4664070010185,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1",
+  "cfg": {
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w",
+   "BM1": 16,
+   "NW1": 1,
+   "pipe1": "hybrid2",
+   "D1": 8,
+   "EF1": 1,
+   "MV1": 1
+  },
+  "median_us": {
+   "prologue": 19.224099814891815,
+   "stage1": 210.79740524291992,
+   "stage2": 119.41280364990234,
+   "combine": 7.028099894523621
+  },
+  "total": 356.4624086022377,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ },
+ {
+  "I": 1536,
+  "T": 128,
+  "arm": "diag1=s1st",
+  "cfg": {
+   "BM1": 32,
+   "NW1": 2,
+   "pipe1": "async",
+   "D1": 4,
+   "EF1": 1,
+   "MV1": 1,
+   "BM2": 16,
+   "NW2": 1,
+   "pipe2": "async",
+   "D2": 2,
+   "diag2": "nos2w",
+   "diag1": "s1st"
+  },
+  "median_us": {
+   "prologue": 18.904100358486176,
+   "stage1": 208.69739055633545,
+   "stage2": 119.10480260848999,
+   "combine": 6.955999881029129
+  },
+  "total": 353.66229340434074,
+  "gate": {
+   "hq_bad": 0,
+   "hs_bad": 0,
+   "rel_diff": 0.0,
+   "ok": true
+  },
+  "src_hash": "aafb9ff6"
+ }
+]

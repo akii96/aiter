@@ -1,0 +1,260 @@
+{
+ "32": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "hybrid2",
+   "D": 8,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "note": "r5 pass 1: arm 'BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1' +4.6% vs the tiles_v5 cell in-run (null 0.3%), r5_v6p1_I384_T32.json"
+ },
+ "64": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.90819936990738,
+   "stage1": 44.99630033969879,
+   "stage2": 29.228198528289795,
+   "combine": 1.128000020980835,
+   "total": 99.2606982588768
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "128": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.544199764728546,
+   "stage1": 53.22039723396301,
+   "stage2": 32.7241986989975,
+   "combine": 1.1119999922811985,
+   "total": 110.60079568997025
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "256": {
+  "s1": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 4,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 16,
+   "NW": 1,
+   "pipe": "async",
+   "D": 2,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 23.93209934234619,
+   "stage1": 57.480400800704956,
+   "stage2": 34.41219925880432,
+   "combine": 1.116000022739172,
+   "total": 116.94069942459464
+  },
+  "note": "v3 config: small-T tuner picks were within noise and cost extra prologue/launches"
+ },
+ "512": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 32,
+   "NW": 2,
+   "pipe": "async",
+   "D": 2
+  },
+  "global": {
+   "HT": 1
+  },
+  "us": {
+   "prologue": 26.02820098400116,
+   "stage1": 64.26849961280823,
+   "stage2": 32.74030089378357,
+   "combine": 7.3840998113155365,
+   "total": 130.4211013019085
+  }
+ },
+ "1024": {
+  "s1": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid",
+   "D": 3,
+   "diag": "nos2w"
+  },
+  "global": {},
+  "us": {
+   "prologue": 29.812198877334595,
+   "stage1": 68.04850101470947,
+   "stage2": 39.044299721717834,
+   "combine": 12.583999335765839,
+   "total": 149.48899894952774
+  },
+  "note": "v3 config (tuner pick lost serially)"
+ },
+ "2048": {
+  "s1": {
+   "BM": 128,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "EF": 1,
+   "MV": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "us": {
+   "prologue": 24.99620020389557,
+   "stage1": 78.01240086555481,
+   "stage2": 51.908302307128906,
+   "combine": 24.67609941959381
+  },
+  "note": "r4: stage-2 arm 'BM=64,NW=4,pipe=hybrid2,D=3,diag=wpe3+s2nt' from r4_s2d_I384_T2048.json, +4.1% vs the v4 cell in-run"
+ },
+ "4096": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "note": "r5 pass 1: arm 'BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1' +6.6% vs the tiles_v5 cell in-run (null 1.0%), r5_v6p1_I384_T4096.json"
+ },
+ "8192": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "note": "r5 pass 1: arm 'BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1' +8.3% vs the tiles_v5 cell in-run (null 0.1%), r5_v6p1_I384_T8192.json"
+ },
+ "16384": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 3,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "note": "r5 pass 1: arm 'BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1' +7.4% vs the tiles_v5 cell in-run (null 0.6%), r5_v6p1_I384_T16384.json"
+ },
+ "32768": {
+  "s1": {
+   "BM": 256,
+   "NW": 4,
+   "WM": 2,
+   "pipe": "il4",
+   "D": 3,
+   "EF": 1,
+   "diag": "bar8",
+   "PERS": 1
+  },
+  "s2": {
+   "BM": 64,
+   "NW": 4,
+   "pipe": "hybrid2",
+   "D": 2,
+   "diag": "wpe3+s2nt"
+  },
+  "global": {},
+  "note": "r5 pass 1: arm 'BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1' +8.8% vs the tiles_v5 cell in-run (null 0.6%), r5_v6p1_I384_T32768.json"
+ }
+}

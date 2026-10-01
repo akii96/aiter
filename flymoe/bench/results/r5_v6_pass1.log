@@ -1,0 +1,29 @@
+I=  384 T=    32             +4.6%  null       0.3%  BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1
+I=  384 T=    64 keep tiles_v5 (best +1.2% BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1; threshold 2.6%, null 0.9%)
+I=  384 T=   128 keep tiles_v5 (best +0.7% BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1; threshold 1.5%, null 0.2%)
+I=  384 T=   256 keep tiles_v5 (best +1.3% BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1; threshold 1.5%, null 0.5%)
+I=  384 T=  1024 keep tiles_v5 (best -2.5% diag1=s1st; threshold 1.8%, null 0.6%)
+I=  384 T=  2048 keep tiles_v5 (best -0.7% diag1=s1st; threshold 3.4%, null 1.1%)
+I=  384 T=  4096             +6.6%  null       1.0%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  384 T=  8192             +8.3%  null       0.1%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  384 T= 16384             +7.4%  null       0.6%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  384 T= 32768             +8.8%  null       0.6%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  768 T=    32             +7.9%  null       0.1%  BM=16,NW=1,pipe=hybrid2,D=8,EF=1,MV=1
+I=  768 T=    64             +2.1%  null       0.1%  BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1,diag=s1st
+I=  768 T=   128 keep tiles_v5 (best +1.4% BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1,diag=s1st; threshold 1.5%, null 0.1%)
+I=  768 T=   256             +3.7%  null       0.6%  BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1
+I=  768 T=   512 keep tiles_v5 (best +2.7% diag1=s1st; threshold 7.4%, null 2.5%)
+I=  768 T=  1024 keep tiles_v5 (best -0.1% diag1=s1st; threshold 1.5%, null 0.4%)
+I=  768 T=  4096             +7.1%  null       0.8%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  768 T=  8192             +9.2%  null       0.2%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  768 T= 16384             +9.8%  null       1.0%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I=  768 T= 32768             +9.2%  null       0.5%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I= 1536 T=    32             +3.7%  null       0.3%  BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1,diag=s1st
+I= 1536 T=    64 keep tiles_v5 (best +1.4% BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1,diag=s1st; threshold 1.5%, null 0.1%)
+I= 1536 T=   128 keep tiles_v5 (best -0.0% diag1=s1st; threshold 1.5%, null 0.3%)
+I= 1536 T=   256 keep tiles_v5 (best +1.3% BM=16,NW=1,pipe=hybrid2,D=4,EF=1,MV=1; threshold 1.5%, null 0.1%)
+I= 1536 T=  2048 keep tiles_v5 (best +0.0% diag1=s1st; threshold 2.6%, null 0.9%)
+I= 1536 T=  4096             +6.3%  null       0.4%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I= 1536 T=  8192             +6.8%  null       1.8%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I= 1536 T= 16384             +9.6%  null       0.6%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
+I= 1536 T= 32768             +9.9%  null       0.3%  BM=256,NW=4,WM=2,pipe=il4,D=3,EF=1,diag=bar8,PERS=1
