@@ -49,6 +49,7 @@ def main():
     ap.add_argument("--arms", nargs="+", required=True)
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--notime", action="store_true", help="correctness gate only")
+    ap.add_argument("--flush", action="store_true", help="flush L2/MALL before every timed launch")
     ap.add_argument("--knockout", action="store_true",
                     help="also time gate-rejected arms (diagnostic knock-outs; never shippable)")
     ap.add_argument("--out")
@@ -91,7 +92,7 @@ def main():
         k = rep % len(names)
         for n in names[k:] + names[:k]:
             for s in STAGES:
-                t[n][s].append(sample(getattr(runs[n], s), 10, False))
+                t[n][s].append(sample(getattr(runs[n], s), 10, a.flush))
     med = {n: {s: statistics.median(v) for s, v in d.items()} for n, d in t.items()}
     b = med["table"]["stage1"]
     res = []

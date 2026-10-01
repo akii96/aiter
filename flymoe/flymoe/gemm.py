@@ -96,6 +96,11 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         "il4: 4 waves as 2x2 (256x256 CTA), step-major A scales"
     assert pipe != "il4" or stage == 1 or (HT and epi == "rows"), "il4 stage 2: h_t A (HT), rows epilogue"
     KS = K // 128
+    # diag=skN: split-K over N units per tile (stage 1); KSL = K steps per unit (loop length),
+    # KS stays the stride of the full-K weight layouts.
+    SK = next((int(t[2:]) for t in diag.split("+") if t.startswith("sk") and t[2:].isdigit()), 1)
+    assert SK == 1 or (stage == 1 and pipe not in ("il4", "regs") and not PERS and KS % SK == 0)
+    KSL = KS // SK
     MB = BM // 16
     MBW = MB // WM  # row blocks per wave
     NB = N // BN
@@ -110,8 +115,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     SLOT = BM * 64
     if pipe in ("async", "hybrid", "hybrid2", "async2", "pingpong", "il4"):
         prefetch = pipe in ("hybrid2", "async2")
-        NSTG = max(3 if pipe in ("hybrid2", "async2", "pingpong", "il4") else 2, min(D, KS + 1))
-        DB = min(D, KS) if pipe in ("hybrid", "hybrid2") else min(3, KS)
+        NSTG = max(3 if pipe in ("hybrid2", "async2", "pingpong", "il4") else 2, min(D, KSL + 1))
+        DB = min(D, KSL) if pipe in ("hybrid", "hybrid2") else min(3, KSL)
         b_lds = pipe in ("async", "async2", "pingpong", "il4")
         # LDS is laid out per buffer kind across ring slots ([A x NSTG][B x NSTG][BS][AS]) so
         # every LDS read is (one hoisted base VGPR per kind) + an immediate offset < 64 KB:
@@ -217,6 +222,15 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         lds_bytes = S1S_BASE + NW * S1S_W
     if S2I:
         lds_bytes = S1S_BASE + NW * S2I_W
+    SK_UB = BM * BN * 4  # one unit's fp32 partial tile
+    # Partials bypass the per-XCD L2 (sc0 sc1: write-through / read from the memory side), so
+    # the arrival counter needs no agent-scope fences, which write back / invalidate all of L2.
+    # skf: fences + cached partials instead.
+    SKF = "skf" in DG
+    SK_CM = (0 if SKF else 17) | (hw.NT if "sknt" in DG else 0)
+    SK_LDS = lds_bytes
+    if SK > 1:
+        lds_bytes += 16
     assert lds_bytes <= 160 * 1024, lds_bytes
 
     @fx.struct
@@ -251,7 +265,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
 
         r_misc = hw.rsrc(ntiles_ptr, 4)
         ntiles = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_misc, 0, T.i32)))
-        bound = ntiles * NB
+        bound = ntiles * (NB * SK)
         lds_base = fx.Int32(
             fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
         )
@@ -282,7 +296,13 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             wm, wn = wave // WN, wave % WN
             if const_expr(PERS and mode == "full"):
                 gpu.barrier()  # previous tile's LDS use is finished before the ring refills
-            tile, nblk = _decode(work)
+            if const_expr(SK > 1):
+                unit, ksp = work // SK, work % SK
+                tile, nblk = _decode(unit)
+                k0 = ksp * KSL
+            else:
+                tile, nblk = _decode(work)
+                k0 = 0
             r_tiles = hw.rsrc(tiles_ptr)
             if const_expr(st is None):
                 tv = fx.Vector(hw.bload(r_tiles, tile * 16, T.i32x4))
@@ -296,13 +316,20 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             st_out = None
             pro_ops = []
 
-            r_a = hw.rsrc(a_ptr, fx.Int64(n_a_rows) * fx.Int64(KH))
-            r_as = hw.rsrc(as_ptr, fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG))
+            # split-K: every resource base starts at the unit's first K step k0
+            ka = fx.Int64(k0 * 64)
+            kas = fx.Int64(n_rows) * fx.Int64(k0 * 4) if const_expr(AST) else fx.Int64(k0 * 4)
+            r_a = hw.rsrc(fx.Int64(a_ptr) + ka if const_expr(SK > 1) else a_ptr,
+                          fx.Int64(n_a_rows) * fx.Int64(KH))
+            r_as = hw.rsrc(fx.Int64(as_ptr) + kas if const_expr(SK > 1) else as_ptr,
+                           fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG))
             r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
             b_exp = fx.Int64(N // 16) * fx.Int64(KS * 1024)
             bs_exp = fx.Int64(N // 64) * fx.Int64(KS * 256)
-            r_b = hw.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp, b_exp)
-            r_bs = hw.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp, bs_exp)
+            kb = fx.Int64(k0 * 1024) if const_expr(SK > 1) else fx.Int64(0)
+            kbs = fx.Int64(k0 * ((N // 64) * 256)) if const_expr(SK > 1) else fx.Int64(0)
+            r_b = hw.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp + kb, b_exp)
+            r_bs = hw.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp + kbs, bs_exp)
 
             def a_row_of(row, it=None):
                 valid = row < nrows
@@ -513,12 +540,12 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                 if const_expr(mode == "pro" and defer):
                     # (issue order) the prologue's DMAs + asyncmarks, for the caller to spread
                     thunks = []
-                    for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS)):
+                    for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KSL)):
                         thunks += dma_ops(p) + [rocdl.asyncmark]
                     if const_expr(PFB):
                         thunks.append(lambda: st.extend(b_state()))
                     return thunks
-                for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KS) if mode != "main" else 0):
+                for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KSL) if mode != "main" else 0):
                     issue(p)
                 if const_expr(mode == "pro"):
                     if const_expr(PFB):
@@ -696,14 +723,14 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                     # Ping-pong: wave-row 1 runs one barrier behind wave-row 0, so on every
                     # SIMD one wave is in its MFMA phase while the other is in its memory
                     # phase (DMA issue + LDS operand reads + DMA completion wait).
-                    rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 1)))
+                    rocdl.wait_asyncmark(max(0, min(NSTG - 2, KSL - 1)))
                     gpu.barrier()
                     if const_expr("nobar" not in DG):
                         if wm == fx.Int32(1):
                             gpu.barrier()
                     IL = "il" in DG  # DMA issue interleaved into the MFMA phase
-                    for s in range_constexpr(KS):
-                        dma_now = s + NSTG - 1 < KS and "nodma" not in DG
+                    for s in range_constexpr(KSL):
+                        dma_now = s + NSTG - 1 < KSL and "nodma" not in DG
                         # RF: LDS operand reads first, then DMA issue, so the LDS pipe and the
                         # texture/DMA path work concurrently (they touch different ring slots).
                         RF = "dmafirst" not in DG
@@ -719,9 +746,9 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                         b_ops, bs = bl
                         if const_expr(dma_now and not IL and RF and not ILM):
                             issue(s + NSTG - 1)
-                        if const_expr(s + 1 < KS and "nodma" not in DG):
+                        if const_expr(s + 1 < KSL and "nodma" not in DG):
                             # IL: this step's DMA has not been issued yet (it goes into the MFMA phase).
-                            pend = min(NSTG - 2, KS - 2 - s) - (1 if IL and dma_now else 0)
+                            pend = min(NSTG - 2, KSL - 2 - s) - (1 if IL and dma_now else 0)
                             rocdl.wait_asyncmark(max(0, pend))
                         rocdl.sched_barrier(0)
                         if const_expr("nobar" not in DG):
@@ -757,40 +784,40 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             gpu.barrier()
                 if const_expr(prefetch):
                     # LDS operands for step s+1 are read while step s's MFMAs run.
-                    rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 1)))
+                    rocdl.wait_asyncmark(max(0, min(NSTG - 2, KSL - 1)))
                     gpu.barrier()
                     if const_expr(mode == "main"):
                         tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
                     cur = read_a(0)
                     cur0 = cur
-                    for s in range_constexpr(KS):
+                    for s in range_constexpr(KSL):
                         a_ops, sa, bl = cur
                         if const_expr(b_lds):
                             b_ops, bs = bl
                         else:
                             b_ops, bs = breg[s]
-                            if const_expr(s + DB < KS):
+                            if const_expr(s + DB < KSL):
                                 breg[s + DB] = breg[s] if const_expr("nob" in DG and s + DB >= DB) else issue_b(s + DB)
                         for rb in range_constexpr(MBW):
                             for j in range_constexpr(4):
                                 acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
-                        if const_expr(s + 1 < KS):
+                        if const_expr(s + 1 < KSL):
                             if const_expr("nobar" not in DG):
-                                rocdl.wait_asyncmark(max(0, min(NSTG - 3, KS - 2 - s)))
+                                rocdl.wait_asyncmark(max(0, min(NSTG - 3, KSL - 2 - s)))
                                 gpu.barrier()
-                            if const_expr(s + NSTG - 1 < KS and "nodma" not in DG):
+                            if const_expr(s + NSTG - 1 < KSL and "nodma" not in DG):
                                 issue(s + NSTG - 1)
                             cur = cur0 if const_expr("nolds" in DG) else read_a(s + 1)
                     if const_expr(mode == "main"):
                         st_out = [fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q]))) for q in range_constexpr(3)]
                         gpu.barrier()  # every wave is past its last ring read
                         pro_ops = _tile_body(nxt, "pro", st=st_out, defer=True)
-                for s in range_constexpr(KS if not (prefetch or pipe in ("pingpong", "il4")) else 0):
-                    rocdl.wait_asyncmark(min(NSTG - 2, KS - 1 - s))
+                for s in range_constexpr(KSL if not (prefetch or pipe in ("pingpong", "il4")) else 0):
+                    rocdl.wait_asyncmark(min(NSTG - 2, KSL - 1 - s))
                     gpu.barrier()
-                    if const_expr(s + NSTG - 1 < KS):
+                    if const_expr(s + NSTG - 1 < KSL):
                         issue(s + NSTG - 1)
-                    if const_expr((not b_lds) and s + DB < KS):
+                    if const_expr((not b_lds) and s + DB < KSL):
                         breg[s + DB] = issue_b(s + DB)
                     a_ops, sa, bl = read_a(s)
                     if const_expr(b_lds):
@@ -848,6 +875,45 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
                             acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b[j], sa[rb], bs, 0, j)
                     gpu.barrier()
 
+            if const_expr(SK > 1):
+                # Split-K: each unit writes its fp32 partial (workspace aux_ptr, [unit][k][BM*BN]),
+                # then bumps the tile's counter (rw_ptr). The last of the SK units sums the SK
+                # partials in fixed k order (deterministic) and runs the epilogue; the others
+                # run it with nrows = 0 (every store masked) and load nothing (OOB offsets).
+                r_ws = hw.rsrc(fx.Int64(aux_ptr) + fx.Int64(unit) * fx.Int64(SK * SK_UB), SK * SK_UB)
+                lo = wave * (MBW * TWN * 1024) + lane * 16
+                for rb in range_constexpr(MBW):
+                    for j in range_constexpr(TWN):
+                        hw.bstore(acc[rb][j], r_ws, ksp * SK_UB + lo + (rb * TWN + j) * 1024, cm=SK_CM)
+                if const_expr(SKF):
+                    hw.fence("release")
+                else:
+                    rocdl.s_waitcnt(0x0F70)  # vmcnt(0): this wave's write-through partials are done
+                gpu.barrier()
+                if tid == fx.Int32(0):
+                    sk_old = hw.gatomic_add(fx.Int64(rw_ptr) + fx.Int64(unit) * fx.Int64(4), 1)
+                    hw.lds_store(sk_old, lds_base, SK_LDS, align=4)
+                gpu.barrier()
+                sk_last = fx.Int32(rocdl.readfirstlane(
+                    T.i32, hw.raw(hw.lds_load(lds_base, SK_LDS, T.i32, align=4)))) == fx.Int32(SK - 1)
+                if const_expr(SKF):
+                    hw.fence("acquire")
+                for rb in range_constexpr(MBW):
+                    for j in range_constexpr(TWN):
+                        tot = None
+                        own = fx.Vector(acc[rb][j])
+                        for k in range_constexpr(SK):
+                            # own partial from registers (the same values it wrote)
+                            mine = ksp == fx.Int32(k)
+                            off = (sk_last & ~mine).select(lo + (k * SK_UB + (rb * TWN + j) * 1024), fx.Int32(OOB))
+                            v = fx.Vector(hw.bload(r_ws, off, T.f32x4, cm=SK_CM))
+                            v = mine.select(own, v)
+                            tot = v if const_expr(k == 0) else tot + v
+                        acc[rb][j] = hw.raw(tot)
+                # the last unit re-arms the counter for the next launch
+                r_cnt = hw.rsrc(rw_ptr, fx.Int64(ntiles * NB) * fx.Int64(4))
+                hw.bstore(fx.Int32(0), r_cnt, (sk_last & (tid == fx.Int32(0))).select(unit * 4, fx.Int32(OOB)))
+                nrows = sk_last.select(nrows, fx.Int32(0))
             if const_expr("noepi" in DG):
                 tot = fx.Float32(0.0)
                 for rb in range_constexpr(MBW):
@@ -1331,5 +1397,9 @@ def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream
-    grid = NUM_CUS * PERS if PERS else max_tiles * nb
+    grid = NUM_CUS * PERS if PERS else max_tiles * nb * split_k(diag)
     r(*args, grid, stream)
+
+
+def split_k(diag):
+    return next((int(t[2:]) for t in diag.split("+") if t.startswith("sk") and t[2:].isdigit()), 1)

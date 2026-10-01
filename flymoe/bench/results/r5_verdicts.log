@@ -169,3 +169,30 @@ binding limit (I=768 T=2048..8192, BM64 hybrid2): per-CTA latency of the B globa
   cross-tile prefetch state (A ring + staging LDS, B registers), not both: with the prefetch the third wave
   spills (iterations 3, 6) and with B in LDS the ring caps residency at 1 CTA/CU (5). At I=384 the y_rows
   stores bind (S2-A).
+
+== S1-D  split-K stage 1 for the < 4 CU-wave cells (fixed-order reduction, last-arriver epilogue) ==
+logs: r5_s1d_sk.log; bench/wave_eff.py (tile counts); traces att_r5/s1dsk1, s1dsk2 (I=384 T=1024)
+setup: diag skN (stage 1, async / async2 / hybrid / hybrid2 / pingpong): work unit = (tile, k-range of
+  KS/N steps); resource bases start at the unit's first K step; each unit stores its fp32 partial tile to a
+  workspace and bumps a per-tile counter (agent-scope atomic); the last arriver sums the N partials in
+  fixed k order (deterministic; its own from registers) and runs the SwiGLU/quant epilogue, re-arming the
+  counter; the others run the epilogue with nrows = 0 (all stores masked, partial loads OOB = no traffic).
+  wave_eff.py (uniform routing): 0.84 wave efficiency at every candidate cell, but row fill 0.56.
+iterations (stage-1 us, serial GPU 0):
+  1    agent-scope release/acquire fences around the counter (cached partials) -> I=384 T=1024: 68.8 -> 232 (sk2),
+       410 (sk4); I=1536 T=2048 271 -> 1038: each fence writes back / invalidates the whole per-XCD L2
+  2    partials write-through (sc0 sc1) + vmcnt(0) drain, no fences           -> 84.5 (sk2), 108.5 (sk4): -23 / -58%
+  3    last arriver reuses its own partial from registers (1/N fewer reads)
+  4    small T (BM16/32 async), warm and flushed (new s1_sweep --flush):        -> flushed I=384 T=32 -0.1 .. +1.0%;
+       every other cell -2 .. -56% (I=768 / 1536 T=32 / 256, I=384 T=256)
+  5    trace I=384 T=1024 (hybrid2 BM64): unsplit wave 48 steps in 95.9k cycles, 72k of it behind the B
+       register loads (1.5k / step); sk2 wave 24 steps in 83.9k (3.5k / step): twice the units in flight
+       raise the per-step load latency 2.3x (Little's law at the HBM limit)  -> no throughput to gain
+  6    pingpong 256x256 cells (256 KB partials): I=384 T=4096 / 8192, I=768 T=4096 sk2/3/4 -> -58 .. -175%
+verdict: REJECT split-K / stream-K for stage 1 (kept as diag skN / skf / sknt; T=4097 and T=40000 tests OK).
+  The idle-slot fraction (wave efficiency 0.84) does not cost time in these cells.
+binding limit (stage 1, T <= 8192): W13 weight streaming at the HBM limit (warm: 80-90% of the W13-read
+  floor at T <= 1024). Extra units only add bytes in flight (higher per-step latency, same throughput) plus
+  fp32 partial traffic (BM*BN*4 per unit and split) and duplicated prologues. Flushed small T is
+  latency-bound below the floor (I=384 T=32: 95 us for ~170 MB of touched weights) but not CTA-limited:
+  more units do not help there either (iteration 4) -> ST-1.

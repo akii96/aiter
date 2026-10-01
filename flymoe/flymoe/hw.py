@@ -350,3 +350,14 @@ def gload(addr_i64, res_ty, align=16):
 
 def gstore(val, addr_i64, align=16):
     llvm.StoreOp(raw(val), gptr(addr_i64), alignment=align)
+
+
+def gatomic_add(addr_i64, val, ordering="monotonic", scope="agent"):
+    """Global i32 atomicrmw add (per lane); returns the old value."""
+    return fx.Int32(llvm.AtomicRMWOp(llvm.AtomicBinOp.add, gptr(addr_i64), raw(fx.Int32(val)),
+                                     getattr(llvm.AtomicOrdering, ordering), syncscope=scope,
+                                     alignment=4).result)
+
+
+def fence(ordering, scope="agent"):
+    llvm.FenceOp(getattr(llvm.AtomicOrdering, ordering), syncscope=scope)

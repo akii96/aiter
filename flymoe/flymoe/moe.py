@@ -143,6 +143,16 @@ class MoERun:
         # +64 B allocation slack: a 16 B/lane scale DMA's last lanes may cover up to 3 rows past R.
         self.a_s_t = torch.empty(R * (H // 32) + 64, dtype=torch.uint8, device=dev) if self.AST else None
         self.dummy = torch.empty(1, dtype=torch.float32, device=dev)
+        # split-K stage 1 (diag skN): fp32 partial workspace + per-tile arrival counters (the
+        # last arriving unit re-arms its counter, so they are zeroed only here).
+        self.sk1 = {}
+        for b, c in self.launches1:
+            sk = gemm.split_k(c["diag"])
+            if sk > 1:
+                units = self.spec_mt[b] * (2 * self.I) // (64 * c["NW"] // c["WM"])
+                self.sk1[b] = (torch.empty(units * sk * c["BM"] * (64 * c["NW"] // c["WM"]), dtype=torch.float32,
+                                           device=dev),
+                               torch.zeros(units, dtype=torch.int32, device=dev))
         if epi == "rows":
             self.y_rows = torch.empty(R, H, dtype=torch.bfloat16, device=dev)
             self.out = torch.empty(T, H, dtype=torch.bfloat16, device=dev)
@@ -177,11 +187,12 @@ class MoERun:
         a_s = (self.a_s_t if self.AST else self.a_s).data_ptr()
         for b, c in self.launches1:
             tp, ntp = self._tl(b)
+            ws, cnt = self.sk1.get(b, (self.dummy, self.dummy))
             gemm.run_gemm(
                 1, self.H, 2 * self.I, c["BM"],
                 (self.a_q.data_ptr(), a_s, W.b1.data_ptr(), W.bs1.data_ptr(),
-                 tp, ntp, self.row_tok.data_ptr(), self.dummy.data_ptr(),
-                 self.h_q.data_ptr(), self.h_s.data_ptr(), self.dummy.data_ptr(), self.T, self.R, self.T),
+                 tp, ntp, self.row_tok.data_ptr(), cnt.data_ptr(),
+                 self.h_q.data_ptr(), self.h_s.data_ptr(), ws.data_ptr(), self.T, self.R, self.T),
                 self.spec_mt[b], D=c["D"], pipe=c["pipe"], NW=c["NW"], GM=c["GM"],
                 diag="+".join(t for t in (c["diag"], "se" if self.SE else "") if t),
                 WM=c["WM"], EF=c["EF"], MV=c["MV"], AST=self.AST, HT=self.HT, PERS=c.get("PERS", 0),
