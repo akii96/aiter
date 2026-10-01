@@ -62,6 +62,10 @@ CONFIGS = [
     dict(SM, QF=1, CF=1),
     dict(SM, QP=1, CF=1),
     dict(BM1=32, NW1=2, pipe1="hybrid2", D1=4, BM2=32, NW2=2, pipe2="async", D2=2, QF=1, CF=1),
+    dict(BM1=64, NW1=4, pipe1="hybrid2", D1=3, EF1=1, MV1=1, diag1="s1st", **H2),
+    dict(BM1=32, NW1=2, pipe1="async", D1=4, EF1=1, MV1=1, diag1="s1st", **H2),
+    dict(PP, **H2, diag1="s1st+s1sd"),
+    dict(SM, diag1="s1st", QP=1),
 ]
 
 

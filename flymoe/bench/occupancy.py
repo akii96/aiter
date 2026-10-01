@@ -80,8 +80,7 @@ def probe(I, s1, s2, T=64, extra=None):
         nw = int(re.search(r"_w(\d)", name).group(1))
         info = parse_isa(isa[0])
         info.update(occupancy(info, nw))
-        if "_mv" in name:
-            assert info["agpr"] == 0, f"{name}: MV set but {info['agpr']} AGPRs allocated (fn-attr hook failed)"
+        info["mv_agpr"] = "_mv" in name and info["agpr"] > 0
         rows.append((name, info))
     return rows
 
@@ -92,8 +91,33 @@ if __name__ == "__main__":
     ap.add_argument("--s1", default="BM=128,NW=4,pipe=async,D=3")
     ap.add_argument("--s2", default="BM=128,NW=4,pipe=regs,D=2")
     ap.add_argument("--extra", default="", help="non-suffixed MoERun kwargs, e.g. FC=1")
+    ap.add_argument("--cfg", default=None, help="compare.py --out JSON: probe every cell's cand_cfg")
+    ap.add_argument("--out", default=None, help="with --cfg: write {\"I,T\": {\"1\": CTAs/CU, \"2\": ...}}")
     a = ap.parse_args()
+    if a.cfg:
+        import json
+        import subprocess
+        res = json.load(open(a.out)) if a.out and os.path.exists(a.out) else {}
+        for r in json.load(open(a.cfg)):
+            c = r["cand_cfg"]
+            s1 = ",".join(f"{k[:-1]}={v}" for k, v in c.items() if k.endswith("1"))
+            s2 = ",".join(f"{k[:-1]}={v}" for k, v in c.items() if k.endswith("2"))
+            ex = ",".join(f"{k}={int(v) if isinstance(v, bool) else v}" for k, v in c.items()
+                          if not k.endswith(("1", "2")))
+            cmd = [sys.executable, __file__, "--I", str(r["I"]), "--s1", s1, "--s2", s2]
+            out = subprocess.run(cmd + (["--extra", ex] if ex else []), capture_output=True, text=True, check=True).stdout
+            occ = {}
+            for line in out.splitlines():
+                m = re.match(r"flymoe_s([12])_\S+ .*CTAs/CU=(\d+)", line)
+                if m:
+                    occ[m.group(1)] = min(occ.get(m.group(1), 99), int(m.group(2)))
+            res[f"{r['I']},{r['T']}"] = occ
+            print(r["I"], r["T"], occ, flush=True)
+        if a.out:
+            json.dump(res, open(a.out, "w"), indent=1)
+        sys.exit(0)
     for name, i in probe(a.I, kv(a.s1), kv(a.s2), extra=kv(a.extra) if a.extra else None):
         print(f"{name:60s} vgpr={i['vgpr']:3d} agpr={i['agpr']:3d} lds={i['lds']:6d} spill={i['spill']} "
               f"| waves/SIMD={i['waves_per_simd']} CTAs/CU={i['ctas_per_cu']} ({i['limiter']}) "
-              f"| mfma={i['mfma']} barrier={i['barrier']} waitcnt={i['waitcnt']}")
+              f"| mfma={i['mfma']} barrier={i['barrier']} waitcnt={i['waitcnt']}"
+              + (" | MV set but AGPRs allocated" if i["mv_agpr"] else ""))

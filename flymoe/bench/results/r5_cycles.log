@@ -19,3 +19,41 @@ il4 persistent, iteration 12 (trace il4p3, --tile-mfmas 3072):
 
 DMA path (bench/dma_bw.py, L2-resident source, 1 CTA/CU):
   contiguous 1 KB/instr 49.0 B/clk/CU; gathered 16 rows x 64 B 31.2; gathered 8 rows x 128 B 36.5
+
+Shipped v5 cells, stage 1 and stage 2, all widths (rocprofv3 ATT on one CU; GPUs 1-6; bench/att_cell.sh +
+att_budget.py; T=4096 / 32768 warm, T=32 / 256 after a clean read flush; traces att_r5/r5c_*).
+Per wave (median): prologue / main loop / epilogue cycles, loop cycles per 128-K step, loop MFMA duty,
+top loop gaps (cycles per wave, by the instruction before the late MFMA). FC cells trace both stage-2 launches.
+
+stage 1:
+  I=  384 T=    32 flush    4 waves  pro   9994 (  9%)  loop  96802 ( 90%,  2016/step)  epi    830 (  1%)  duty  3.2%  gaps: s_movk_i32 47k, s_waitcnt 46k, ds_read_b32 427
+  I=  384 T=   256 flush    7 waves  pro  12112 ( 11%)  loop  95424 ( 87%,  1988/step)  epi   1784 (  2%)  duty  3.2%  gaps: s_movk_i32 45k, s_waitcnt 44k, ds_read_b32 1k
+  I=  384 T=  4096 warm    16 waves  pro   8602 (  9%)  loop  77316 ( 80%,  1610/step)  epi  10860 ( 11%)  duty 31.8%  gaps: s_setprio 50k, mfma->mfma 2k
+  I=  384 T= 32768 warm    64 waves  pro   6446 (  7%)  loop  72006 ( 81%,  1500/step)  epi  10422 ( 12%)  duty 34.1%  gaps: s_setprio 45k, mfma->mfma 2k
+  I=  768 T=    32 flush    8 waves  pro  13494 ( 12%)  loop  96104 ( 87%,  2002/step)  epi    946 (  1%)  duty  6.4%  gaps: s_movk_i32 74k, s_mov_b32 3k, s_waitcnt 2k
+  I=  768 T=   256 flush   14 waves  pro  41132 ( 31%)  loop  88374 ( 67%,  1841/step)  epi   1964 (  1%)  duty  3.5%  gaps: s_movk_i32 45k, s_waitcnt 41k, s_and_b64 9
+  I=  768 T=  4096 warm    24 waves  pro   8638 (  9%)  loop  81060 ( 81%,  1688/step)  epi  10424 ( 10%)  duty 30.3%  gaps: s_nop 64k, mfma->mfma 1k
+  I=  768 T= 32768 warm   136 waves  pro   6430 (  7%)  loop  71140 ( 81%,  1482/step)  epi  10746 ( 12%)  duty 34.5%  gaps: s_setprio 45k, mfma->mfma 2k
+  I= 1536 T=    32 flush   17 waves  pro  40248 ( 30%)  loop  91844 ( 69%,  1913/step)  epi   1752 (  1%)  duty  3.3%  gaps: s_movk_i32 46k, s_waitcnt 43k, s_and_b64 8
+  I= 1536 T=   256 flush   26 waves  pro  16278 ( 16%)  loop  80740 ( 80%,  1682/step)  epi   3688 (  4%)  duty  7.6%  gaps: s_mov_b32 70k, s_cmp_lg_u32 6k, s_waitcnt 2k
+  I= 1536 T=  4096 warm    40 waves  pro   6366 (  8%)  loop  70568 ( 83%,  1470/step)  epi   7924 (  9%)  duty 32.8%  gaps: s_nop 56k, mfma->mfma 1k
+  I= 1536 T= 32768 warm   264 waves  pro   5164 (  6%)  loop  71518 ( 82%,  1489/step)  epi  10340 ( 12%)  duty 34.4%  gaps: s_setprio 45k, mfma->mfma 2k
+
+stage 2:
+  I=  384 T=    32 flush   29 waves  pro  11988 ( 54%)  loop   4768 ( 21%,  1589/step)  epi   5548 ( 25%)  duty  4.0%  gaps: s_waitcnt 3k, s_movk_i32 361, ds_read_b128 226
+  I=  384 T=   256 flush   56 waves  pro  11990 ( 62%)  loop   3672 ( 19%,  1224/step)  epi   3566 ( 19%)  duty  5.2%  gaps: s_waitcnt 2k, s_movk_i32 253, ds_read_b128 85
+  I=  384 T=  4096 warm   144 waves  pro   7232 ( 50%)  loop   5160 ( 36%,  1720/step)  epi   1930 ( 13%)  duty 14.9%  gaps: v_accvgpr_read_b32 1k, v_pk_mul_f32 1k, v_lshlrev_b32_e32 1k
+  I=  384 T= 32768 warm   988 waves  pro   6540 ( 48%)  loop   4774 ( 35%,  1591/step)  epi   2230 ( 16%)  duty 16.1%  gaps: v_pk_mul_f32 1k, v_lshlrev_b32_e32 971, v_accvgpr_read_b32 890
+  I=  768 T=    32 flush   32 waves  pro  12146 ( 35%)  loop  16794 ( 49%,  2799/step)  epi   5588 ( 16%)  duty  2.3%  gaps: s_movk_i32 9k, s_waitcnt 4k, ds_read_b128 290
+  I=  768 T=   256 flush   54 waves  pro  13416 ( 37%)  loop  16908 ( 46%,  2818/step)  epi   6422 ( 17%)  duty  2.3%  gaps: s_movk_i32 10k, s_waitcnt 4k, ds_read_b128 345
+  I=  768 T=  4096 warm    84 waves  pro   9446 ( 38%)  loop  12280 ( 49%,  2046/step)  epi   3120 ( 13%)  duty 25.0%  gaps: v_pk_mul_f32 5k, s_waitcnt 1k, buffer_load_dwordx4 1k
+  I=  768 T= 32768 warm    96 waves  pro   6184 (  7%)  loop  23702 ( 29%,  3950/step)  epi  53214 ( 64%)  duty 13.0%  gaps: v_pk_mul_f32 13k, s_waitcnt 1k, buffer_load_dwordx4 1k
+  I= 1536 T=    32 flush   31 waves  pro  14996 ( 23%)  loop  43960 ( 67%,  3663/step)  epi   6852 ( 10%)  duty  1.7%  gaps: s_movk_i32 32k, s_waitcnt 10k, ds_read_b128 588
+  I= 1536 T=   256 flush   54 waves  pro   9992 ( 17%)  loop  43964 ( 75%,  3663/step)  epi   4672 (  8%)  duty  3.5%  gaps: s_mov_b32 32k, v_or_b32_e32 3k, ds_read_b128 2k
+  I= 1536 T=  4096 warm    80 waves  pro   8158 ( 20%)  loop  25014 ( 61%,  2084/step)  epi   8158 ( 20%)  duty 24.6%  gaps: s_waitcnt 13k, v_accvgpr_read_b32 2k, v_accvgpr_mov_b32 657
+  I= 1536 T= 32768 warm    96 waves  pro   7658 (  8%)  loop  40698 ( 45%,  3391/step)  epi  42822 ( 47%)  duty 15.1%  gaps: s_waitcnt 29k, v_accvgpr_read_b32 2k, s_nop 2k
+reading: stage 1 at T <= 256 (async / hybrid BM16-32, 1-2 waves per CTA) spends ~1.9-2.0k cycles per K step
+  at 3-8% MFMA duty, the gaps being vmcnt waits on the weight stream (latency-bound, ST-1 / S1-D); at T >= 4096
+  the pingpong runs ~1.5k cycles per step at ~34% duty per wave (2 waves per SIMD ~69%), gaps = the phase
+  hand-off (s_setprio / s_nop). Stage 2 at small T is prologue / latency dominated (K = I is only 3-12 steps);
+  at T=32768 the FC cells (I=768 / 1536) spend 47-64% of wave time in the fused-combine epilogue.
