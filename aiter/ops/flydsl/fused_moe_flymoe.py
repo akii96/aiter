@@ -36,9 +36,10 @@ _TABLE_DIR = os.path.join(os.path.dirname(__file__), "flymoe", "configs")
 _SWIGLU_LIMIT = 7.0
 _MAX_RUNS = 8
 _FC_KEYS = ("FC", "BMF", "NWF", "WMF", "DF", "pipeF", "diagF")
-# Fused combine folds the last expert's tile into the combine. It is exact only
-# when expert E-1 is a shared expert routed once per token, which is the
-# layout of fused shared experts (e.g. vLLM VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS).
+# Fused combine computes expert E-1 last and folds the combine into its
+# epilogue. It is exact only when E-1 is a shared expert routed exactly once per
+# token, i.e. fused shared experts. Opt in when the caller guarantees that
+# routing; otherwise those tables run the unfused combine.
 _FUSED_SHARED_EXPERT = os.environ.get("AITER_FLYMOE_FUSED_SHARED_EXPERT", "0") == "1"
 # e8m0 rule for the activation and intermediate quant. "ceil" matches AITER's
 # runtime MX quant (MxScaleRoundMode.RoundUp); "even" matches checkpoints
@@ -111,9 +112,11 @@ _runs: dict[tuple, _moe.MoERun] = {}
 
 
 def _weights(w1, w2, w1_scale, w2_scale) -> _moe.MoEWeights:
-    key = (w1.data_ptr(), w2.data_ptr(), w1_scale.data_ptr(), w2_scale.data_ptr())
+    """Repacked weights, cached for the lifetime of the source tensors."""
+    sources = (w1, w2, w1_scale, w2_scale)
+    key = tuple((t.data_ptr(), t.shape) for t in sources)
     hit = _packed.get(key)
-    if hit is not None and hit[0]() is not None:
+    if hit is not None and all(r() is t for r, t in zip(hit[0], sources)):
         return hit[1]
     e, n13, kh = w1.shape
     inter, hidden = n13 // 2, kh * 2
@@ -127,7 +130,7 @@ def _weights(w1, w2, w1_scale, w2_scale) -> _moe.MoEWeights:
         _unshuffle_weight(w2),
         _unshuffle_scale(w2_scale, e, hidden, inter // 32),
     )
-    _packed[key] = (weakref.ref(w1), packed)
+    _packed[key] = (tuple(weakref.ref(t) for t in sources), packed)
     weakref.finalize(w1, _packed.pop, key, None)
     return packed
 
@@ -176,6 +179,8 @@ def run_flymoe_impl(request: FusedMoeRequest, config: str) -> torch.Tensor:
     x = request.hidden_states.contiguous()
     weights = _weights(request.w1, request.w2, request.w1_scale, request.w2_scale)
     key = (x.shape, request.topk_ids.shape, x.device, weights.E, weights.I, config)
+    # Every buffer a run owns is a per-shape workspace; inputs, weights and the
+    # output are rebound per call below.
     run = _runs.pop(key, None)
     if run is None:
         kwargs = dict(config_from_string(config))

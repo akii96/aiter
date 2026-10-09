@@ -6210,7 +6210,7 @@ def _flymoe_candidates(untunedf):
         swiglu_limit=None,
         **_,
     ):
-        shapes = (w1.shape, w2.shape, w1_scale.shape, w2_scale.shape)
+        shapes = (hidden_states.shape, w1.shape, w2.shape, w1_scale.shape)
         w1, w2, w1_scale, w2_scale = first_weights.setdefault(
             shapes, (w1, w2, w1_scale, w2_scale)
         )

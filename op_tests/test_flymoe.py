@@ -1,0 +1,265 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2024-2026, Advanced Micro Devices, Inc. All rights reserved.
+"""FlyMoE (A4W4 MXFP4 prefill MoE) through ``aiter.fused_moe``.
+
+Weights are prepared exactly as the per_1x32 fp4 MoE paths expect them
+(``shuffle_weight`` (16, 16) + ``e8m0_shuffle``, gate/up SEPARATED) and a tuned
+``impl__flymoe__<cfg>`` row routes the call to FlyMoE. The output is compared
+with a torch reference that quantizes activations with AITER's runtime MX rule.
+"""
+
+import os
+
+import pandas as pd
+import pytest
+import torch
+
+import aiter
+import aiter.fused_moe as fused_moe_module
+import aiter.fused_moe_registry as _registry
+from aiter import ActivationType, QuantType, dtypes
+from aiter.fused_moe import fused_moe, get_2stage_cfgs, get_padded_M
+from aiter.jit.utils.chip_info import get_gfx
+from aiter.ops.shuffle import shuffle_weight
+from aiter.utility import fp4_utils
+
+pytestmark = pytest.mark.skipif(get_gfx() != "gfx950", reason="FlyMoE is gfx950-only")
+
+MODEL_DIM = 6144
+EXPERTS = 129
+TOPK = 5
+SWIGLU_LIMIT = 7.0
+TUNED_COLUMNS = (
+    "gfx,cu_num,token,model_dim,inter_dim,expert,topk,act_type,dtype,q_dtype_a,"
+    "q_dtype_w,q_type,use_g1u1,doweight_stage1,block_m,ksplit,us1,kernelName1,err1,"
+    "us2,kernelName2,err2,us,run_1stage,xbf16,flat,tflops,bw,_tag"
+).split(",")
+
+
+def _problem(tokens, inter_dim, shared_expert=True, seed=0):
+    gen = torch.Generator(device="cuda").manual_seed(seed)
+    x = torch.randn(tokens, MODEL_DIM, device="cuda", generator=gen).to(dtypes.bf16)
+    w1 = torch.randn(EXPERTS, 2 * inter_dim, MODEL_DIM, device="cuda", generator=gen)
+    w2 = torch.randn(EXPERTS, MODEL_DIM, inter_dim, device="cuda", generator=gen)
+    quant = aiter.get_torch_quant(QuantType.per_1x32)
+    w1_q, w1_s = quant((w1 / 10).to(dtypes.bf16), quant_dtype=dtypes.fp4x2)
+    w2_q, w2_s = quant((w2 / 30).to(dtypes.bf16), quant_dtype=dtypes.fp4x2)
+    w1_q = w1_q.view(EXPERTS, 2 * inter_dim, MODEL_DIM // 2)
+    w2_q = w2_q.view(EXPERTS, MODEL_DIM, inter_dim // 2)
+    routed = TOPK - 1 if shared_expert else TOPK
+    scores = torch.rand(tokens, EXPERTS - 1, device="cuda", generator=gen)
+    ids = scores.topk(routed, dim=-1).indices.to(torch.int32)
+    weights = torch.rand(tokens, routed, device="cuda", generator=gen)
+    if shared_expert:
+        shared = torch.full((tokens, 1), EXPERTS - 1, device="cuda", dtype=torch.int32)
+        ids = torch.cat([ids, shared], dim=1)
+        weights = torch.cat([weights, torch.ones(tokens, 1, device="cuda")], dim=1)
+    return x, (w1_q, w1_s, w2_q, w2_s), ids, weights.float()
+
+
+def _aiter_weights(w1_q, w1_s, w2_q, w2_s):
+    w1 = shuffle_weight(w1_q, layout=(16, 16))
+    w2 = shuffle_weight(w2_q, layout=(16, 16))
+    w1.is_shuffled = w2.is_shuffled = True
+    return w1, w2, fp4_utils.e8m0_shuffle(w1_s), fp4_utils.e8m0_shuffle(w2_s)
+
+
+def _dequant(q, s):
+    values = fp4_utils.mxfp4_to_f32(q.view(torch.uint8))
+    scales = fp4_utils.e8m0_to_f32(s.view(torch.uint8).view(*q.shape[:-1], -1))
+    return (values.view(*scales.shape, 32) * scales.unsqueeze(-1)).view(values.shape)
+
+
+def _reference(x, weights, ids, topk_weight):
+    w1_q, w1_s, w2_q, w2_s = weights
+    quant = aiter.get_torch_quant(QuantType.per_1x32)
+    a_q, a_s = quant(x, quant_dtype=dtypes.fp4x2)
+    a = _dequant(a_q.view(x.shape[0], -1), a_s.view(x.shape[0], -1))
+    out = torch.zeros(x.shape, dtype=torch.float32, device=x.device)
+    inter_dim = w2_q.shape[-1] * 2
+    w1_s = w1_s.view(EXPERTS, 2 * inter_dim, -1)
+    w2_s = w2_s.view(EXPERTS, MODEL_DIM, -1)
+    for expert in ids.unique().tolist():
+        token, slot = (ids == expert).nonzero(as_tuple=True)
+        gate_up = a[token] @ _dequant(w1_q[expert], w1_s[expert]).T
+        h = aiter.fused_moe.swiglu(
+            gate_up[:, :inter_dim], gate_up[:, inter_dim:], limit=SWIGLU_LIMIT
+        )
+        h_q, h_s = quant(h, quant_dtype=dtypes.fp4x2)
+        h = _dequant(h_q.view(h.shape[0], -1), h_s.view(h.shape[0], -1))
+        y = h @ _dequant(w2_q[expert], w2_s[expert]).T
+        out.index_add_(0, token, y * topk_weight[token, slot, None])
+    return out
+
+
+@pytest.fixture
+def tuned_row(tmp_path, monkeypatch):
+    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+
+    def install(tokens, inter_dim, config=None):
+        config = config or tune_space(inter_dim)[-1]
+        row = dict.fromkeys(TUNED_COLUMNS, 0)
+        row.update(
+            gfx="gfx950",
+            cu_num=torch.cuda.get_device_properties(0).multi_processor_count,
+            token=get_padded_M(tokens),
+            model_dim=MODEL_DIM,
+            inter_dim=inter_dim,
+            expert=EXPERTS,
+            topk=TOPK,
+            act_type=str(ActivationType.Swiglu),
+            dtype=str(dtypes.bf16),
+            q_dtype_a=str(dtypes.fp4x2),
+            q_dtype_w=str(dtypes.fp4x2),
+            q_type=str(QuantType.per_1x32),
+            use_g1u1=1,
+            kernelName1=f"impl__flymoe__{config}",
+            kernelName2="",
+            err1="0%",
+            err2="0%",
+            _tag="",
+        )
+        path = tmp_path / "flymoe_tuned_fmoe.csv"
+        pd.DataFrame([row], columns=TUNED_COLUMNS).to_csv(path, index=False)
+        monkeypatch.setenv("AITER_CONFIG_FMOE", str(path))
+        _reset_tuned_config_caches()
+        return config
+
+    from aiter.ops.flydsl import fused_moe_flymoe
+
+    calls = []
+    impl = fused_moe_flymoe.run_flymoe_impl
+
+    def spy(request, config):
+        calls.append(config)
+        return impl(request, config)
+
+    monkeypatch.setitem(_registry._IMPLEMENTATIONS, "flymoe", spy)
+    yield install
+    monkeypatch.undo()
+    _reset_tuned_config_caches()
+    assert calls, "fused_moe did not dispatch to FlyMoE"
+
+
+def _reset_tuned_config_caches():
+    from aiter.jit.core import AITER_CONFIGS
+
+    type(AITER_CONFIGS).get_config_file.cache_clear()
+    fused_moe_module.cfg_2stages = None
+    get_2stage_cfgs.cache_clear()
+
+
+def _run(x, weights, ids, topk_weight):
+    w1, w2, w1_s, w2_s = _aiter_weights(*weights)
+    return fused_moe(
+        x,
+        w1,
+        w2,
+        topk_weight,
+        ids,
+        activation=ActivationType.Swiglu,
+        quant_type=QuantType.per_1x32,
+        w1_scale=w1_s,
+        w2_scale=w2_s,
+        dtype=dtypes.bf16,
+        swiglu_limit=SWIGLU_LIMIT,
+    )
+
+
+def _rel_l2(out, ref):
+    return ((out.float() - ref).norm() / ref.norm()).item()
+
+
+@pytest.mark.parametrize("inter_dim", [384, 768, 1536])
+@pytest.mark.parametrize("tokens", [512, 1000, 4096])
+def test_flymoe_matches_reference(tuned_row, inter_dim, tokens):
+    tuned_row(tokens, inter_dim)
+    x, weights, ids, topk_weight = _problem(tokens, inter_dim)
+    out = _run(x, weights, ids, topk_weight)
+    assert _rel_l2(out, _reference(x, weights, ids, topk_weight)) < 2e-2
+
+
+@pytest.mark.parametrize("inter_dim", [384, 768, 1536])
+def test_flymoe_every_shipped_config(tuned_row, inter_dim):
+    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+
+    x, weights, ids, topk_weight = _problem(777, inter_dim)
+    ref = _reference(x, weights, ids, topk_weight)
+    for config in tune_space(inter_dim):
+        tuned_row(777, inter_dim, config)
+        assert _rel_l2(_run(x, weights, ids, topk_weight), ref) < 2e-2, config
+
+
+def test_flymoe_arbitrary_routing(tuned_row, monkeypatch):
+    """Tokens without the shared expert must stay exact even for fused-combine rows."""
+    from aiter.ops.flydsl import fused_moe_flymoe
+    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+
+    monkeypatch.setattr(fused_moe_flymoe, "_FUSED_SHARED_EXPERT", False)
+    config = next(c for c in tune_space(768) if "FC=1" in c)
+    tuned_row(2048, 768, config)
+    x, weights, ids, topk_weight = _problem(2048, 768, shared_expert=False)
+    out = _run(x, weights, ids, topk_weight)
+    assert _rel_l2(out, _reference(x, weights, ids, topk_weight)) < 2e-2
+
+
+def test_flymoe_layout_roundtrip():
+    from aiter.ops.flydsl.fused_moe_flymoe import _unshuffle_scale, _unshuffle_weight
+
+    _, (w1_q, w1_s, w2_q, w2_s), _, _ = _problem(1, 384)
+    w1, w2, w1_sh, w2_sh = _aiter_weights(w1_q, w1_s, w2_q, w2_s)
+    assert torch.equal(_unshuffle_weight(w1), w1_q.view(torch.uint8))
+    assert torch.equal(_unshuffle_weight(w2), w2_q.view(torch.uint8))
+    for packed, raw in ((w1_sh, w1_s), (w2_sh, w2_s)):
+        e_n, groups = raw.shape
+        unpacked = _unshuffle_scale(packed, 1, e_n, groups)
+        assert torch.equal(unpacked.view(e_n, groups), raw.view(torch.uint8))
+
+
+def test_flymoe_config_roundtrip():
+    from aiter.ops.flydsl.flymoe import configs
+    from aiter.ops.flydsl.fused_moe_flymoe import (
+        MIN_TOKENS,
+        config_from_string,
+        config_to_string,
+    )
+
+    for inter_dim in (384, 768, 1536):
+        for tokens, cell in configs.load_table(inter_dim).items():
+            if tokens < MIN_TOKENS:
+                continue
+            text = config_to_string(cell)
+            assert "," not in text and " " not in text and "__" not in text
+            assert dict(config_from_string(text)) == configs.cfg_kwargs(cell)
+
+
+def test_flymoe_rejects_unsupported():
+    from aiter.fused_moe_registry import FusedMoeRequest
+    from aiter.ops.flydsl.fused_moe_flymoe import unsupported_reason
+
+    x, weights, ids, topk_weight = _problem(512, 768)
+    w1, w2, w1_s, w2_s = _aiter_weights(*weights)
+    base = dict(
+        hidden_states=x,
+        w1=w1,
+        w2=w2,
+        topk_weight=topk_weight,
+        topk_ids=ids,
+        activation=ActivationType.Swiglu,
+        quant_type=QuantType.per_1x32,
+        w1_scale=w1_s,
+        w2_scale=w2_s,
+    )
+    assert unsupported_reason(FusedMoeRequest(**base)) is None
+    for change in (
+        {"activation": ActivationType.Silu},
+        {"intermediate_pad": 128},
+        {"doweight_stage1": True},
+        {"expert_mask": torch.ones(EXPERTS, device="cuda")},
+        {"gate_mode": "interleave"},
+    ):
+        assert unsupported_reason(FusedMoeRequest(**{**base, **change})) is not None
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v", *os.sys.argv[1:]]))
