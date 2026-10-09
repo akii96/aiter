@@ -145,7 +145,7 @@ def _fused_shared_expert_topk(hidden, score, topk):
 
     Mirrors vLLM fused shared experts: expert E-1 is appended to every token
     with weight 1.0, so it is routed exactly once per token. Fused-combine
-    candidates (FlyMoE ``FC=1``) are exact only under this routing.
+    candidates (A4W4 compact ``FC=1``) are exact only under this routing.
     """
     expert = score.shape[-1]
     weights, ids = fused_topk(
@@ -532,7 +532,7 @@ class FmoeTuner(TunerCommon):
             help="Route topk-1 experts among the first E-1 and append the shared "
             "expert E-1 with weight 1.0 (vLLM fused shared experts), for the kernel "
             "and the reference. Also enabled by AITER_TUNE_FUSED_SHARED_EXPERT=1. "
-            "Required for fused-combine whole-graph candidates (FlyMoE FC=1).",
+            "Required for fused-combine whole-graph candidates (A4W4 compact FC=1).",
         )
         self.parser.add_argument(
             "--mxfp4-flydsl",

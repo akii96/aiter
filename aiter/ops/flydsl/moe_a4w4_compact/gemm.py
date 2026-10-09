@@ -35,6 +35,15 @@ NUM_CUS = 256
 OOB = 0x7FFFFFC0  # voffset sentinel: >= primitives.REC_CAP even with a 63 B chunk offset added
 
 
+def b_tile(stage, n, g, j):
+    """Natural n16 tile of B (AITER's shuffle_weight layout) read as tile j of 64-column
+    block g. Stage 1 (W13 = [gate; up]): gate tiles 2g, 2g+1 and up tiles n/32 + 2g, + 1,
+    so lane c holds gate and up of intermediate columns 32g + c and 32g + 16 + c."""
+    if stage == 2:
+        return g * 4 + j
+    return (j // 2) * (n // 32) + g * 2 + j % 2
+
+
 def _swz(row):
     """XOR (in 16 B units) on the logical K chunk of an A-tile LDS row (64 B rows):
     zero bank conflicts for the 16 B/lane operand reads (measured)."""
@@ -117,6 +126,7 @@ def build_gemm(
     KH = K // 2
     KG = K // 32
     INTER = N // 2
+    B_GSTEP = 2 if stage == 1 else 4  # natural tile step between adjacent 64-col blocks
 
     prefetch = pipe == "hybrid2"
     NSTG = max(3 if pipe in ("hybrid2", "il4") else 2, min(D, KS + 1))
@@ -317,18 +327,19 @@ def build_gemm(
                 return n_rows * (s * 64) if const_expr(HTA) else s * 64
 
             a_rd = l16 * 64 + ((lg * 16) ^ _swz(l16))
-            b_voff = []
-            for j in range_constexpr(4):
-                nt = nblk * (4 * WN) + wn * 4 + j
-                b_voff.append(nt * (KS * 1024) + lane * 16)
+            b_voff = [
+                b_tile(stage, N, nblk * WN + wn, j) * (KS * 1024) + lane * 16
+                for j in range_constexpr(4)
+            ]
             if const_expr(stage == 1):
-                # stage-1 B scales are K-step-major (layout.pack_w13)
+                # stage-1 B scales are K-step-major (layout.pack_scales)
                 bs_voff = (nblk * WN + wn) * 256 + lane * 4
                 BS_STEP = (N // 64) * 256
             else:
                 bs_voff = (nblk * WN + wn) * (KS * 256) + lane * 4
                 BS_STEP = 256
-            b4_voff = (nblk * (WN * TWN) + wave) * (KS * 1024) + lane * 16
+            # il4: wave w DMAs tile j = w of the CTA's 64-column blocks q = 0 .. 3
+            b4_voff = b_tile(stage, N, nblk * (WN * CG), wave) * (KS * 1024) + lane * 16
             # B-scale block stride: stage 1 is K-step-major (blocks of a step adjacent), stage 2
             # keeps each 64-column block's KS steps together.
             BSB = 256 if stage == 1 else KS * 256
@@ -428,7 +439,7 @@ def build_gemm(
                                 r_b,
                                 lds_base,
                                 wave * 1024 + (oB + q * NW * 1024),
-                                b4_voff + (q * NW) * (KS * 1024),
+                                b4_voff + (q * B_GSTEP) * (KS * 1024),
                                 soff=s * 1024,
                             )
                         )
@@ -793,9 +804,14 @@ def build_gemm(
             return st_out
 
         def _epi1(acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0):
-            """Stage-1 epilogue: SwiGLU-OAI, per-32 amax, e8m0 + fp4 requant, h stores."""
+            """Stage-1 epilogue: SwiGLU-OAI, per-32 amax, e8m0 + fp4 requant, h stores.
+            Tiles (4gi, 4gi+1) / (4gi+2, 4gi+3) are gate / up of columns (c, 16 + c) of a
+            32-column group; a lane-pair exchange makes each fp4 byte two adjacent columns
+            (byte hb of the group's 16)."""
             l16 = lane % 16
             lg = lane // 16
+            odd = (l16 & fx.Int32(1)) == fx.Int32(1)
+            hb = primitives.pair_col(l16) >> fx.Int32(1)
             r_o = primitives.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
             if const_expr(HTW):
                 gpu.barrier()  # all waves done with the LDS ring
@@ -901,22 +917,26 @@ def build_gemm(
                         rb, gi, hs = hv[k]
                         bexp = e8m0(ms[k], True)
                         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+                        # bytes 0-1: columns 4lg .. +3, bytes 2-3: 16 + 4lg .. +3
                         pk = primitives.raw(fx.Int32(0))
                         for i in range_constexpr(4):
                             pk = rocdl.cvt_scalef32_pk_fp4_f32(
                                 T.i32,
                                 pk,
-                                primitives.raw(hs[i][0]),
-                                primitives.raw(hs[i][1]),
+                                primitives.raw(hs[2 * (i % 2)][i // 2]),
+                                primitives.raw(hs[2 * (i % 2) + 1][i // 2]),
                                 primitives.raw(qs),
                                 i,
                             )
+                        pk = fx.Int32(pk)
                         rl = fx.Int32(rb * 16) + l16
+                        ho = sw + rl * (CG * 16) + (gi * 16) + lg * 2
+                        primitives.lds_store(pk.to(fx.Int16), lds_base, ho, align=2)
                         primitives.lds_store(
-                            fx.Int32(pk),
+                            pk.shrui(fx.Int32(16)).to(fx.Int16),
                             lds_base,
-                            sw + rl * (CG * 16) + (gi * 16) + lg * 4,
-                            align=4,
+                            ho + 8,
+                            align=2,
                         )
                         bx[(rb, gi)] = bexp
                     for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
@@ -969,6 +989,7 @@ def build_gemm(
                         rb, gi, v, h0, h1 = ch[k]
                         bexp = e8m0(ms[k], True)
                         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+                        h0, h1 = primitives.pair_cols_f32(h0, h1, odd)
                         pk = rocdl.cvt_scalef32_pk_fp4_f32(
                             T.i32,
                             primitives.raw(fx.Int32(0)),
@@ -981,7 +1002,7 @@ def build_gemm(
                         primitives.lds_store(
                             fx.Int32(pk).to(fx.Int8),
                             lds_base,
-                            sw + rl * (CG * 16) + (gi * 16) + l16,
+                            sw + rl * (CG * 16) + (gi * 16) + hb,
                             align=1,
                         )
                         bx[(rb, v, gi)] = bexp
@@ -1020,6 +1041,7 @@ def build_gemm(
                             m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
                     bexp = e8m0(m, False)
                     qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+                    hs = primitives.pair_cols_f32(hs[0], hs[1], odd)
                     pk = rocdl.cvt_scalef32_pk_fp4_f32(
                         T.i32,
                         primitives.raw(fx.Int32(0)),
@@ -1037,13 +1059,13 @@ def build_gemm(
                         primitives.lds_store(
                             fx.Int32(pk).to(fx.Int8),
                             lds_base,
-                            hwb + rl * 16 + l16,
+                            hwb + rl * 16 + hb,
                             align=1,
                         )
                         hs_off = ((g // 4) * n_rows + grow) * 4 + (g % 4)
                     else:
                         off = valid.select(
-                            grow * (INTER // 2) + g * 16 + l16, fx.Int32(0x7FFFFFF0)
+                            grow * (INTER // 2) + g * 16 + hb, fx.Int32(0x7FFFFFF0)
                         )
                         primitives.bstore(fx.Int32(pk).to(fx.Int8), r_o, off)
                         hs_off = grow * (INTER // 32) + g
@@ -1100,10 +1122,10 @@ def build_gemm(
         def _epi2_il4(
             acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0
         ):
-            """il4 stage-2 epilogue: C^T lane = row l16, output columns 64gi + 32p + 8lg .. +7
-            of the wave's 128, through the private LDS row buffer: 16 B chunk 8gi + 4p + lg
-            of the row at chunk ^ (row & 7) (8 consecutive rows of one write hit distinct
-            banks; the 16 B row reads stay conflict-free)."""
+            """il4 stage-2 epilogue: C^T lane = row l16, output columns 64gi + 32p + 16q + 4lg
+            .. +3 of the wave's 128 (tile 4gi + 2p + q), through the private LDS row buffer:
+            16 B chunk x of the row at x ^ (row & 7) (8 consecutive rows of one write hit
+            distinct banks; the 16 B row reads stay conflict-free)."""
             l16 = lane % 16
             lg = lane // 16
             r_w = primitives.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
@@ -1138,18 +1160,24 @@ def build_gemm(
                         v8 = fx.Vector.from_elements(
                             [
                                 fx.Float32(x[v])
-                                for v in range_constexpr(4)
                                 for x in (ve_, vo_)
+                                for v in range_constexpr(4)
                             ],
                             fx.Float32,
                         )
-                        c = (fx.Int32(gi * 8 + p * 4) + lg) ^ (l16 & 7)
-                        primitives.lds_store(
-                            (v8 * wv8).to(fx.BFloat16),
-                            lds_base,
-                            sw + l16 * 256 + c * 16,
-                            align=16,
-                        )
+                        b8 = fx.Vector((v8 * wv8).to(fx.BFloat16)).bitcast(fx.Int32)
+                        # columns 4lg .. +3 of tile 2p, then of tile 2p + 1 (16 columns on)
+                        for q in range_constexpr(2):
+                            c = (fx.Int32(gi * 8 + p * 4 + q * 2) + lg // 2) ^ (l16 & 7)
+                            primitives.lds_store(
+                                fx.Vector.from_elements(
+                                    [fx.Int32(b8[2 * q]), fx.Int32(b8[2 * q + 1])],
+                                    fx.Int32,
+                                ),
+                                lds_base,
+                                sw + l16 * 256 + c * 16 + (lg % 2) * 8,
+                                align=8,
+                            )
                 for it in range_constexpr(4):
                     rl = fx.Int32(it * 4) + lane // 16
                     c = lane % 16
@@ -1168,11 +1196,22 @@ def build_gemm(
                 op()
 
         def _epi2(acc, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0, r_tok):
-            """Stage-2 epilogue (async / hybrid pipes): W2 columns are even/odd interleaved
-            per 32, so tiles (0,1) and (2,3) give each lane output columns (gb+2c, gb+2c+1).
-            """
+            """Stage-2 epilogue (async / hybrid pipes): tile pair p gives lane c output
+            columns (32p + c, 32p + 16 + c); a lane-pair exchange of the packed bf16x2 makes
+            them two adjacent columns 32p + pair_col(c) (one 4 B store)."""
             l16 = lane % 16
             lg = lane // 16
+            psel = primitives.pair_sel((l16 & fx.Int32(1)) == fx.Int32(1))
+            pcol = primitives.pair_col(l16)
+
+            def pair_pk(a, b, w):
+                pk = fx.Vector.from_elements(
+                    [fx.Float32(a) * w, fx.Float32(b) * w], fx.Float32
+                ).to(fx.BFloat16)
+                return primitives.pair_cols_bf16x2(
+                    fx.Vector(pk).bitcast(fx.Int32)[0], psel
+                )
+
             r_w = primitives.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
             # 64-bit per-tile base (no 32-bit offset overflow for any R). The record count
             # spans all remaining rows: a tile-sized count measured ~30% slower.
@@ -1180,7 +1219,7 @@ def build_gemm(
                 fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
                 fx.Int64(n_rows - row_start) * fx.Int64(N * 2),
             )
-            col0 = nblk * BN + wn * 64 + l16 * 2
+            col0 = nblk * BN + wn * 64 + pcol
             if const_expr(S2W):
                 gpu.barrier()  # every wave is done reading the LDS ring
                 wb = wave * (ROWS_W * 128)
@@ -1194,18 +1233,12 @@ def build_gemm(
                         rl = fx.Int32(rb * 16) + lg * 4 + v  # wave-local row
                         w = fx.Float32(wv[v])
                         for p in range_constexpr(2):
-                            pk = fx.Vector.from_elements(
-                                [
-                                    fx.Float32(vs[2 * p][v]) * w,
-                                    fx.Float32(vs[2 * p + 1][v]) * w,
-                                ],
-                                fx.Float32,
-                            ).to(fx.BFloat16)
-                            ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
+                            pk = pair_pk(vs[2 * p][v], vs[2 * p + 1][v], w)
+                            ch = (fx.Int32(p * 4) + pcol // 8) ^ (rl & 7)
                             primitives.lds_store(
                                 pk,
                                 lds_base,
-                                wb + rl * 128 + ch * 16 + (l16 % 4) * 4,
+                                wb + rl * 128 + ch * 16 + (pcol % 8) * 2,
                                 align=4,
                             )
                 cm_o = primitives.NT if const_expr(S2NT) else 0
@@ -1308,12 +1341,8 @@ def build_gemm(
                     grow = row_start + row
                     w = fx.Float32(primitives.bload(r_w, grow * 4, T.f32))
                     for p in range_constexpr(2):
-                        ve = fx.Float32(vs[2 * p][v]) * w
-                        vo = fx.Float32(vs[2 * p + 1][v]) * w
+                        pk = pair_pk(vs[2 * p][v], vs[2 * p + 1][v], w)
                         col = col0 + p * 32
-                        pk = fx.Vector.from_elements([ve, vo], fx.Float32).to(
-                            fx.BFloat16
-                        )
                         off = valid.select((row * N + col) * 2, fx.Int32(0x7FFFFF00))
                         primitives.bstore(pk, r_o, off)
 

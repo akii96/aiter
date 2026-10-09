@@ -5,10 +5,10 @@
 Tuned rows select it with ``kernelName1 = impl__flydsl_a4w4_compact__<cfg>``; ``<cfg>`` is a
 FlyDSL A4W4 compact MoE tile config serialized by :func:`config_to_string`. The backend reads the
 same preshuffled weights as the other per_1x32 fp4 paths (``shuffle_weight``
-with layout (16, 16) and ``e8m0_shuffle`` scales, gate/up SEPARATED) and repacks
-them once per weight tensor into the FlyDSL A4W4 compact MoE MFMA-native layout. The repacked
-copy lives as long as the source weights, so the expert weights are held twice
-until the kernels read the AITER layout directly.
+with layout (16, 16) and ``e8m0_shuffle`` scales, gate/up SEPARATED). The
+kernels read the fp4 weight bytes in place; only the e8m0 scales (~6% of the
+weight bytes) are repacked, once per weight tensor, and cached as long as the
+source weights live.
 
 Rows are compact (no block_m padding), the activation quant and the expert sort
 run on device, and any ``inter_dim`` that is a multiple of 128 runs natively
@@ -27,6 +27,7 @@ from aiter.fused_moe_registry import FusedMoeRequest
 from aiter.jit.utils.chip_info import get_gfx
 
 from .moe_a4w4_compact import configs as _configs
+from .moe_a4w4_compact import layout as _layout
 from .moe_a4w4_compact import moe as _moe
 
 _STAGE_KEYS = ("BM", "D", "NW", "WM", "pipe", "diag", "PERS", "EF", "MV")
@@ -121,13 +122,6 @@ def tune_space(inter_dim: int) -> list[str]:
     return seen
 
 
-def _unshuffle_weight(w: torch.Tensor) -> torch.Tensor:
-    """Inverse of ``shuffle_weight(w, layout=(16, 16))`` for fp4x2 [E, N, K/2]."""
-    e, n, kh = w.shape
-    w = w.view(torch.uint8).view(e, n // 16, kh // 32, 2, 16, 16)
-    return w.permute(0, 1, 4, 2, 3, 5).reshape(e, n, kh)
-
-
 def _unshuffle_scale(s: torch.Tensor, e: int, n: int, groups: int) -> torch.Tensor:
     """Inverse of ``e8m0_shuffle`` for an [e * n, groups] e8m0 scale."""
     s = s.view(torch.uint8).reshape(-1)
@@ -137,6 +131,7 @@ def _unshuffle_scale(s: torch.Tensor, e: int, n: int, groups: int) -> torch.Tens
     return s.reshape(rows, cols)[: e * n, :groups].reshape(e, n, groups)
 
 
+# Repacked scales only; the entries hold no reference to the weights.
 _packed: dict[tuple, tuple] = {}
 # One workspace, shared by every layer of a forward step (same shape and
 # config, run back to back on one stream); only the output is per call. It is
@@ -145,27 +140,20 @@ _runs: dict[tuple, _moe.MoERun] = {}
 
 
 def _weights(w1, w2, w1_scale, w2_scale) -> _moe.MoEWeights:
-    """Repacked weights, cached for the lifetime of the source tensors."""
+    """The preshuffled fp4 weights in place, plus their repacked scales (cached for
+    the lifetime of the source tensors)."""
     sources = (w1, w2, w1_scale, w2_scale)
     key = tuple((t.data_ptr(), t.shape) for t in sources)
     hit = _packed.get(key)
-    if hit is not None and all(r() is t for r, t in zip(hit[0], sources)):
-        return hit[1]
-    e, n13, kh = w1.shape
-    inter, hidden = n13 // 2, kh * 2
-    w13 = _unshuffle_weight(w1)
-    s13 = _unshuffle_scale(w1_scale, e, n13, hidden // 32)
-    packed = _moe.MoEWeights(
-        w13[:, :inter],
-        s13[:, :inter],
-        w13[:, inter:],
-        s13[:, inter:],
-        _unshuffle_weight(w2),
-        _unshuffle_scale(w2_scale, e, hidden, inter // 32),
-    )
-    _packed[key] = (tuple(weakref.ref(t) for t in sources), packed)
-    weakref.finalize(w1, _packed.pop, key, None)
-    return packed
+    if hit is None or not all(r() is t for r, t in zip(hit[0], sources)):
+        e, n13, kh = w1.shape
+        inter, hidden = n13 // 2, kh * 2
+        bs1 = _layout.pack_scales(1, _unshuffle_scale(w1_scale, e, n13, hidden // 32))
+        bs2 = _layout.pack_scales(2, _unshuffle_scale(w2_scale, e, hidden, inter // 32))
+        hit = (tuple(weakref.ref(t) for t in sources), bs1, bs2)
+        _packed[key] = hit
+        weakref.finalize(w1, _packed.pop, key, None)
+    return _moe.MoEWeights(w1, w2, hit[1], hit[2])
 
 
 def unsupported_reason(request: FusedMoeRequest) -> str | None:

@@ -11,13 +11,30 @@ from . import combine, gemm, layout, prologue
 
 
 class MoEWeights:
-    """Packed MiniMax-M3 expert weights for one TP shard (E experts incl. shared)."""
+    """MiniMax-M3 expert weights for one TP shard (E experts incl. shared).
 
-    def __init__(self, w_gate, s_gate, w_up, s_up, w_down, s_down):
-        self.E, self.I, hh = w_gate.shape
-        self.H = hh * 2
-        self.b1, self.bs1 = layout.pack_w13(w_gate, s_gate, w_up, s_up)
-        self.b2, self.bs2 = layout.pack_w2(w_down, s_down)
+    w13 [E, 2I, H/2] ([gate; up]) and w2 [E, H, I/2]: fp4x2 in AITER's
+    ``shuffle_weight(w, layout=(16, 16))`` layout, read in place (no copy).
+    bs1 / bs2: packed e8m0 scales (``layout.pack_scales`` or :meth:`build`)."""
+
+    def __init__(self, w13, w2, bs1, bs2):
+        self.E, n13, hh = w13.shape
+        self.I, self.H = n13 // 2, hh * 2
+        assert w13.is_contiguous() and w2.is_contiguous()
+        assert w2.shape == (self.E, self.H, self.I // 2), (w13.shape, w2.shape)
+        assert bs1.numel() == self.E * n13 * (self.H // 32)
+        assert bs2.numel() == self.E * self.H * (self.I // 32)
+        self.b1, self.b2, self.bs1, self.bs2 = w13, w2, bs1, bs2
+
+    @classmethod
+    def build(cls, w13, s13, w2, s2):
+        """s13 [E, 2I, H/32], s2 [E, H, I/32]: unshuffled (natural row) e8m0 scales."""
+        return cls(
+            w13,
+            w2,
+            layout.pack_scales(1, s13.view(torch.uint8)),
+            layout.pack_scales(2, s2.view(torch.uint8)),
+        )
 
 
 class MoERun:

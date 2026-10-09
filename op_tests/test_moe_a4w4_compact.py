@@ -314,15 +314,20 @@ def test_moe_a4w4_compact_checkpoint_weights(tuned_row, inter_dim):
 
 
 def test_moe_a4w4_compact_layout_roundtrip():
-    from aiter.ops.flydsl.fused_moe_a4w4_compact import (
-        _unshuffle_scale,
-        _unshuffle_weight,
-    )
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import _unshuffle_scale, _weights
 
     _, (w1_q, w1_s, w2_q, w2_s), _, _ = _problem(1, 384)
     w1, w2, w1_sh, w2_sh = _aiter_weights(w1_q, w1_s, w2_q, w2_s)
-    assert torch.equal(_unshuffle_weight(w1), w1_q.view(torch.uint8))
-    assert torch.equal(_unshuffle_weight(w2), w2_q.view(torch.uint8))
+    for shuffled, raw in ((w1, w1_q), (w2, w2_q)):
+        # B atom: [E][N/16][K/128][lane][16 B], lane l = row l % 16, bytes 16 (l // 16)
+        e, n, kh = raw.shape
+        atoms = raw.view(torch.uint8).view(e, n // 16, 16, kh // 64, 4, 16)
+        atoms = atoms.permute(0, 1, 3, 4, 2, 5).reshape(e, n, kh)
+        assert torch.equal(shuffled.view(torch.uint8), atoms)
+    # the kernels read the weights in place: no weight copy
+    weights = _weights(w1, w2, w1_sh, w2_sh)
+    assert weights.b1.data_ptr() == w1.data_ptr()
+    assert weights.b2.data_ptr() == w2.data_ptr()
     for packed, raw in ((w1_sh, w1_s), (w2_sh, w2_s)):
         e_n, groups = raw.shape
         unpacked = _unshuffle_scale(packed, 1, e_n, groups)

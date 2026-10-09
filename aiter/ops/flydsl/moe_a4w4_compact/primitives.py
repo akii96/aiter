@@ -304,6 +304,37 @@ def dpp_i32(src, ctrl, row_mask=0xF, bank_mask=0xF, bound_ctrl=True):
     )
 
 
+def pair_cols_f32(a, b, odd):
+    """Lane c of an n16 tile pair holds (a, b) = columns (c, 16 + c). Returns (lo, hi) =
+    columns (c, c + 1) on even lanes and (15 + c, 16 + c) on odd lanes: adjacent natural
+    columns, via one lane-pair exchange (DPP quad_perm [1, 0, 3, 2])."""
+    x = odd.select(fx.Float32(a), fx.Float32(b))
+    y = dpp_i32(x.bitcast(fx.Int32), 0xB1).bitcast(fx.Float32)
+    return odd.select(y, fx.Float32(a)), odd.select(fx.Float32(b), y)
+
+
+def pair_cols_bf16x2(p, sel):
+    """pair_cols_f32 on a packed bf16x2 (lo = column c, hi = 16 + c): DPP + v_perm_b32.
+    sel = pair_sel(odd)."""
+    p = fx.Int32(p)
+    q = dpp_i32(p, 0xB1)
+    return fx.Int32(
+        llvm.call_intrinsic(
+            T.i32, "llvm.amdgcn.perm", [raw(q), raw(p), raw(fx.Int32(sel))], [], []
+        )
+    )
+
+
+def pair_sel(odd):
+    """v_perm_b32 selector for pair_cols_bf16x2: even (p.lo, q.lo), odd (q.hi, p.hi)."""
+    return odd.select(fx.Int32(0x03020706), fx.Int32(0x05040100))
+
+
+def pair_col(c):
+    """First natural column (within a 32-column tile pair) of lane c's pair_cols result."""
+    return (c & fx.Int32(14)) + ((c & fx.Int32(1)) << fx.Int32(4))
+
+
 def row16_max_nonneg_f32(x):
     """Max over each 16-lane DPP row for non-negative floats (int order == float order).
 
