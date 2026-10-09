@@ -1,6 +1,6 @@
-# FlyMoE findings: MiniMax-M3-MXFP4 prefill MoE on MI355X
+# FlyDSL A4W4 compact MoE findings: MiniMax-M3-MXFP4 prefill MoE on MI355X
 
-Measurements behind `docs/flymoe.md` and the tuned rows in
+Measurements behind `docs/moe_a4w4_compact.md` and the tuned rows in
 `aiter/configs/model_configs/minimax_m3_fp4_tuned_fmoe.csv`. All runs were on one MI355X node
 (8x gfx950, 256 CUs each) with image `vllm/vllm-openai-rocm:nightly-bb87d227d4b964abb2a966cdf9194f3d376d9bbe`
 (vLLM 0.31.1rc1.dev1+gbb87d227d, AITER 0.1.24.post1 = upstream `c8325e00c`) and upstream AITER
@@ -58,7 +58,7 @@ Same inputs and weights, fused shared expert routing (E-1 once per token), warm 
 host run-ahead, median of 7 round-robin repetitions, null arm within 1%. "Main" is main's tuned
 row, or the default heuristic where it has none.
 
-| inter_dim | Tokens | Main (µs) | FlyMoE (µs) | Main / FlyMoE | Main row |
+| inter_dim | Tokens | Main (µs) | Compact (µs) | Main / Compact | Main row |
 |---:|---:|---:|---:|---:|---|
 | 384 | 512 | 115.7 | 132.8 | 0.87 | tuned (kept) |
 | 384 | 1024 | 140.6 | 156.4 | 0.90 | tuned (kept) |
@@ -82,22 +82,22 @@ row, or the default heuristic where it has none.
 | 1536 | 16384 | 2361.7 | 1842.8 | 1.28 | default |
 | 1536 | 32768 | 4479.0 | 3292.1 | 1.36 | default |
 
-Rows marked "kept" stay on the existing kernels; FlyMoE rows were adopted only at ≥ 1.02x.
+Rows marked "kept" stay on the existing kernels; FlyDSL A4W4 compact MoE rows were adopted only at ≥ 1.02x.
 The 768 and 1536 rows at 8192–32768 tokens use the fused combine; with
-`AITER_FLYMOE_FUSED_SHARED_EXPERT=0` the same rows measure 1.05–1.11x (768) and 1.23–1.32x
+`AITER_MOE_A4W4_COMPACT_FUSED_SHARED_EXPERT=0` the same rows measure 1.05–1.11x (768) and 1.23–1.32x
 (1536).
 
-Against the 512-padded default path vLLM uses at TP8 today (image AITER), FlyMoE at 384 is
+Against the 512-padded default path vLLM uses at TP8 today (image AITER), FlyDSL A4W4 compact MoE at 384 is
 0.65–0.80x the time at 2k–32k tokens (2545 → 1655 µs at 32768).
 
 **Integration overhead.** The registry path costs between −0.8% and +3.4% of GPU time versus
-the standalone FlyMoE package on the same configs (host time about 100 µs per call versus 50 µs
+the standalone compact MoE package on the same configs (host time about 100 µs per call versus 50 µs
 standalone).
 
 ## 4. End to end
 
 vLLM with the OOB serving flags, MiniMax-M3-MXFP4, `VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=1`,
-`AITER_FLYMOE_FUSED_SHARED_EXPERT=1`. Only the AITER install differs between arms.
+`AITER_MOE_A4W4_COMPACT_FUSED_SHARED_EXPERT=1`. Only the AITER install differs between arms.
 
 **TP4** (inter_dim 768):
 
@@ -107,7 +107,7 @@ vLLM with the OOB serving flags, MiniMax-M3-MXFP4, `VLLM_ROCM_USE_AITER_FUSION_S
 | 128000/1024 c4 | 282.6 → 302.0 | 3265 → 2887 | 10.09 → 9.58 |
 | 8192/1024 c128 | 2939.0 → 3055.3 | 3254 → 3059 | 37.20 → 35.88 |
 
-**TP8** (stock: 384 padded to 512, image AITER; FlyMoE: native 384 with the vLLM change below):
+**TP8** (stock: 384 padded to 512, image AITER; FlyDSL A4W4 compact MoE: native 384 with the vLLM change below):
 
 | Row | Output tok/s | Mean TTFT (ms) | Mean TPOT (ms) |
 |---|---|---|---|
@@ -120,20 +120,20 @@ rejected; the numbers cover the ten that ran. The TP8 c4 TPOT regression is deco
 bf16-activation decode (< 256 tokens) has no `minimax_m3_a16w4` rows and runs the default
 kernel. Tuning those rows at 384 is required before vLLM drops the padding.
 
-The FlyMoE arm had 148 GiB of KV cache per GPU at TP4 against 202 GiB for stock, because the
+The compact arm had 148 GiB of KV cache per GPU at TP4 against 202 GiB for stock, because the
 repacked weights are kept alongside the originals.
 
 ## 5. Accuracy
 
-- Every shipped FlyMoE config: relative L2 2.4e-3 against a torch reference using AITER's MX
+- Every shipped FlyDSL A4W4 compact MoE config: relative L2 2.4e-3 against a torch reference using AITER's MX
   quantization, the bf16 output floor and equal to the existing tuned rows.
 - Real checkpoint (layer 30, TP rank-0 shards at 384 / 768 / 1536, real router, shared expert
-  as 128): 2.34e-3 to 2.38e-3 for every config (`test_flymoe_checkpoint_weights`).
+  as 128): 2.34e-3 to 2.38e-3 for every config (`test_moe_a4w4_compact_checkpoint_weights`).
 - AITER's runtime MX quant, in both the image and main, uses the round-up e8m0 rule
   (`kDefaultMxScaleRoundMode = RoundUp`); the checkpoint was calibrated with Quark's `even`
   rule. On real layer-30 weights, `even` gives about 6% less activation quantization error
-  (relative L2 against unquantized activations 0.204–0.210 vs 0.218–0.224). FlyMoE defaults
-  to round-up to match AITER; `AITER_FLYMOE_SCALE_RULE=even` selects the checkpoint rule.
+  (relative L2 against unquantized activations 0.204–0.210 vs 0.218–0.224). FlyDSL A4W4 compact MoE defaults
+  to round-up to match AITER; `AITER_MOE_A4W4_COMPACT_SCALE_RULE=even` selects the checkpoint rule.
 - AITER's default-heuristic path (512, 1536) shows 0.15–0.19 against a fp32-intermediate
   reference. That is the reference, not a bug: those kernels round the intermediate to bf16
   before requantizing. A matching reference gives 3e-3.
@@ -148,13 +148,13 @@ The prototype used for the TP8 numbers gated it on an environment variable:
 -            128 if is_situ_or_silu and (aiter_uses_128 or triton_uses_128) else 256
 +            128
 +            if (is_situ_or_silu and (aiter_uses_128 or triton_uses_128))
-+            or envs_flymoe
++            or envs_moe_a4w4_compact
 +            else 256
 ```
 
 ## 7. Not done
 
-- FlyMoE kernels still read their own weight layout, so the backend keeps a repacked copy of
+- FlyDSL A4W4 compact MoE kernels still read their own weight layout, so the backend keeps a repacked copy of
   the expert weights (about 51 GiB per GPU at TP4 for MiniMax-M3). The fp4 weight bytes already
   match `shuffle_weight(16, 16)`; reading the `e8m0_shuffle` scale layout and the natural
   gate/up and output row order directly removes the copy.

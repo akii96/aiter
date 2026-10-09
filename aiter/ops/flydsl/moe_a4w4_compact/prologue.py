@@ -21,13 +21,16 @@ from flydsl.compiler.ast_rewriter import ASTRewriter
 from flydsl.expr import const_expr, gpu, range_constexpr
 from flydsl.expr.typing import T
 
-from . import hw
+from . import primitives
 
 
 def _lds_atomic_add(base_i32, byte_off, val):
-    ptr = hw.lds_llvm_ptr(base_i32, byte_off)
+    ptr = primitives.lds_llvm_ptr(base_i32, byte_off)
     return llvm.AtomicRMWOp(
-        llvm.AtomicBinOp.add, ptr, hw.raw(fx.Int32(val)), llvm.AtomicOrdering.monotonic
+        llvm.AtomicBinOp.add,
+        ptr,
+        primitives.raw(fx.Int32(val)),
+        llvm.AtomicOrdering.monotonic,
     ).result
 
 
@@ -82,9 +85,9 @@ def build_plan_par(
         raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
 
     kname = (
-        f"flymoe_plan_hist_e{E}"
+        f"moe_a4w4_compact_plan_hist_e{E}"
         + (f"_q{qH}{'se' if qeven else ''}" if qH else "")
-        + f"_{hw.SRC_HASH}"
+        + f"_{primitives.SRC_HASH}"
     )
 
     @flyc.kernel(name=kname, known_block_size=[TH, 1, 1])
@@ -106,10 +109,10 @@ def build_plan_par(
             n_hist = (n_rows + (CHUNK - 1)) // CHUNK
             if c >= n_hist:
                 gid = (c - n_hist) * TH + tid
-                hw.quant_group(
-                    hw.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64)),
-                    hw.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16)),
-                    hw.rsrc(s_ptr, fx.Int64(n_groups)),
+                primitives.quant_group(
+                    primitives.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64)),
+                    primitives.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16)),
+                    primitives.rsrc(s_ptr, fx.Int64(n_groups)),
                     gid,
                     qeven,
                     ok=gid < n_groups,
@@ -123,29 +126,29 @@ def build_plan_par(
         base = fx.Int32(
             fx.ptrtoint(fx.SharedAllocator().allocate(HistStorage).peek().raw.ptr)
         )
-        r_ids = hw.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
-        r_cb = hw.rsrc(cbase_ptr)
+        r_ids = primitives.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_cb = primitives.rsrc(cbase_ptr)
         if tid < fx.Int32(E):
-            hw.lds_store(fx.Int32(0), base, tid * 4, align=4)
+            primitives.lds_store(fx.Int32(0), base, tid * 4, align=4)
         gpu.barrier()
         for j in range_constexpr(CHUNK // TH):
             i = c * CHUNK + j * TH + tid
             if i < n_rows:
-                e = _clamp_e(fx.Int32(hw.bload(r_ids, i * 4, T.i32)), E)
+                e = _clamp_e(fx.Int32(primitives.bload(r_ids, i * 4, T.i32)), E)
                 _lds_atomic_add(base, e * 4, 1)
         gpu.barrier()
         if tid < fx.Int32(E):
-            cnt = fx.Int32(hw.lds_load(base, tid * 4, T.i32, align=4))
+            cnt = fx.Int32(primitives.lds_load(base, tid * 4, T.i32, align=4))
             prev = fx.Int32(
                 llvm.AtomicRMWOp(
                     llvm.AtomicBinOp.add,
-                    hw.raw(_global_ptr(gcount_ptr, tid * 4)),
-                    hw.raw(cnt),
+                    primitives.raw(_global_ptr(gcount_ptr, tid * 4)),
+                    primitives.raw(cnt),
                     llvm.AtomicOrdering.monotonic,
                     syncscope="agent",
                 ).result
             )
-            hw.bstore(prev, r_cb, (c * E + tid) * 4)
+            primitives.bstore(prev, r_cb, (c * E + tid) * 4)
 
     _hist_body = ASTRewriter.transform(_hist_body)
 
@@ -161,7 +164,7 @@ def build_plan_par(
         keep = (e < fx.Int32(E - 1)) if parent == -2 else (e == fx.Int32(E - 1))
         return keep.select(n, fx.Int32(0))
 
-    ptag = f"flymoe_plan_prefix_e{E}_{spec_tag(bms)}_{hw.SRC_HASH}"
+    ptag = f"moe_a4w4_compact_plan_prefix_e{E}_{spec_tag(bms)}_{primitives.SRC_HASH}"
     PT = 256
     NV = NBM + 1  # scanned vectors: row counts + one tile count per spec
     SCAN_B = (
@@ -189,14 +192,14 @@ def build_plan_par(
         lb = fx.Int32(
             fx.ptrtoint(fx.SharedAllocator().allocate(PrefixStorage).peek().raw.ptr)
         )
-        r_gc = hw.rsrc(gcount_ptr)
-        r_offs = hw.rsrc(offs_ptr)
-        r_tiles = hw.rsrc(tiles_ptr)
-        r_nt = hw.rsrc(ntiles_ptr)
+        r_gc = primitives.rsrc(gcount_ptr)
+        r_offs = primitives.rsrc(offs_ptr)
+        r_tiles = primitives.rsrc(tiles_ptr)
+        r_nt = primitives.rsrc(ntiles_ptr)
         valid = tid < fx.Int32(E)
         zero = fx.Int32(0)
         cnt = valid.select(
-            fx.Int32(hw.bload(r_gc, valid.select(tid, zero) * 4, T.i32)), zero
+            fx.Int32(primitives.bload(r_gc, valid.select(tid, zero) * 4, T.i32)), zero
         )
         own = [cnt] + [
             valid.select(_nt(cnt, *specs[b], tid), zero) for b in range_constexpr(NBM)
@@ -206,31 +209,35 @@ def build_plan_par(
         for step in range_constexpr((PT - 1).bit_length()):
             d, buf = 1 << step, step % 2
             for i in range_constexpr(NV):
-                hw.lds_store(inc[i], lb, buf * SCAN_B + (i * PT) * 4 + tid * 4, align=4)
+                primitives.lds_store(
+                    inc[i], lb, buf * SCAN_B + (i * PT) * 4 + tid * 4, align=4
+                )
             gpu.barrier()
             src = fx.max(tid - d, zero)
             for i in range_constexpr(NV):
                 o = fx.Int32(
-                    hw.lds_load(
+                    primitives.lds_load(
                         lb, buf * SCAN_B + (i * PT) * 4 + src * 4, T.i32, align=4
                     )
                 )
                 inc[i] = inc[i] + (tid >= fx.Int32(d)).select(o, zero)
         off = inc[0] - own[0]
         if valid:
-            hw.bstore(off, r_offs, tid * 4)
-            hw.lds_store(cnt, lb, C_OFF + tid * 4, align=4)
-            hw.lds_store(off, lb, O_OFF + tid * 4, align=4)
+            primitives.bstore(off, r_offs, tid * 4)
+            primitives.lds_store(cnt, lb, C_OFF + tid * 4, align=4)
+            primitives.lds_store(off, lb, O_OFF + tid * 4, align=4)
             for b in range_constexpr(NBM):
-                hw.lds_store(
+                primitives.lds_store(
                     inc[b + 1] - own[b + 1],
                     lb,
                     X_OFF + (b * (E + 1)) * 4 + tid * 4,
                     align=4,
                 )
                 if tid == fx.Int32(E - 1):
-                    hw.lds_store(inc[b + 1], lb, X_OFF + (b * (E + 1) + E) * 4, align=4)
-                    hw.bstore(inc[b + 1], r_nt, b * 4)
+                    primitives.lds_store(
+                        inc[b + 1], lb, X_OFF + (b * (E + 1) + E) * 4, align=4
+                    )
+                    primitives.bstore(inc[b + 1], r_nt, b * 4)
         gpu.barrier()
         # Tile entries (expert, first row, rows, 0), spread over all threads: tile j of spec b
         # belongs to the expert e with X[e] <= j < X[e + 1] (binary search; X is monotone).
@@ -238,33 +245,36 @@ def build_plan_par(
             bm = specs[b][0]
             xb = X_OFF + (b * (E + 1)) * 4
             tb = max_tiles0 * b  # spec b's tile list starts at b * stride
-            ntot = fx.Int32(hw.lds_load(lb, xb + E * 4, T.i32, align=4))
+            ntot = fx.Int32(primitives.lds_load(lb, xb + E * 4, T.i32, align=4))
             for j in range(tid, ntot, PT):
                 jj = fx.Int32(j)
                 lo, hi = zero, fx.Int32(E)
                 for _ in range_constexpr(max(1, (E - 1).bit_length())):
                     mid = (lo + hi) // 2
-                    le = fx.Int32(hw.lds_load(lb, xb + mid * 4, T.i32, align=4)) <= jj
+                    le = (
+                        fx.Int32(primitives.lds_load(lb, xb + mid * 4, T.i32, align=4))
+                        <= jj
+                    )
                     lo = le.select(mid, lo)
                     hi = le.select(hi, mid)
                 e = lo
-                mi = jj - fx.Int32(hw.lds_load(lb, xb + e * 4, T.i32, align=4))
-                ce = fx.Int32(hw.lds_load(lb, C_OFF + e * 4, T.i32, align=4))
-                oe = fx.Int32(hw.lds_load(lb, O_OFF + e * 4, T.i32, align=4))
+                mi = jj - fx.Int32(primitives.lds_load(lb, xb + e * 4, T.i32, align=4))
+                ce = fx.Int32(primitives.lds_load(lb, C_OFF + e * 4, T.i32, align=4))
+                oe = fx.Int32(primitives.lds_load(lb, O_OFF + e * 4, T.i32, align=4))
                 nr = fx.min(ce - mi * bm, fx.Int32(bm))
                 v = fx.Vector.from_elements([e, oe + mi * bm, nr, zero], fx.Int32)
-                hw.bstore(v, r_tiles, (tb + jj) * 16)
+                primitives.bstore(v, r_tiles, (tb + jj) * 16)
         gpu.barrier()
         # Every thread has read every count above; re-zero here (single CTA, same launch
         # that consumed them) so an aborted later launch cannot leave gcount dirty.
         if tid < fx.Int32(E):
-            hw.bstore(fx.Int32(0), r_gc, tid * 4)
+            primitives.bstore(fx.Int32(0), r_gc, tid * 4)
 
     @fx.struct
     class ScatStorage:
         raw: fx.Array[fx.Uint8, ((2 * E * 4 + 15) // 16) * 16, 16]
 
-    sname = f"flymoe_plan_scatter_e{E}_k{k}{'_sl' if shared_last else ''}_{hw.SRC_HASH}"
+    sname = f"moe_a4w4_compact_plan_scatter_e{E}_k{k}{'_sl' if shared_last else ''}_{primitives.SRC_HASH}"
 
     @flyc.kernel(name=sname, known_block_size=[TH, 1, 1])
     def k_scatter(
@@ -285,35 +295,40 @@ def build_plan_par(
         base = fx.Int32(
             fx.ptrtoint(fx.SharedAllocator().allocate(ScatStorage).peek().raw.ptr)
         )
-        r_ids = hw.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
-        r_w = hw.rsrc(w_ptr, fx.Int64(n_rows) * fx.Int64(4))
-        r_offs = hw.rsrc(offs_ptr)
-        r_cb = hw.rsrc(cbase_ptr)
-        r_rt = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
-        r_rw = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
-        r_inv = hw.rsrc(inv_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_ids = primitives.rsrc(ids_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_w = primitives.rsrc(w_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_offs = primitives.rsrc(offs_ptr)
+        r_cb = primitives.rsrc(cbase_ptr)
+        r_rt = primitives.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_rw = primitives.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_inv = primitives.rsrc(inv_ptr, fx.Int64(n_rows) * fx.Int64(4))
         if tid < fx.Int32(E):
-            start = fx.Int32(hw.bload(r_offs, tid * 4, T.i32)) + fx.Int32(
-                hw.bload(r_cb, (c * E + tid) * 4, T.i32)
+            start = fx.Int32(primitives.bload(r_offs, tid * 4, T.i32)) + fx.Int32(
+                primitives.bload(r_cb, (c * E + tid) * 4, T.i32)
             )
-            hw.lds_store(start, base, tid * 4, align=4)
+            primitives.lds_store(start, base, tid * 4, align=4)
         gpu.barrier()
         for j in range_constexpr(CHUNK // TH):
             i = c * CHUNK + j * TH + tid
             if i < n_rows:
-                e = _clamp_e(fx.Int32(hw.bload(r_ids, i * 4, T.i32)), E)
+                e = _clamp_e(fx.Int32(primitives.bload(r_ids, i * 4, T.i32)), E)
                 if const_expr(shared_last):
                     # Shared expert (E-1, exactly once per token): token-ordered rows.
                     row = fx.Int32(0)
                     if e == fx.Int32(E - 1):
-                        row = fx.Int32(hw.bload(r_offs, (E - 1) * 4, T.i32)) + i // k
+                        row = (
+                            fx.Int32(primitives.bload(r_offs, (E - 1) * 4, T.i32))
+                            + i // k
+                        )
                     else:
                         row = fx.Int32(_lds_atomic_add(base, e * 4, 1))
                 else:
                     row = fx.Int32(_lds_atomic_add(base, e * 4, 1))
-                hw.bstore(i // k, r_rt, row * 4)
-                hw.bstore(fx.Float32(hw.bload(r_w, i * 4, T.f32)), r_rw, row * 4)
-                hw.bstore(row, r_inv, i * 4)
+                primitives.bstore(i // k, r_rt, row * 4)
+                primitives.bstore(
+                    fx.Float32(primitives.bload(r_w, i * 4, T.f32)), r_rw, row * 4
+                )
+                primitives.bstore(row, r_inv, i * 4)
 
     @flyc.jit
     def launch(
@@ -377,7 +392,7 @@ def build_scale_t(KG: int, threads: int = 256):
     """
     assert KG % 16 == 0, "a token's scale row is read as 16 B chunks"
 
-    kname = f"flymoe_scale_t_kg{KG}_{hw.SRC_HASH}"
+    kname = f"moe_a4w4_compact_scale_t_kg{KG}_{primitives.SRC_HASH}"
 
     @flyc.kernel(name=kname, known_block_size=[threads, 1, 1])
     def kern(
@@ -392,18 +407,18 @@ def build_scale_t(KG: int, threads: int = 256):
         # One thread per compact row: the token's whole scale row in 16 B loads, then one
         # 4 B store per K step (consecutive rows -> coalesced across the wave).
         row = fx.Int32(gpu.block_id("x")) * threads + fx.Int32(gpu.thread_id("x"))
-        r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
-        r_as = hw.rsrc(as_ptr, fx.Int64(n_tok) * fx.Int64(KG))
-        r_ast = hw.rsrc(ast_ptr, fx.Int64(n_rows) * fx.Int64(KG))
+        r_tok = primitives.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
+        r_as = primitives.rsrc(as_ptr, fx.Int64(n_tok) * fx.Int64(KG))
+        r_ast = primitives.rsrc(ast_ptr, fx.Int64(n_rows) * fx.Int64(KG))
         if row < n_rows:
-            t = fx.Int32(hw.bload(r_tok, row * 4, T.i32))
+            t = fx.Int32(primitives.bload(r_tok, row * 4, T.i32))
             vs = [
-                fx.Vector(hw.bload(r_as, t * KG + q * 16, T.i32x4))
+                fx.Vector(primitives.bload(r_as, t * KG + q * 16, T.i32x4))
                 for q in range_constexpr(KG // 16)
             ]
             for q in range_constexpr(KG // 16):
                 for j in range_constexpr(4):
-                    hw.bstore(
+                    primitives.bstore(
                         fx.Int32(vs[q][j]), r_ast, ((q * 4 + j) * n_rows + row) * 4
                     )
 
@@ -440,17 +455,21 @@ def run_scale_t(a_s, row_tok, a_s_t, stream=None):
 
 @functools.cache
 def build_quant(H: int, threads: int = 256, even: bool = False):
-    name = f"flymoe_quant_h{H}" + ("_se" if even else "") + f"_{hw.SRC_HASH}"
+    name = (
+        f"moe_a4w4_compact_quant_h{H}"
+        + ("_se" if even else "")
+        + f"_{primitives.SRC_HASH}"
+    )
 
     @flyc.kernel(name=name, known_block_size=[threads, 1, 1])
     def kern(x_ptr: fx.Int64, q_ptr: fx.Int64, s_ptr: fx.Int64, n_groups: fx.Int32):
         if const_expr(name == ""):  # name in the JIT cache key
             pass
         gid = fx.Int32(gpu.block_id("x")) * threads + fx.Int32(gpu.thread_id("x"))
-        r_x = hw.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64))
-        r_q = hw.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16))
-        r_s = hw.rsrc(s_ptr, fx.Int64(n_groups))
-        hw.quant_group(r_x, r_q, r_s, gid, even)
+        r_x = primitives.rsrc(x_ptr, fx.Int64(n_groups) * fx.Int64(64))
+        r_q = primitives.rsrc(q_ptr, fx.Int64(n_groups) * fx.Int64(16))
+        r_s = primitives.rsrc(s_ptr, fx.Int64(n_groups))
+        primitives.quant_group(r_x, r_q, r_s, gid, even)
 
     @flyc.jit
     def launch(

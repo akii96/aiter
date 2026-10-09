@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2026, Advanced Micro Devices, Inc. All rights reserved.
-"""FlyMoE: A4W4 MXFP4 prefill MoE for gfx950, dispatched as a whole-graph impl.
+"""FlyDSL A4W4 compact MoE: MXFP4 prefill MoE for gfx950, dispatched as a whole-graph impl.
 
-Tuned rows select it with ``kernelName1 = impl__flymoe__<cfg>``; ``<cfg>`` is a
-FlyMoE tile config serialized by :func:`config_to_string`. The backend reads the
+Tuned rows select it with ``kernelName1 = impl__flydsl_a4w4_compact__<cfg>``; ``<cfg>`` is a
+FlyDSL A4W4 compact MoE tile config serialized by :func:`config_to_string`. The backend reads the
 same preshuffled weights as the other per_1x32 fp4 paths (``shuffle_weight``
 with layout (16, 16) and ``e8m0_shuffle`` scales, gate/up SEPARATED) and repacks
-them once per weight tensor into the FlyMoE MFMA-native layout. The repacked
+them once per weight tensor into the FlyDSL A4W4 compact MoE MFMA-native layout. The repacked
 copy lives as long as the source weights, so the expert weights are held twice
 until the kernels read the AITER layout directly.
 
@@ -26,8 +26,8 @@ from aiter import ActivationType, QuantType, dtypes
 from aiter.fused_moe_registry import FusedMoeRequest
 from aiter.jit.utils.chip_info import get_gfx
 
-from .flymoe import configs as _configs
-from .flymoe import moe as _moe
+from .moe_a4w4_compact import configs as _configs
+from .moe_a4w4_compact import moe as _moe
 
 _STAGE_KEYS = ("BM", "D", "NW", "WM", "pipe", "diag", "PERS", "EF", "MV")
 _GLOBAL_KEYS = ("HT", "FC", "QP", "BMF", "NWF", "WMF", "DF", "pipeF", "diagF")
@@ -38,23 +38,62 @@ _FC_KEYS = ("FC", "BMF", "NWF", "WMF", "DF", "pipeF", "diagF")
 # epilogue. It is exact only when E-1 is a shared expert routed exactly once per
 # token, i.e. fused shared experts. Opt in when the caller guarantees that
 # routing; otherwise those tables run the unfused combine.
-_FUSED_SHARED_EXPERT = os.environ.get("AITER_FLYMOE_FUSED_SHARED_EXPERT", "0") == "1"
+_FUSED_SHARED_EXPERT = (
+    os.environ.get("AITER_MOE_A4W4_COMPACT_FUSED_SHARED_EXPERT", "0") == "1"
+)
 # e8m0 rule for the activation and intermediate quant. "ceil" matches AITER's
 # runtime MX quant (MxScaleRoundMode.RoundUp); "even" matches checkpoints
 # calibrated with scale_calculation_mode="even" (Quark).
-_SCALE_RULE = os.environ.get("AITER_FLYMOE_SCALE_RULE", "ceil")
+_SCALE_RULE = os.environ.get("AITER_MOE_A4W4_COMPACT_SCALE_RULE", "ceil")
+
+
+# Kernel option tokens (``diag`` values in the tile tables, read by gemm.py) and
+# their names in serialized configs. A trailing ``N`` is the token's integer.
+_OPTION_NAMES = {
+    "s1tr": "s1_transposed_epilogue",
+    "epgN": "epilogue_batch_N",
+    "barN": "barrier_slot_N",
+    "s2nt": "s2_nontemporal_store",
+    "s2tl": "s2_transposed_store",
+    "s2db": "s2_double_buffer",
+    "wpeN": "waves_per_eu_N",
+    "agfN": "fused_agpr_N",
+    "agN": "agpr_N",
+    "nos2w": "no_s2_lds_store",
+    "fcsk": "fused_skip_own_slot",
+}
+_OPTION_TOKENS = {name: token for token, name in _OPTION_NAMES.items()}
+
+
+def _translate(value: str, table: dict) -> str:
+    """Map each ``+``-joined option through ``table``, keeping integer suffixes."""
+    out = []
+    for option in value.split("+"):
+        stem = option.rstrip("0123456789")
+        num = option[len(stem) :]
+        key = stem + "N" if num else option
+        if key not in table:
+            raise ValueError(f"unknown kernel option {option!r}")
+        out.append(table[key][:-1] + num if num else table[key])
+    return "+".join(out)
 
 
 def config_to_string(cell: dict) -> str:
-    """Serialize a tile-table cell to a CSV/registry-safe token string."""
+    """Serialize a tile-table cell to a readable CSV/registry-safe string."""
     parts = []
     for stage in ("s1", "s2"):
         for key in _STAGE_KEYS:
             if key in cell[stage]:
-                parts.append(f"{stage}{key}={cell[stage][key]}")
+                value = cell[stage][key]
+                if key == "diag":
+                    value = _translate(value, _OPTION_NAMES)
+                parts.append(f"{stage}{key}={value}")
     for key in _GLOBAL_KEYS:
         if key in cell.get("global", {}):
-            parts.append(f"{key}={cell['global'][key]}")
+            value = cell["global"][key]
+            if key == "diagF":
+                value = _translate(value, _OPTION_NAMES)
+            parts.append(f"{key}={value}")
     return "-".join(parts)
 
 
@@ -66,6 +105,8 @@ def config_from_string(config: str) -> tuple:
         key, _, value = part.partition("=")
         if key[:2] in ("s1", "s2"):
             key = key[2:] + key[1]
+        if key.startswith("diag"):
+            value = _translate(value, _OPTION_TOKENS)
         kwargs[key] = int(value) if value.lstrip("-").isdigit() else value
     return tuple(sorted(kwargs.items()))
 
@@ -164,10 +205,10 @@ def unsupported_reason(request: FusedMoeRequest) -> str | None:
     return None
 
 
-def run_flymoe_impl(request: FusedMoeRequest, config: str) -> torch.Tensor:
+def run_moe_a4w4_compact(request: FusedMoeRequest, config: str) -> torch.Tensor:
     reason = unsupported_reason(request)
     if reason is not None:
-        raise NotImplementedError(f"FlyMoE does not support {reason}")
+        raise NotImplementedError(f"FlyDSL A4W4 compact MoE does not support {reason}")
     x = request.hidden_states.contiguous()
     weights = _weights(request.w1, request.w2, request.w1_scale, request.w2_scale)
     key = (x.shape, request.topk_ids.shape, x.device, weights.E, weights.I, config)

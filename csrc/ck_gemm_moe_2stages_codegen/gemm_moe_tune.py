@@ -6182,15 +6182,15 @@ def _gfx942_flydsl_candidates():
         yield "flydsl_gfx942", config_string, config.BLOCK_M, target, eligible
 
 
-def _flymoe_candidates(untunedf):
+def _moe_a4w4_compact_candidates(untunedf):
     from aiter.fused_moe_registry import FusedMoeRequest
-    from aiter.ops.flydsl.fused_moe_flymoe import (
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import (
         MIN_TOKENS,
-        run_flymoe_impl,
+        run_moe_a4w4_compact,
         tune_space,
     )
 
-    # run_perftest rotates deep copies of the arguments; FlyMoE repacks weights
+    # run_perftest rotates deep copies of the arguments; FlyDSL A4W4 compact MoE repacks weights
     # once per weight tensor, so time every copy against the first (identical)
     # one instead of charging the repack to the measurement.
     first_weights = {}
@@ -6227,7 +6227,7 @@ def _flymoe_candidates(untunedf):
             dtype=dtype,
             swiglu_limit=swiglu_limit,
         )
-        return run_flymoe_impl(request, config_string)
+        return run_moe_a4w4_compact(request, config_string)
 
     def is_a4w4_swiglu(row):
         return (
@@ -6248,7 +6248,7 @@ def _flymoe_candidates(untunedf):
             def eligible(row, inter_dim=inter_dim):
                 return is_a4w4_swiglu(row) and int(row["inter_dim"]) == inter_dim
 
-            yield "flymoe", config_string, 0, target, eligible
+            yield "flydsl_a4w4_compact", config_string, 0, target, eligible
 
 
 def _e2e_candidates(untunedf):
@@ -6257,7 +6257,7 @@ def _e2e_candidates(untunedf):
     if gfx == "gfx942":
         yield from _gfx942_flydsl_candidates()
     elif gfx == "gfx950":
-        yield from _flymoe_candidates(untunedf)
+        yield from _moe_a4w4_compact_candidates(untunedf)
 
 
 class GroupedFmoeTuner(FmoeTuner):

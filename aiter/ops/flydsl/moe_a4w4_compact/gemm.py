@@ -29,10 +29,10 @@ from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr import math as fmath
 from flydsl.expr.typing import T
 
-from . import hw
+from . import primitives
 
 NUM_CUS = 256
-OOB = 0x7FFFFFC0  # voffset sentinel: >= hw.REC_CAP even with a 63 B chunk offset added
+OOB = 0x7FFFFFC0  # voffset sentinel: >= primitives.REC_CAP even with a 63 B chunk offset added
 
 
 def _swz(row):
@@ -140,7 +140,7 @@ def build_gemm(
     lds_bytes = RAS + SCD * SAS
     assert lds_bytes <= 160 * 1024, lds_bytes
 
-    name = f"flymoe_s{stage}_k{K}_n{N}_bm{BM}_w{NW}{'x' + str(WM) if WM > 1 else ''}_{pipe}{D}"
+    name = f"moe_a4w4_compact_s{stage}_k{K}_n{N}_bm{BM}_w{NW}{'x' + str(WM) if WM > 1 else ''}_{pipe}{D}"
     if stage == 2:
         name += f"_{epi}"
     name += "_xcd"
@@ -161,7 +161,7 @@ def build_gemm(
         name += f"_diag{diag.replace('+', '_')}"
     if (alpha, limit) != (1.702, 7.0):
         name += f"_a{alpha}_l{limit}".replace(".", "p")
-    name += "_" + hw.SRC_HASH
+    name += "_" + primitives.SRC_HASH
     DG = (
         tuple(sorted(diag.split("+"))) if diag else ()
     )  # tuple: part of the JIT cache key
@@ -239,10 +239,12 @@ def build_gemm(
         tid = fx.Int32(gpu.thread_id("x"))
         bid = fx.Int32(gpu.block_id("x"))
         lane = tid % 64
-        wave = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tid // 64)))
+        wave = fx.Int32(rocdl.readfirstlane(T.i32, primitives.raw(tid // 64)))
 
-        r_misc = hw.rsrc(ntiles_ptr, 4)
-        ntiles = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_misc, 0, T.i32)))
+        r_misc = primitives.rsrc(ntiles_ptr, 4)
+        ntiles = fx.Int32(
+            rocdl.readfirstlane(T.i32, primitives.bload(r_misc, 0, T.i32))
+        )
         bound = ntiles * NB
         n_rows_k, n_a_rows_k, lane_k, wave_k = n_rows, n_a_rows, lane, wave
 
@@ -257,18 +259,24 @@ def build_gemm(
             # Returns the state of the tile it set up ("pro") or of tile `nxt` ("main").
             # Per-tile opaque copies: LICM would otherwise hoist every n_rows-derived
             # per-step scale offset out of the tile loop and spill them.
-            n_rows = hw.s_opaque(n_rows_k, work) if const_expr(PERS) else n_rows_k
-            n_a_rows = hw.s_opaque(n_a_rows_k, work) if const_expr(PERS) else n_a_rows_k
-            lane = hw.v_opaque(lane_k, work) if const_expr(PERS) else lane_k
-            wave = hw.s_opaque(wave_k, work) if const_expr(PERS) else wave_k
+            n_rows = (
+                primitives.s_opaque(n_rows_k, work) if const_expr(PERS) else n_rows_k
+            )
+            n_a_rows = (
+                primitives.s_opaque(n_a_rows_k, work)
+                if const_expr(PERS)
+                else n_a_rows_k
+            )
+            lane = primitives.v_opaque(lane_k, work) if const_expr(PERS) else lane_k
+            wave = primitives.s_opaque(wave_k, work) if const_expr(PERS) else wave_k
             wm, wn = wave // WN, wave % WN
             tile, nblk = _decode(work)
-            r_tiles = hw.rsrc(tiles_ptr)
+            r_tiles = primitives.rsrc(tiles_ptr)
             if const_expr(st is None):
-                tv = fx.Vector(hw.bload(r_tiles, tile * 16, T.i32x4))
-                e = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[0])))
-                row_start = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[1])))
-                nrows = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[2])))
+                tv = fx.Vector(primitives.bload(r_tiles, tile * 16, T.i32x4))
+                e = fx.Int32(rocdl.readfirstlane(T.i32, primitives.raw(tv[0])))
+                row_start = fx.Int32(rocdl.readfirstlane(T.i32, primitives.raw(tv[1])))
+                nrows = fx.Int32(rocdl.readfirstlane(T.i32, primitives.raw(tv[2])))
                 toks = None
             else:
                 e, row_start, nrows = st[0], st[1], st[2]
@@ -276,22 +284,22 @@ def build_gemm(
             st_out = None
             pro_ops = []
 
-            r_a = hw.rsrc(a_ptr, fx.Int64(n_a_rows) * fx.Int64(KH))
-            r_as = hw.rsrc(
+            r_a = primitives.rsrc(a_ptr, fx.Int64(n_a_rows) * fx.Int64(KH))
+            r_as = primitives.rsrc(
                 as_ptr, fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG)
             )
-            r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
+            r_tok = primitives.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
             b_exp = fx.Int64(N // 16) * fx.Int64(KS * 1024)
             bs_exp = fx.Int64(N // 64) * fx.Int64(KS * 256)
-            r_b = hw.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp, b_exp)
-            r_bs = hw.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp, bs_exp)
+            r_b = primitives.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp, b_exp)
+            r_bs = primitives.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp, bs_exp)
 
             def a_row_of(row, it=None):
                 valid = row < nrows
                 if const_expr(stage == 1 and toks is not None and it is not None):
                     t = toks[it]
                 elif const_expr(stage == 1):
-                    t = fx.Int32(hw.bload(r_tok, (row_start + row) * 4, T.i32))
+                    t = fx.Int32(primitives.bload(r_tok, (row_start + row) * 4, T.i32))
                 else:
                     t = row_start + row
                 # HT planes are addressed via soffset, which the buffer range check ignores:
@@ -328,7 +336,7 @@ def build_gemm(
             BS1 = WN == 4 and stage == 1
             bs16_voff = (nblk * WN) * 256 + lane * 16
             rb0 = wm * MBW  # first row block owned by this wave
-            zero = hw.raw(fx.Vector.filled(4, 0.0, fx.Float32))
+            zero = primitives.raw(fx.Vector.filled(4, 0.0, fx.Float32))
             acc = [[zero] * TWN for _ in range(MBW)]
 
             # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
@@ -337,7 +345,7 @@ def build_gemm(
             if const_expr(PERS and toks is None and stage == 1):
                 toks = [
                     fx.Int32(
-                        hw.bload(
+                        primitives.bload(
                             r_tok,
                             (row_start + (wave + it * NW) * 16 + lane // 4) * 4,
                             T.i32,
@@ -390,7 +398,7 @@ def build_gemm(
                 for it in range_constexpr(A_IT):
                     if const_expr(A_INSTR % NW == 0):
                         ops.append(
-                            lambda it=it: hw.dma_async(
+                            lambda it=it: primitives.dma_async(
                                 r_a,
                                 lds_base,
                                 wave * 1024 + (oA + it * NW * 1024),
@@ -402,7 +410,7 @@ def build_gemm(
 
                         def _a(it=it):
                             if wave + it * NW < fx.Int32(A_INSTR):
-                                hw.dma_async(
+                                primitives.dma_async(
                                     r_a,
                                     lds_base,
                                     wave * 1024 + (oA + it * NW * 1024),
@@ -416,7 +424,7 @@ def build_gemm(
                     # dealt round-robin; scales: one sc2 DMA on even steps.
                     for q in range_constexpr((WN * TWN) // NW):
                         ops.append(
-                            lambda q=q: hw.dma_async(
+                            lambda q=q: primitives.dma_async(
                                 r_b,
                                 lds_base,
                                 wave * 1024 + (oB + q * NW * 1024),
@@ -431,8 +439,8 @@ def build_gemm(
                         sl = ((wave >> 1) == fx.Int32(0)).select(
                             fx.Int32(s % SCD), fx.Int32((s + 1) % SCD)
                         )
-                        hw.dma_async(
-                            hw.select_rsrc(isb, r_bs, r_as),
+                        primitives.dma_async(
+                            primitives.select_rsrc(isb, r_bs, r_as),
                             lds_base,
                             isb.select(RBS + sl * SBS, RAS + sl * SAS),
                             isb.select(bs16_voff4, as16_voff),
@@ -445,7 +453,7 @@ def build_gemm(
                 elif const_expr(b_lds):
                     for jj in range_constexpr(4):
                         ops.append(
-                            lambda jj=jj: hw.dma_async(
+                            lambda jj=jj: primitives.dma_async(
                                 r_b,
                                 lds_base,
                                 wn * 4096 + (oB + jj * 1024),
@@ -457,7 +465,7 @@ def build_gemm(
 
                         def _bs1():
                             if wave == fx.Int32(1):
-                                hw.dma_async(
+                                primitives.dma_async(
                                     r_bs,
                                     lds_base,
                                     oBS,
@@ -469,7 +477,7 @@ def build_gemm(
                         ops.append(_bs1)
                     else:
                         ops.append(
-                            lambda: hw.dma_async(
+                            lambda: primitives.dma_async(
                                 r_bs,
                                 lds_base,
                                 wn * 256 + oBS,
@@ -483,7 +491,7 @@ def build_gemm(
 
                         def _as(it=it):
                             if wave + it * NW < fx.Int32(AS_W):
-                                hw.dma_async(
+                                primitives.dma_async(
                                     r_as,
                                     lds_base,
                                     wave * 1024 + (oAS + it * NW * 1024),
@@ -496,7 +504,7 @@ def build_gemm(
 
                         def _as(it=it):
                             if wave + it * NW < fx.Int32(AS_W):
-                                hw.dma_async(
+                                primitives.dma_async(
                                     r_as,
                                     lds_base,
                                     wave * 256 + (oAS + it * NW * 256),
@@ -509,7 +517,7 @@ def build_gemm(
 
                         def _as(it=it):
                             if wave + it * NW < fx.Int32(AS_W):
-                                hw.dma_async(
+                                primitives.dma_async(
                                     r_as,
                                     lds_base,
                                     wave * 256 + (oAS + it * NW * 256),
@@ -528,10 +536,10 @@ def build_gemm(
 
             def issue_b(s):
                 bb = [
-                    hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024)
+                    primitives.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024)
                     for j in range_constexpr(4)
                 ]
-                return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP)
+                return bb, primitives.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP)
 
             breg = {}
             if const_expr(not b_lds and mode != "pro"):
@@ -559,13 +567,15 @@ def build_gemm(
                 slot = s % RING
                 oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
                 ops = [
-                    hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4)
+                    primitives.lds_load(
+                        lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4
+                    )
                     for rb in range_constexpr(MBW)
                 ]
                 sc = [
                     fx.Int32(
                         fx.Uint8(
-                            hw.lds_load(
+                            primitives.lds_load(
                                 lds_base, as_rd + (oAS + rb * 64), T.i8, align=1
                             )
                         )
@@ -574,10 +584,10 @@ def build_gemm(
                 ]
                 if const_expr(b_lds):
                     bo = [
-                        hw.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4)
+                        primitives.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4)
                         for j in range_constexpr(4)
                     ]
-                    bsv = hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4)
+                    bsv = primitives.lds_load(lds_base, bs_rd + oBS, T.i32, align=4)
                     return ops, sc, (bo, bsv)
                 return ops, sc, None
 
@@ -599,11 +609,11 @@ def build_gemm(
                 def rd_bh(s, h):
                     _, oB, oBS, _ = offs(s)
                     return [
-                        lambda: hw.lds_load(
+                        lambda: primitives.lds_load(
                             lds_base, bs_rd4 + (oBS + h * 256), T.i32, align=4
                         )
                     ] + [
-                        lambda j=j: hw.lds_load(
+                        lambda j=j: primitives.lds_load(
                             lds_base, b_rd4 + (oB + (4 * h + j) * 1024), T.i32x4
                         )
                         for j in range_constexpr(4)
@@ -612,10 +622,12 @@ def build_gemm(
                 def rd_a(s, rb):
                     oA, _, _, oAS = offs(s)
                     return [
-                        lambda: hw.lds_load(
+                        lambda: primitives.lds_load(
                             lds_base, a_rd4 + (oA + rb * 1024), T.i32x4
                         ),
-                        lambda: hw.lds_load_u8(lds_base, as_rd + (oAS + rb * 64)),
+                        lambda: primitives.lds_load_u8(
+                            lds_base, as_rd + (oAS + rb * 64)
+                        ),
                     ]
 
                 rocdl.wait_asyncmark(max(0, min(NSTG, KS) - 1))
@@ -629,7 +641,9 @@ def build_gemm(
                 NMF = MBW * TWN
                 if const_expr(mode == "main"):
                     # Tile `nxt`'s state loads, long before its prologue needs them.
-                    tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
+                    tvn = fx.Vector(
+                        primitives.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4)
+                    )
                 for s in range_constexpr(KS):
                     has_next = s + 1 < KS
                     dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS) else []
@@ -642,7 +656,7 @@ def build_gemm(
                         h, rb, j = i // 32, (i % 32) // 4, i % 4
                         t = 4 * h + j
                         if const_expr(S2I or S1TR):
-                            acc[rb][t] = hw.mfma_fp4_agpr(
+                            acc[rb][t] = primitives.mfma_fp4_agpr(
                                 acc[rb][t] if const_expr(s > 0) else None,
                                 b_ops[t],
                                 a_ops[rb],
@@ -652,7 +666,7 @@ def build_gemm(
                                 j,
                             )
                         else:
-                            acc[rb][t] = hw.mfma_fp4_agpr(
+                            acc[rb][t] = primitives.mfma_fp4_agpr(
                                 acc[rb][t] if const_expr(s > 0) else None,
                                 a_ops[rb],
                                 b_ops[t],
@@ -663,12 +677,14 @@ def build_gemm(
                         if const_expr(mode == "main" and s == KS // 2 and i == 16):
                             rocdl.sched_barrier(0)
                             e_n, rs_n, nr_n = [
-                                fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q])))
+                                fx.Int32(
+                                    rocdl.readfirstlane(T.i32, primitives.raw(tvn[q]))
+                                )
                                 for q in range_constexpr(3)
                             ]
                             st_out = [e_n, rs_n, nr_n] + [
                                 fx.Int32(
-                                    hw.bload(
+                                    primitives.bload(
                                         r_tok,
                                         (rs_n + (wave + it * NW) * 16 + lane // 4) * 4,
                                         T.i32,
@@ -710,7 +726,7 @@ def build_gemm(
                         b_ops = nxt_b + [None] * 4
                         a_ops, sa = nxt_a, nxt_sa
                 rocdl.sched_barrier(0)
-                fenced = hw.mfma_drain(
+                fenced = primitives.mfma_drain(
                     [
                         acc[rb][t]
                         for rb in range_constexpr(MBW)
@@ -739,7 +755,7 @@ def build_gemm(
                             breg[s + DB] = issue_b(s + DB)
                     for rb in range_constexpr(MBW):
                         for j in range_constexpr(4):
-                            acc[rb][j] = hw.mfma_fp4(
+                            acc[rb][j] = primitives.mfma_fp4(
                                 acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j
                             )
                     if const_expr(s + 1 < KS):
@@ -762,7 +778,7 @@ def build_gemm(
                     b_ops, bs = breg.pop(s)
                 for rb in range_constexpr(MBW):
                     for j in range_constexpr(4):
-                        acc[rb][j] = hw.mfma_fp4(
+                        acc[rb][j] = primitives.mfma_fp4(
                             acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j
                         )
 
@@ -780,19 +796,20 @@ def build_gemm(
             """Stage-1 epilogue: SwiGLU-OAI, per-32 amax, e8m0 + fp4 requant, h stores."""
             l16 = lane % 16
             lg = lane // 16
-            r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
+            r_o = primitives.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
             if const_expr(HTW):
                 gpu.barrier()  # all waves done with the LDS ring
                 hwb = wave * (RWP * 16)
-            r_os = hw.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
+            r_os = primitives.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
             lim = fx.Float32(limit)
 
             def swiglu(gv, uv):
                 gg = fx.min(fx.Float32(gv), lim)
                 uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
                 if const_expr(EF):
-                    sig = hw.fast_rcp(
-                        fx.Float32(1.0) + hw.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E))
+                    sig = primitives.fast_rcp(
+                        fx.Float32(1.0)
+                        + primitives.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E))
                     )
                 else:
                     sig = fx.Float32(1.0) / (
@@ -808,14 +825,16 @@ def build_gemm(
                     fx.Float32,
                 )
                 uu = fx.Vector.from_elements(
-                    [hw.fmed3(u0, -lim, lim), hw.fmed3(u1, -lim, lim)], fx.Float32
+                    [primitives.fmed3(u0, -lim, lim), primitives.fmed3(u1, -lim, lim)],
+                    fx.Float32,
                 )
                 t = gg * fx.Vector.filled(2, NEG_ALPHA_LOG2E, fx.Float32)
                 den = fx.Vector.from_elements(
-                    [hw.exp2_raw(t[0]), hw.exp2_raw(t[1])], fx.Float32
+                    [primitives.exp2_raw(t[0]), primitives.exp2_raw(t[1])], fx.Float32
                 ) + fx.Vector.filled(2, 1.0, fx.Float32)
                 sig = fx.Vector.from_elements(
-                    [hw.fast_rcp(den[0]), hw.fast_rcp(den[1])], fx.Float32
+                    [primitives.fast_rcp(den[0]), primitives.fast_rcp(den[1])],
+                    fx.Float32,
                 )
                 h = gg * sig * (uu + fx.Vector.filled(2, 1.0, fx.Float32))
                 return fx.Float32(h[0]), fx.Float32(h[1])
@@ -824,9 +843,9 @@ def build_gemm(
                 if const_expr(SE):
                     # |h| <= limit * (limit + 1): the bounded form is exact
                     return (
-                        hw.e8m0_even_small(m)
+                        primitives.e8m0_even_small(m)
                         if const_expr(bounded)
-                        else hw.e8m0_even(m)
+                        else primitives.e8m0_even(m)
                     )
                 bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
                 bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(
@@ -876,24 +895,24 @@ def build_gemm(
                                 m = mm if m is None else fx.max(m, mm)
                             hv.append((rb, gi, hs))
                             ms.append(m)
-                    ms = hw.rows4_max_nonneg_f32_multi(ms)
+                    ms = primitives.rows4_max_nonneg_f32_multi(ms)
                     bx = {}
                     for k in range_constexpr(len(hv)):
                         rb, gi, hs = hv[k]
                         bexp = e8m0(ms[k], True)
                         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
-                        pk = hw.raw(fx.Int32(0))
+                        pk = primitives.raw(fx.Int32(0))
                         for i in range_constexpr(4):
                             pk = rocdl.cvt_scalef32_pk_fp4_f32(
                                 T.i32,
                                 pk,
-                                hw.raw(hs[i][0]),
-                                hw.raw(hs[i][1]),
-                                hw.raw(qs),
+                                primitives.raw(hs[i][0]),
+                                primitives.raw(hs[i][1]),
+                                primitives.raw(qs),
                                 i,
                             )
                         rl = fx.Int32(rb * 16) + l16
-                        hw.lds_store(
+                        primitives.lds_store(
                             fx.Int32(pk),
                             lds_base,
                             sw + rl * (CG * 16) + (gi * 16) + lg * 4,
@@ -903,7 +922,7 @@ def build_gemm(
                     for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
                         # row rb*16 + l16: its CG == 2 scale bytes (the 4 quarters write the same)
                         sd = bx[(rb, 0)] | (bx[(rb, 1)] << fx.Int32(8))
-                        hw.lds_store(
+                        primitives.lds_store(
                             sd.to(fx.Int16),
                             lds_base,
                             sw + S1S_H + (fx.Int32(rb * 16) + l16) * CG,
@@ -937,7 +956,7 @@ def build_gemm(
                         fx.max(fmath.absf(h0), fmath.absf(h1)) for _, _, _, h0, h1 in ch
                     ]
                     if const_expr(EF):
-                        ms = hw.row16_max_nonneg_f32_multi(ms)
+                        ms = primitives.row16_max_nonneg_f32_multi(ms)
                     else:
                         for k in range_constexpr(len(ms)):
                             for off in (1, 2, 4, 8):
@@ -952,14 +971,14 @@ def build_gemm(
                         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
                         pk = rocdl.cvt_scalef32_pk_fp4_f32(
                             T.i32,
-                            hw.raw(fx.Int32(0)),
-                            hw.raw(h0),
-                            hw.raw(h1),
-                            hw.raw(qs),
+                            primitives.raw(fx.Int32(0)),
+                            primitives.raw(h0),
+                            primitives.raw(h1),
+                            primitives.raw(qs),
                             0,
                         )
                         rl = fx.Int32(rb * 16) + lg * 4 + v
-                        hw.lds_store(
+                        primitives.lds_store(
                             fx.Int32(pk).to(fx.Int8),
                             lds_base,
                             sw + rl * (CG * 16) + (gi * 16) + l16,
@@ -977,7 +996,7 @@ def build_gemm(
                             | (bx[(rb, 2 * q + 1, 1)] << fx.Int32(24))
                             for q in range_constexpr(2)
                         ]
-                        hw.lds_store(
+                        primitives.lds_store(
                             fx.Vector.from_elements(sd, fx.Int32),
                             lds_base,
                             sw + S1S_H + (fx.Int32(rb * 16) + lg * 4) * CG,
@@ -995,7 +1014,7 @@ def build_gemm(
                     hs = [swiglu(vg_e[v], vu_e[v]), swiglu(vg_o[v], vu_o[v])]
                     m = fx.max(fmath.absf(hs[0]), fmath.absf(hs[1]))
                     if const_expr(EF):
-                        m = hw.row16_max_nonneg_f32(m)
+                        m = primitives.row16_max_nonneg_f32(m)
                     else:
                         for off in (1, 2, 4, 8):
                             m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
@@ -1003,10 +1022,10 @@ def build_gemm(
                     qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
                     pk = rocdl.cvt_scalef32_pk_fp4_f32(
                         T.i32,
-                        hw.raw(fx.Int32(0)),
-                        hw.raw(hs[0]),
-                        hw.raw(hs[1]),
-                        hw.raw(qs),
+                        primitives.raw(fx.Int32(0)),
+                        primitives.raw(hs[0]),
+                        primitives.raw(hs[1]),
+                        primitives.raw(qs),
                         0,
                     )
                     valid = row < nrows
@@ -1015,7 +1034,7 @@ def build_gemm(
                     if const_expr(HTW):
                         # stage h bytes per wave in LDS (rows x 16 B), stored below as 16 B rows
                         rl = fx.Int32(rb * 16) + lg * 4 + v
-                        hw.lds_store(
+                        primitives.lds_store(
                             fx.Int32(pk).to(fx.Int8),
                             lds_base,
                             hwb + rl * 16 + l16,
@@ -1026,10 +1045,10 @@ def build_gemm(
                         off = valid.select(
                             grow * (INTER // 2) + g * 16 + l16, fx.Int32(0x7FFFFFF0)
                         )
-                        hw.bstore(fx.Int32(pk).to(fx.Int8), r_o, off)
+                        primitives.bstore(fx.Int32(pk).to(fx.Int8), r_o, off)
                         hs_off = grow * (INTER // 32) + g
                     soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
-                    hw.bstore(bexp.to(fx.Int8), r_os, soff)
+                    primitives.bstore(bexp.to(fx.Int8), r_os, soff)
             if const_expr(S1S):
                 # h[row][g0*16 .. g0*16 + CG*16): CG*16 B per row, 16 B per lane
                 sw = S1S_BASE + wave * S1S_W
@@ -1038,7 +1057,7 @@ def build_gemm(
                 for it in range_constexpr((ROWS_W * LPR) // 64):
                     rl = fx.Int32(it * (64 // LPR)) + lane // LPR
                     part = lane % LPR
-                    v16 = hw.lds_load(
+                    v16 = primitives.lds_load(
                         lds_base, sw + rl * (CG * 16) + part * 16, T.i32x4
                     )
                     row = rb0 * 16 + rl
@@ -1051,28 +1070,32 @@ def build_gemm(
                         )
                     else:
                         off = (row_start + row) * (INTER // 2) + g0 * 16 + part * 16
-                    hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFFF0)))
+                    primitives.bstore(
+                        v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFFF0))
+                    )
                 # scales: CG bytes per row at h_s[row][g0 .. g0 + CG) (HT: [g0//4][row][4 B])
                 for it in range_constexpr((ROWS_W + 63) // 64):
                     rl = fx.Int32(it * 64) + lane
                     row = rb0 * 16 + rl
-                    sv = hw.lds_load(lds_base, sw + S1S_H + rl * CG, T.i16, align=2)
+                    sv = primitives.lds_load(
+                        lds_base, sw + S1S_H + rl * CG, T.i16, align=2
+                    )
                     if const_expr(HT):
                         off = ((g0 // 4) * n_rows + row_start + row) * 4 + (g0 % 4)
                     else:
                         off = (row_start + row) * (INTER // 32) + g0
                     ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
-                    hw.bstore(sv, r_os, ok.select(off, fx.Int32(0x7FFFFFF0)))
+                    primitives.bstore(sv, r_os, ok.select(off, fx.Int32(0x7FFFFFF0)))
             if const_expr(HTW):
                 # h_t[g//4][row][64 B]: this wave's 16 B column group of each row
                 g = nblk * WN + wn
                 for it in range_constexpr((ROWS_W + 63) // 64):
                     rl = fx.Int32(it * 64) + lane
-                    v16 = hw.lds_load(lds_base, hwb + rl * 16, T.i32x4)
+                    v16 = primitives.lds_load(lds_base, hwb + rl * 16, T.i32x4)
                     row = rb0 * 16 + rl
                     off = ((g // 4) * n_rows + row_start + row) * 64 + (g % 4) * 16
                     ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
-                    hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)))
+                    primitives.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)))
 
         def _epi2_il4(
             acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0
@@ -1083,19 +1106,19 @@ def build_gemm(
             banks; the 16 B row reads stay conflict-free)."""
             l16 = lane % 16
             lg = lane // 16
-            r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
-            r_o = hw.rsrc(
+            r_w = primitives.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+            r_o = primitives.rsrc(
                 fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
                 fx.Int64(n_rows - row_start) * fx.Int64(N * 2),
             )
-            cm_o = hw.NT if const_expr(S2NT) else 0
+            cm_o = primitives.NT if const_expr(S2NT) else 0
             sw0 = S1S_BASE + wave * (S2I_W * S2NB)
             per = -(-len(pro_ops) // MBW)
             # Every row block's weights before any store: vmcnt also counts stores, so a
             # per-block load would wait for all earlier stores to drain.
             wts = [
                 fx.Float32(
-                    hw.bload(
+                    primitives.bload(
                         r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + l16) * 4, T.f32
                     )
                 )
@@ -1121,7 +1144,7 @@ def build_gemm(
                             fx.Float32,
                         )
                         c = (fx.Int32(gi * 8 + p * 4) + lg) ^ (l16 & 7)
-                        hw.lds_store(
+                        primitives.lds_store(
                             (v8 * wv8).to(fx.BFloat16),
                             lds_base,
                             sw + l16 * 256 + c * 16,
@@ -1130,12 +1153,12 @@ def build_gemm(
                 for it in range_constexpr(4):
                     rl = fx.Int32(it * 4) + lane // 16
                     c = lane % 16
-                    v16 = hw.lds_load(
+                    v16 = primitives.lds_load(
                         lds_base, sw + rl * 256 + ((c ^ (rl & 7)) * 16), T.i32x4
                     )
                     row = rb0 * 16 + fx.Int32(rb * 16) + rl
                     off = row * (N * 2) + (nblk * BN + wn * 128) * 2 + c * 16
-                    hw.bstore(
+                    primitives.bstore(
                         v16,
                         r_o,
                         (row < nrows).select(off, fx.Int32(0x7FFFFF00)),
@@ -1150,10 +1173,10 @@ def build_gemm(
             """
             l16 = lane % 16
             lg = lane // 16
-            r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+            r_w = primitives.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
             # 64-bit per-tile base (no 32-bit offset overflow for any R). The record count
             # spans all remaining rows: a tile-sized count measured ~30% slower.
-            r_o = hw.rsrc(
+            r_o = primitives.rsrc(
                 fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
                 fx.Int64(n_rows - row_start) * fx.Int64(N * 2),
             )
@@ -1164,7 +1187,9 @@ def build_gemm(
                 for rb in range_constexpr(MBW):
                     vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
                     r4 = rb0 * 16 + fx.Int32(rb * 16) + lg * 4
-                    wv = fx.Vector(hw.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32)))
+                    wv = fx.Vector(
+                        primitives.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32))
+                    )
                     for v in range_constexpr(4):
                         rl = fx.Int32(rb * 16) + lg * 4 + v  # wave-local row
                         w = fx.Float32(wv[v])
@@ -1177,20 +1202,20 @@ def build_gemm(
                                 fx.Float32,
                             ).to(fx.BFloat16)
                             ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
-                            hw.lds_store(
+                            primitives.lds_store(
                                 pk,
                                 lds_base,
                                 wb + rl * 128 + ch * 16 + (l16 % 4) * 4,
                                 align=4,
                             )
-                cm_o = hw.NT if const_expr(S2NT) else 0
+                cm_o = primitives.NT if const_expr(S2NT) else 0
                 if const_expr(epi == "fused"):
                     # Shared-expert tile: out[t] = own row + the token's routed rows (y_rows,
                     # via inv), summed in fp32; no combine pass, no shared y rows. Every row's
                     # token id and routed-row indices up front, routed rows prefetched one
                     # iteration ahead. Rows past nrows are clamped and their store dropped.
-                    r_inv = hw.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
-                    r_out = hw.rsrc(os_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
+                    r_inv = primitives.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
+                    r_out = primitives.rsrc(os_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
                     NIT = ROWS_W // 8
                     ch = lane % 8
                     colb = (nblk * BN + wn * 64) * 2 + ch * 16
@@ -1200,13 +1225,15 @@ def build_gemm(
                         row_start + ok.select(rb0 * 16 + rl, fx.Int32(0))
                         for ok, rl in zip(oks, rls)
                     ]
-                    ts = [fx.Int32(hw.bload(r_tok, g * 4, T.i32)) for g in grows]
+                    ts = [
+                        fx.Int32(primitives.bload(r_tok, g * 4, T.i32)) for g in grows
+                    ]
                     srcs = []
                     for it in range_constexpr(NIT):
                         ss = []
                         for sl in range_constexpr(KTOP):
                             rs = fx.Int32(
-                                hw.bload(r_inv, (ts[it] * KTOP + sl) * 4, T.i32)
+                                primitives.bload(r_inv, (ts[it] * KTOP + sl) * 4, T.i32)
                             )
                             rs = fx.max(fx.min(rs, n_rows - 1), fx.Int32(0))
                             ss.append(rs)
@@ -1226,7 +1253,7 @@ def build_gemm(
                             src = srcs[it]
                         return [
                             fx.Vector(
-                                hw.gload(
+                                primitives.gload(
                                     fx.Int64(o_ptr)
                                     + fx.Int64(src[sl]) * fx.Int64(N * 2)
                                     + fx.Int64(colb),
@@ -1242,7 +1269,7 @@ def build_gemm(
                         if const_expr(it + 1 < NIT):
                             ys[it + 1] = fc_rows(it + 1)
                         rl = rls[it]
-                        v16 = hw.lds_load(
+                        v16 = primitives.lds_load(
                             lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4
                         )
                         accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
@@ -1250,7 +1277,7 @@ def build_gemm(
                         for sl in range_constexpr(KTOP):
                             other = srcs[it][sl] != grows[it]
                             accv = accv + other.select(yl[sl].to(fx.Float32), z8)
-                        hw.bstore(
+                        primitives.bstore(
                             accv.to(fx.BFloat16),
                             r_out,
                             oks[it].select(
@@ -1261,13 +1288,13 @@ def build_gemm(
                     for it in range_constexpr(ROWS_W // 8):
                         rl = fx.Int32(it * 8) + lane // 8
                         ch = lane % 8
-                        v16 = hw.lds_load(
+                        v16 = primitives.lds_load(
                             lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4
                         )
                         row = rb0 * 16 + rl
                         colb = (nblk * BN + wn * 64) * 2 + ch * 16
                         off = row * (N * 2) + colb
-                        hw.bstore(
+                        primitives.bstore(
                             v16,
                             r_o,
                             (row < nrows).select(off, fx.Int32(0x7FFFFF00)),
@@ -1279,7 +1306,7 @@ def build_gemm(
                     row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v
                     valid = row < nrows
                     grow = row_start + row
-                    w = fx.Float32(hw.bload(r_w, grow * 4, T.f32))
+                    w = fx.Float32(primitives.bload(r_w, grow * 4, T.f32))
                     for p in range_constexpr(2):
                         ve = fx.Float32(vs[2 * p][v]) * w
                         vo = fx.Float32(vs[2 * p + 1][v]) * w
@@ -1288,7 +1315,7 @@ def build_gemm(
                             fx.BFloat16
                         )
                         off = valid.select((row * N + col) * 2, fx.Int32(0x7FFFFF00))
-                        hw.bstore(pk, r_o, off)
+                        primitives.bstore(pk, r_o, off)
 
         # CTAs are dealt round-robin over the 8 XCDs; each XCD gets a contiguous range of
         # work so an expert's m-tiles share one L2.

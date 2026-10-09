@@ -13,7 +13,7 @@ import flydsl.expr as fx
 from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr.typing import T
 
-from . import hw
+from . import primitives
 
 
 @functools.cache
@@ -22,7 +22,7 @@ def build_combine(H: int, k: int, threads: int = 256):
     chunks = (H // 8 + threads - 1) // threads
     exact = (H // 8) % threads == 0
 
-    kname = f"flymoe_combine_h{H}_k{k}_{hw.SRC_HASH}"
+    kname = f"moe_a4w4_compact_combine_h{H}_k{k}_{primitives.SRC_HASH}"
 
     @flyc.kernel(name=kname, known_block_size=[threads, 1, 1])
     def kern(
@@ -36,22 +36,28 @@ def build_combine(H: int, k: int, threads: int = 256):
             pass
         tid = fx.Int32(gpu.thread_id("x"))
         t = fx.Int32(gpu.block_id("x"))
-        r_inv = hw.rsrc(inv_ptr)
+        r_inv = primitives.rsrc(inv_ptr)
         # 64-bit per-row / per-token descriptor bases: no 32-bit offset overflow at any R.
-        r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(t) * fx.Int64(H * 2), H * 2)
+        r_o = primitives.rsrc(fx.Int64(o_ptr) + fx.Int64(t) * fx.Int64(H * 2), H * 2)
         r_rows = []
         for s in range_constexpr(k):
             row = fx.Int32(
-                rocdl.readfirstlane(T.i32, hw.bload(r_inv, (t * k + s) * 4, T.i32))
+                rocdl.readfirstlane(
+                    T.i32, primitives.bload(r_inv, (t * k + s) * 4, T.i32)
+                )
             )
             r_rows.append(
-                hw.rsrc(fx.Int64(y_ptr) + fx.Int64(row) * fx.Int64(H * 2), H * 2)
+                primitives.rsrc(
+                    fx.Int64(y_ptr) + fx.Int64(row) * fx.Int64(H * 2), H * 2
+                )
             )
         for c in range_constexpr(chunks):
             col = (tid + c * threads) * 8
             ok = col < H if not exact else None
             vals = [
-                fx.Vector(hw.bload(r_rows[s], col * 2, T.vec(8, T.bf16))).to(fx.Float32)
+                fx.Vector(primitives.bload(r_rows[s], col * 2, T.vec(8, T.bf16))).to(
+                    fx.Float32
+                )
                 for s in range_constexpr(k)
             ]
             acc = vals[0]
@@ -60,7 +66,7 @@ def build_combine(H: int, k: int, threads: int = 256):
             off = col * 2
             if ok is not None:
                 off = ok.select(off, fx.Int32(0x7FFFFF00))
-            hw.bstore(acc.to(fx.BFloat16), r_o, off)
+            primitives.bstore(acc.to(fx.BFloat16), r_o, off)
 
     @flyc.jit
     def launch(

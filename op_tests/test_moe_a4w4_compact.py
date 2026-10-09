@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2026, Advanced Micro Devices, Inc. All rights reserved.
-"""FlyMoE (A4W4 MXFP4 prefill MoE) through ``aiter.fused_moe``.
+"""FlyDSL A4W4 compact MoE (MXFP4 prefill) through ``aiter.fused_moe``.
 
 Weights are prepared exactly as the per_1x32 fp4 MoE paths expect them
 (``shuffle_weight`` (16, 16) + ``e8m0_shuffle``, gate/up SEPARATED) and a tuned
-``impl__flymoe__<cfg>`` row routes the call to FlyMoE. The output is compared
+``impl__flydsl_a4w4_compact__<cfg>`` row routes the call to FlyDSL A4W4 compact MoE. The output is compared
 with a torch reference that quantizes activations with AITER's runtime MX rule.
 """
 
@@ -23,7 +23,9 @@ from aiter.jit.utils.chip_info import get_gfx
 from aiter.ops.shuffle import shuffle_weight
 from aiter.utility import fp4_utils
 
-pytestmark = pytest.mark.skipif(get_gfx() != "gfx950", reason="FlyMoE is gfx950-only")
+pytestmark = pytest.mark.skipif(
+    get_gfx() != "gfx950", reason="FlyDSL A4W4 compact MoE is gfx950-only"
+)
 
 MODEL_DIM = 6144
 EXPERTS = 129
@@ -118,53 +120,64 @@ def _reference(x, weights, ids, topk_weight):
     return out
 
 
-@pytest.fixture
-def tuned_row(tmp_path, monkeypatch):
-    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+def _install_row(path, monkeypatch, tokens, inter_dim, config):
+    """Point the tuned-config lookup at a single compact row for this shape."""
+    row = dict.fromkeys(TUNED_COLUMNS, 0)
+    row.update(
+        gfx="gfx950",
+        cu_num=torch.cuda.get_device_properties(0).multi_processor_count,
+        token=get_padded_M(tokens),
+        model_dim=MODEL_DIM,
+        inter_dim=inter_dim,
+        expert=EXPERTS,
+        topk=TOPK,
+        act_type=str(ActivationType.Swiglu),
+        dtype=str(dtypes.bf16),
+        q_dtype_a=str(dtypes.fp4x2),
+        q_dtype_w=str(dtypes.fp4x2),
+        q_type=str(QuantType.per_1x32),
+        use_g1u1=1,
+        kernelName1=f"impl__flydsl_a4w4_compact__{config}",
+        kernelName2="",
+        err1="0%",
+        err2="0%",
+        _tag="",
+    )
+    pd.DataFrame([row], columns=TUNED_COLUMNS).to_csv(path, index=False)
+    monkeypatch.setenv("AITER_CONFIG_FMOE", str(path))
+    _reset_tuned_config_caches()
 
-    def install(tokens, inter_dim, config=None):
-        config = config or tune_space(inter_dim)[-1]
-        row = dict.fromkeys(TUNED_COLUMNS, 0)
-        row.update(
-            gfx="gfx950",
-            cu_num=torch.cuda.get_device_properties(0).multi_processor_count,
-            token=get_padded_M(tokens),
-            model_dim=MODEL_DIM,
-            inter_dim=inter_dim,
-            expert=EXPERTS,
-            topk=TOPK,
-            act_type=str(ActivationType.Swiglu),
-            dtype=str(dtypes.bf16),
-            q_dtype_a=str(dtypes.fp4x2),
-            q_dtype_w=str(dtypes.fp4x2),
-            q_type=str(QuantType.per_1x32),
-            use_g1u1=1,
-            kernelName1=f"impl__flymoe__{config}",
-            kernelName2="",
-            err1="0%",
-            err2="0%",
-            _tag="",
-        )
-        path = tmp_path / "flymoe_tuned_fmoe.csv"
-        pd.DataFrame([row], columns=TUNED_COLUMNS).to_csv(path, index=False)
-        monkeypatch.setenv("AITER_CONFIG_FMOE", str(path))
-        _reset_tuned_config_caches()
-        return config
 
-    from aiter.ops.flydsl import fused_moe_flymoe
+def _spy_impl(monkeypatch):
+    """Record every call the registry makes to the compact impl."""
+    from aiter.ops.flydsl import fused_moe_a4w4_compact
 
     calls = []
-    impl = fused_moe_flymoe.run_flymoe_impl
+    impl = fused_moe_a4w4_compact.run_moe_a4w4_compact
 
     def spy(request, config):
         calls.append(config)
         return impl(request, config)
 
-    monkeypatch.setitem(_registry._IMPLEMENTATIONS, "flymoe", spy)
+    monkeypatch.setitem(_registry._IMPLEMENTATIONS, "flydsl_a4w4_compact", spy)
+    return calls
+
+
+@pytest.fixture
+def tuned_row(tmp_path, monkeypatch):
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import tune_space
+
+    def install(tokens, inter_dim, config=None):
+        config = config or tune_space(inter_dim)[-1]
+        path = tmp_path / "moe_a4w4_compact_tuned_fmoe.csv"
+        _install_row(path, monkeypatch, tokens, inter_dim, config)
+        return config
+
+    calls = _spy_impl(monkeypatch)
     yield install
     monkeypatch.undo()
     _reset_tuned_config_caches()
-    assert calls, "fused_moe did not dispatch to FlyMoE"
+    assert calls, "fused_moe did not dispatch to FlyDSL A4W4 compact MoE"
 
 
 def _reset_tuned_config_caches():
@@ -175,7 +188,7 @@ def _reset_tuned_config_caches():
     get_2stage_cfgs.cache_clear()
 
 
-def _run(x, weights, ids, topk_weight):
+def _run(x, weights, ids, topk_weight, **kwargs):
     w1, w2, w1_s, w2_s = _aiter_weights(*weights)
     return fused_moe(
         x,
@@ -189,6 +202,7 @@ def _run(x, weights, ids, topk_weight):
         w2_scale=w2_s,
         dtype=dtypes.bf16,
         swiglu_limit=SWIGLU_LIMIT,
+        **kwargs,
     )
 
 
@@ -198,7 +212,7 @@ def _rel_l2(out, ref):
 
 @pytest.mark.parametrize("inter_dim", [384, 768, 1536])
 @pytest.mark.parametrize("tokens", [512, 1000, 4096])
-def test_flymoe_matches_reference(tuned_row, inter_dim, tokens):
+def test_moe_a4w4_compact_matches_reference(tuned_row, inter_dim, tokens):
     tuned_row(tokens, inter_dim)
     x, weights, ids, topk_weight = _problem(tokens, inter_dim)
     out = _run(x, weights, ids, topk_weight)
@@ -206,8 +220,8 @@ def test_flymoe_matches_reference(tuned_row, inter_dim, tokens):
 
 
 @pytest.mark.parametrize("inter_dim", [384, 768, 1536])
-def test_flymoe_every_shipped_config(tuned_row, inter_dim):
-    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+def test_moe_a4w4_compact_every_shipped_config(tuned_row, inter_dim):
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import tune_space
 
     x, weights, ids, topk_weight = _problem(777, inter_dim)
     ref = _reference(x, weights, ids, topk_weight)
@@ -216,12 +230,12 @@ def test_flymoe_every_shipped_config(tuned_row, inter_dim):
         assert _rel_l2(_run(x, weights, ids, topk_weight), ref) < 2e-2, config
 
 
-def test_flymoe_arbitrary_routing(tuned_row, monkeypatch):
+def test_moe_a4w4_compact_arbitrary_routing(tuned_row, monkeypatch):
     """Tokens without the shared expert must stay exact even for fused-combine rows."""
-    from aiter.ops.flydsl import fused_moe_flymoe
-    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+    from aiter.ops.flydsl import fused_moe_a4w4_compact
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import tune_space
 
-    monkeypatch.setattr(fused_moe_flymoe, "_FUSED_SHARED_EXPERT", False)
+    monkeypatch.setattr(fused_moe_a4w4_compact, "_FUSED_SHARED_EXPERT", False)
     config = next(c for c in tune_space(768) if "FC=1" in c)
     tuned_row(2048, 768, config)
     x, weights, ids, topk_weight = _problem(2048, 768, shared_expert=False)
@@ -278,9 +292,9 @@ def _checkpoint_layer(path, layer, inter_dim):
     reason="set AITER_MINIMAX_M3_MXFP4_PATH to a MiniMax-M3-MXFP4 checkpoint",
 )
 @pytest.mark.parametrize("inter_dim", [384, 768, 1536])
-def test_flymoe_checkpoint_weights(tuned_row, inter_dim):
+def test_moe_a4w4_compact_checkpoint_weights(tuned_row, inter_dim):
     """Real MiniMax-M3-MXFP4 expert weights and router, one MoE layer, every config."""
-    from aiter.ops.flydsl.fused_moe_flymoe import tune_space
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import tune_space
 
     path = os.environ["AITER_MINIMAX_M3_MXFP4_PATH"]
     weights, gate, bias = _checkpoint_layer(path, 30, inter_dim)
@@ -299,8 +313,11 @@ def test_flymoe_checkpoint_weights(tuned_row, inter_dim):
         assert _rel_l2(_run(x, weights, ids, topk_weight), ref) < 1e-2, config
 
 
-def test_flymoe_layout_roundtrip():
-    from aiter.ops.flydsl.fused_moe_flymoe import _unshuffle_scale, _unshuffle_weight
+def test_moe_a4w4_compact_layout_roundtrip():
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import (
+        _unshuffle_scale,
+        _unshuffle_weight,
+    )
 
     _, (w1_q, w1_s, w2_q, w2_s), _, _ = _problem(1, 384)
     w1, w2, w1_sh, w2_sh = _aiter_weights(w1_q, w1_s, w2_q, w2_s)
@@ -312,13 +329,13 @@ def test_flymoe_layout_roundtrip():
         assert torch.equal(unpacked.view(e_n, groups), raw.view(torch.uint8))
 
 
-def test_flymoe_config_roundtrip():
-    from aiter.ops.flydsl.flymoe import configs
-    from aiter.ops.flydsl.fused_moe_flymoe import (
+def test_moe_a4w4_compact_config_roundtrip():
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import (
         MIN_TOKENS,
         config_from_string,
         config_to_string,
     )
+    from aiter.ops.flydsl.moe_a4w4_compact import configs
 
     for inter_dim in (384, 768, 1536):
         for tokens, cell in configs.load_table(inter_dim).items():
@@ -328,9 +345,9 @@ def test_flymoe_config_roundtrip():
             assert dict(config_from_string(text)) == configs.cfg_kwargs(cell)
 
 
-def test_flymoe_rejects_unsupported():
+def test_moe_a4w4_compact_rejects_unsupported():
     from aiter.fused_moe_registry import FusedMoeRequest
-    from aiter.ops.flydsl.fused_moe_flymoe import unsupported_reason
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import unsupported_reason
 
     x, weights, ids, topk_weight = _problem(512, 768)
     w1, w2, w1_s, w2_s = _aiter_weights(*weights)
@@ -354,6 +371,31 @@ def test_flymoe_rejects_unsupported():
         {"gate_mode": "interleave"},
     ):
         assert unsupported_reason(FusedMoeRequest(**{**base, **change})) is not None
+
+
+def test_moe_a4w4_compact_shipped_rows_resolve():
+    """Every shipped compact row parses and names a cell of its inter_dim table."""
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import (
+        config_from_string,
+        tune_space,
+    )
+    from aiter.ops.flydsl.moe_a4w4_compact import configs
+
+    path = os.path.join(
+        os.path.dirname(aiter.__file__),
+        "configs/model_configs/minimax_m3_fp4_tuned_fmoe.csv",
+    )
+    rows = pd.read_csv(path)
+    prefix = "impl__flydsl_a4w4_compact__"
+    rows = rows[rows["kernelName1"].str.startswith(prefix)]
+    assert len(rows) > 0
+    for kernel_name, inter_dim in zip(rows["kernelName1"], rows["inter_dim"]):
+        assert _registry.resolve_fused_moe_impl(kernel_name) is not None
+        config = kernel_name[len(prefix) :]
+        assert config in tune_space(int(inter_dim)), kernel_name
+        cells = configs.load_table(int(inter_dim)).values()
+        kwargs = dict(config_from_string(config))
+        assert any(configs.cfg_kwargs(c) == kwargs for c in cells), kernel_name
 
 
 if __name__ == "__main__":

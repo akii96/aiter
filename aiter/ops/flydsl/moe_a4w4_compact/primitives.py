@@ -29,7 +29,7 @@ NT = 2  # non-temporal cache modifier
 SRC_HASH = hashlib.sha1(
     b"".join(
         (pathlib.Path(__file__).parent / f).read_bytes()
-        for f in ("hw.py", "gemm.py", "prologue.py", "combine.py")
+        for f in ("primitives.py", "gemm.py", "prologue.py", "combine.py")
     )
 ).hexdigest()[:8]
 # Sized descriptors never cover more than this, so any voffset >= REC_CAP is out of range.
@@ -387,7 +387,7 @@ def _install_fn_attr_hint():
     from flydsl.compiler import jit_function as _jf
     from flydsl.compiler.kernel_function import CompilationContext
 
-    if getattr(_jf, "_flymoe_patched", False):
+    if getattr(_jf, "_moe_a4w4_compact_patched", False):
         return
 
     def _attrs():
@@ -439,7 +439,7 @@ def _install_fn_attr_hint():
             self.body = op.regions[0].blocks[0]
 
     _jf.PassManager = PM
-    _jf._flymoe_patched = True
+    _jf._moe_a4w4_compact_patched = True
 
 
 _install_fn_attr_hint()
