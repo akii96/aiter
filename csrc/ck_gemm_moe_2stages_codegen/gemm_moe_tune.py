@@ -5952,13 +5952,6 @@ class FmoeTuner(TunerCommon):
         """
         from functools import partial
 
-        from aiter.ops.flydsl.fused_moe_gfx942 import (
-            Config,
-            _Problem,
-            get_tune_space,
-            run_flydsl_moe_gfx942,
-        )
-
         results_base = self._run_config_for_shapes(
             args,
             self.untunedf,
@@ -5985,72 +5978,17 @@ class FmoeTuner(TunerCommon):
             }
             print(keyname, e2e_us, err_ratio)
 
-        def target_fused_moe(
-            hidden_states,
-            w1,
-            w2,
-            topk_weight,
-            topk_ids,
-            expert_mask=None,
-            activation=ActivationType.Silu,
-            quant_type=QuantType.No,
-            doweight_stage1=False,
-            w1_scale=None,
-            w2_scale=None,
-            num_local_tokens=None,
-            moe_sorting_dispatch_policy=0,
-            dtype=None,
-            config_string="",
-            swiglu_limit=None,
-            beta=None,
-            linear_beta=None,
-        ):
-            del beta, linear_beta
-            if doweight_stage1:
-                raise NotImplementedError(
-                    "gfx942 FlyDSL whole-graph tuning does not support "
-                    "doweight_stage1=True"
-                )
-            return run_flydsl_moe_gfx942(
-                hidden_states,
-                w1,
-                w2,
-                topk_weight,
-                topk_ids,
-                activation,
-                quant_type,
-                w1_scale,
-                w2_scale,
-                expert_mask,
-                num_local_tokens,
-                moe_sorting_dispatch_policy,
-                config_string=config_string,
-                swiglu_limit=swiglu_limit,
-            )
-
         GREEN = "\033[0;32m"
         YELLOW = "\033[1;33m"
         RED = "\033[0;31m"
         END = "\033[0m"
-        for config_string in get_tune_space():
-            config = Config.from_string(config_string)
+        for impl_name, config_string, block_m, target, eligible in _e2e_candidates(
+            self.untunedf
+        ):
             eligible_indices = [
                 position
                 for position, (_, row) in enumerate(self.untunedf.iterrows())
-                if not bool(row["doweight_stage1"])
-                and config.unsupported_reason(
-                    _Problem(
-                        batch=int(row["token"]),
-                        experts=int(row["expert"]),
-                        gateup_dim=int(row["inter_dim"]) * 2,
-                        hidden_dim=int(row["model_dim"]),
-                        model_dim=int(row["model_dim"]),
-                        inter_dim=int(row["inter_dim"]),
-                        topk=int(row["topk"]),
-                        quant_type="",
-                    )
-                )
-                is None
+                if eligible(row)
             ]
             if not eligible_indices:
                 continue
@@ -6059,9 +5997,7 @@ class FmoeTuner(TunerCommon):
             try:
                 results_cur = self.run_config(
                     args,
-                    target_fused_moe=partial(
-                        target_fused_moe, config_string=config_string
-                    ),
+                    target_fused_moe=partial(target, config_string=config_string),
                     config_string=config_string,
                 )
             except Exception as e:  # noqa: BLE001
@@ -6069,14 +6005,11 @@ class FmoeTuner(TunerCommon):
                 continue
             finally:
                 self.untunedf = all_untunedf
-            block_m = config.BLOCK_M
             ksplit = 0
             run_1stage = 0
             err1 = "0%"
             err2 = "0%"
-            kernelName1 = make_fused_moe_impl_kernel_name(
-                "flydsl_gfx942", config_string
-            )
+            kernelName1 = make_fused_moe_impl_kernel_name(impl_name, config_string)
             kernelName2 = ""
             xbf16 = 0
             for result_index, i in enumerate(eligible_indices):
@@ -6172,6 +6105,159 @@ class FmoeTuner(TunerCommon):
             print(f"{output_file} has been updated with {len(tune_results)} entries!")
         else:
             print("No improvements found during e2e tuning.")
+
+
+def _gfx942_flydsl_candidates():
+    from aiter.ops.flydsl.fused_moe_gfx942 import (
+        Config,
+        _Problem,
+        get_tune_space,
+        run_flydsl_moe_gfx942,
+    )
+
+    def target(
+        hidden_states,
+        w1,
+        w2,
+        topk_weight,
+        topk_ids,
+        expert_mask=None,
+        activation=ActivationType.Silu,
+        quant_type=QuantType.No,
+        doweight_stage1=False,
+        w1_scale=None,
+        w2_scale=None,
+        num_local_tokens=None,
+        moe_sorting_dispatch_policy=0,
+        dtype=None,
+        config_string="",
+        swiglu_limit=None,
+        beta=None,
+        linear_beta=None,
+    ):
+        del beta, linear_beta
+        if doweight_stage1:
+            raise NotImplementedError(
+                "gfx942 FlyDSL whole-graph tuning does not support "
+                "doweight_stage1=True"
+            )
+        return run_flydsl_moe_gfx942(
+            hidden_states,
+            w1,
+            w2,
+            topk_weight,
+            topk_ids,
+            activation,
+            quant_type,
+            w1_scale,
+            w2_scale,
+            expert_mask,
+            num_local_tokens,
+            moe_sorting_dispatch_policy,
+            config_string=config_string,
+            swiglu_limit=swiglu_limit,
+        )
+
+    for config_string in get_tune_space():
+        config = Config.from_string(config_string)
+
+        def eligible(row, config=config):
+            return (
+                not bool(row["doweight_stage1"])
+                and config.unsupported_reason(
+                    _Problem(
+                        batch=int(row["token"]),
+                        experts=int(row["expert"]),
+                        gateup_dim=int(row["inter_dim"]) * 2,
+                        hidden_dim=int(row["model_dim"]),
+                        model_dim=int(row["model_dim"]),
+                        inter_dim=int(row["inter_dim"]),
+                        topk=int(row["topk"]),
+                        quant_type="",
+                    )
+                )
+                is None
+            )
+
+        yield "flydsl_gfx942", config_string, config.BLOCK_M, target, eligible
+
+
+def _flymoe_candidates(untunedf):
+    from aiter.fused_moe_registry import FusedMoeRequest
+    from aiter.ops.flydsl.fused_moe_flymoe import (
+        MIN_TOKENS,
+        run_flymoe_impl,
+        tune_space,
+    )
+
+    # run_perftest rotates deep copies of the arguments; FlyMoE repacks weights
+    # once per weight tensor, so time every copy against the first (identical)
+    # one instead of charging the repack to the measurement.
+    first_weights = {}
+
+    def target(
+        hidden_states,
+        w1,
+        w2,
+        topk_weight,
+        topk_ids,
+        activation=ActivationType.Silu,
+        quant_type=QuantType.No,
+        w1_scale=None,
+        w2_scale=None,
+        dtype=None,
+        config_string="",
+        swiglu_limit=None,
+        **_,
+    ):
+        shapes = (hidden_states.shape, w1.shape, w2.shape, w1_scale.shape)
+        w1, w2, w1_scale, w2_scale = first_weights.setdefault(
+            shapes, (w1, w2, w1_scale, w2_scale)
+        )
+        request = FusedMoeRequest(
+            hidden_states=hidden_states,
+            w1=w1,
+            w2=w2,
+            topk_weight=topk_weight,
+            topk_ids=topk_ids,
+            activation=activation,
+            quant_type=quant_type,
+            w1_scale=w1_scale,
+            w2_scale=w2_scale,
+            dtype=dtype,
+            swiglu_limit=swiglu_limit,
+        )
+        return run_flymoe_impl(request, config_string)
+
+    def is_a4w4_swiglu(row):
+        return (
+            str(row["q_type"]) == str(QuantType.per_1x32)
+            and "float4" in str(row["q_dtype_w"])
+            and str(row["act_type"]) == str(ActivationType.Swiglu)
+            and not bool(row["doweight_stage1"])
+            and int(row["token"]) >= MIN_TOKENS
+        )
+
+    seen = set()
+    for inter_dim in sorted({int(i) for i in untunedf["inter_dim"]}):
+        for config_string in tune_space(inter_dim):
+            if config_string in seen:
+                continue
+            seen.add(config_string)
+
+            def eligible(row, inter_dim=inter_dim):
+                return is_a4w4_swiglu(row) and int(row["inter_dim"]) == inter_dim
+
+            yield "flymoe", config_string, 0, target, eligible
+
+
+def _e2e_candidates(untunedf):
+    """(impl name, config, block_m, fused_moe-like target, row filter) to time."""
+    gfx = get_gfx()
+    if gfx == "gfx942":
+        yield from _gfx942_flydsl_candidates()
+    elif gfx == "gfx950":
+        yield from _flymoe_candidates(untunedf)
 
 
 class GroupedFmoeTuner(FmoeTuner):
