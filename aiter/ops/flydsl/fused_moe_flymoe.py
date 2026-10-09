@@ -6,11 +6,14 @@ Tuned rows select it with ``kernelName1 = impl__flymoe__<cfg>``; ``<cfg>`` is a
 FlyMoE tile config serialized by :func:`config_to_string`. The backend reads the
 same preshuffled weights as the other per_1x32 fp4 paths (``shuffle_weight``
 with layout (16, 16) and ``e8m0_shuffle`` scales, gate/up SEPARATED) and repacks
-them once per weight tensor into the FlyMoE MFMA-native layout.
+them once per weight tensor into the FlyMoE MFMA-native layout. The repacked
+copy lives as long as the source weights, so the expert weights are held twice
+until the kernels read the AITER layout directly.
 
 Rows are compact (no block_m padding), the activation quant and the expert sort
 run on device, and any ``inter_dim`` that is a multiple of 128 runs natively
-(TP8 MiniMax-M3 at 384, no padding to 512).
+(TP8 MiniMax-M3 at 384, no padding to 512). Tables cover prefill only
+(``token >= MIN_TOKENS``); decode stays on the existing kernels.
 """
 
 import json
@@ -27,7 +30,8 @@ from aiter.jit.utils.chip_info import get_gfx
 from .flymoe import moe as _moe
 
 _STAGE_KEYS = ("BM", "D", "NW", "WM", "pipe", "diag", "PERS", "EF", "MV")
-_GLOBAL_KEYS = ("HT", "FC", "QP", "QF", "BMF", "NWF", "WMF", "DF", "pipeF", "diagF")
+_GLOBAL_KEYS = ("HT", "FC", "QP", "BMF", "NWF", "WMF", "DF", "pipeF", "diagF")
+MIN_TOKENS = 512
 _TABLE_DIR = os.path.join(os.path.dirname(__file__), "flymoe", "configs")
 _SWIGLU_LIMIT = 7.0
 _MAX_RUNS = 8
@@ -36,6 +40,10 @@ _FC_KEYS = ("FC", "BMF", "NWF", "WMF", "DF", "pipeF", "diagF")
 # when expert E-1 is a shared expert routed once per token, which is the
 # layout of fused shared experts (e.g. vLLM VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS).
 _FUSED_SHARED_EXPERT = os.environ.get("AITER_FLYMOE_FUSED_SHARED_EXPERT", "0") == "1"
+# e8m0 rule for the activation and intermediate quant. "ceil" matches AITER's
+# runtime MX quant (MxScaleRoundMode.RoundUp); "even" matches checkpoints
+# calibrated with scale_calculation_mode="even" (Quark).
+_SCALE_RULE = os.environ.get("AITER_FLYMOE_SCALE_RULE", "ceil")
 
 
 def config_to_string(cell: dict) -> str:
@@ -72,7 +80,7 @@ def tune_space(inter_dim: int) -> list[str]:
         table = json.load(f)
     seen = []
     for token in sorted(table, key=int):
-        if int(token) < 512:
+        if int(token) < MIN_TOKENS:
             continue
         config = config_to_string(table[token])
         if config not in seen:
@@ -96,16 +104,17 @@ def _unshuffle_scale(s: torch.Tensor, e: int, n: int, groups: int) -> torch.Tens
     return s.reshape(rows, cols)[: e * n, :groups].reshape(e, n, groups)
 
 
-_packed: dict[int, tuple] = {}
+_packed: dict[tuple, tuple] = {}
 # Workspaces are shared by every layer with the same shape and config; layers
 # run back to back on one stream, so only the output buffer is per call.
 _runs: dict[tuple, _moe.MoERun] = {}
 
 
 def _weights(w1, w2, w1_scale, w2_scale) -> _moe.MoEWeights:
-    hit = _packed.get(id(w1))
-    if hit is not None and hit[0]() is w1 and hit[1]() is w2:
-        return hit[2]
+    key = (w1.data_ptr(), w2.data_ptr(), w1_scale.data_ptr(), w2_scale.data_ptr())
+    hit = _packed.get(key)
+    if hit is not None and hit[0]() is not None:
+        return hit[1]
     e, n13, kh = w1.shape
     inter, hidden = n13 // 2, kh * 2
     w13 = _unshuffle_weight(w1)
@@ -118,8 +127,7 @@ def _weights(w1, w2, w1_scale, w2_scale) -> _moe.MoEWeights:
         _unshuffle_weight(w2),
         _unshuffle_scale(w2_scale, e, hidden, inter // 32),
     )
-    key = id(w1)
-    _packed[key] = (weakref.ref(w1), weakref.ref(w2), packed)
+    _packed[key] = (weakref.ref(w1), packed)
     weakref.finalize(w1, _packed.pop, key, None)
     return packed
 
@@ -174,7 +182,13 @@ def run_flymoe_impl(request: FusedMoeRequest, config: str) -> torch.Tensor:
         if kwargs.get("FC") and not _FUSED_SHARED_EXPERT:
             kwargs = {k: v for k, v in kwargs.items() if k not in _FC_KEYS}
         run = _moe.MoERun(
-            x, request.topk_ids, request.topk_weight, weights, validate=False, **kwargs
+            x,
+            request.topk_ids,
+            request.topk_weight,
+            weights,
+            SR=_SCALE_RULE,
+            validate=False,
+            **kwargs,
         )
         if len(_runs) >= _MAX_RUNS:
             _runs.pop(next(iter(_runs)))
@@ -188,7 +202,7 @@ def run_flymoe_impl(request: FusedMoeRequest, config: str) -> torch.Tensor:
 
 
 def _flat(t: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    """Routing as the flat contiguous buffer the plan kernel reads (no copy if possible)."""
+    """Flat routing buffer for the plan kernel; no copy when already in place."""
     return (
         t.reshape(-1)
         if t.dtype == dtype and t.is_contiguous()

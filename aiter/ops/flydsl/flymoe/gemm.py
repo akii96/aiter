@@ -193,7 +193,7 @@ def build_gemm(
     # row per tile, so each lane owns 8 consecutive h values (4 fp4 bytes) of a row and group:
     # one e8m0 per (row, group) per lane, a 2-level cross-row max, 4 B LDS writes.
     S1TR = stage == 1 and pipe == "il4" and "s1tr" in DG
-    assert not S1TR or (EF and SE), "s1tr: EF epilogue, SR=even"
+    assert not S1TR or EF, "s1tr: EF epilogue"
     S2NT = "s2nt" in DG
     ROWS_W = MBW * 16
     if S2W:
@@ -878,7 +878,7 @@ def build_gemm(
                     bx = {}
                     for k in range_constexpr(len(hv)):
                         rb, gi, hs = hv[k]
-                        bexp = hw.e8m0_even_small(ms[k])
+                        bexp = e8m0(ms[k], True)
                         qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
                         pk = hw.raw(fx.Int32(0))
                         for i in range_constexpr(4):
