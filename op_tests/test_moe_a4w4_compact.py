@@ -366,6 +366,7 @@ def test_moe_a4w4_compact_rejects_unsupported():
     for change in (
         {"activation": ActivationType.Silu},
         {"intermediate_pad": 128},
+        {"hidden_pad": 256},
         {"doweight_stage1": True},
         {"expert_mask": torch.ones(EXPERTS, device="cuda")},
         {"gate_mode": "interleave"},
@@ -396,6 +397,46 @@ def test_moe_a4w4_compact_shipped_rows_resolve():
         cells = configs.load_table(int(inter_dim)).values()
         kwargs = dict(config_from_string(config))
         assert any(configs.cfg_kwargs(c) == kwargs for c in cells), kernel_name
+
+
+def _pad_weights(weights, inter_dim, padded):
+    """Zero-pad an MXFP4 inter_dim shard as vLLM does at TP8 (scales 0x7F)."""
+    w1_q, w1_s, w2_q, w2_s = weights
+    pad = padded - inter_dim
+    w1 = w1_q.view(torch.uint8).view(EXPERTS, 2, inter_dim, -1)
+    w1 = torch.nn.functional.pad(w1, (0, 0, 0, pad))
+    s1 = w1_s.view(torch.uint8).view(EXPERTS, 2, inter_dim, -1)
+    s1 = torch.nn.functional.pad(s1, (0, 0, 0, pad), value=0x7F)
+    w2 = torch.nn.functional.pad(w2_q.view(torch.uint8), (0, pad // 2))
+    s2 = w2_s.view(torch.uint8).view(EXPERTS, MODEL_DIM, -1)
+    s2 = torch.nn.functional.pad(s2, (0, pad // 32), value=0x7F)
+    return (
+        w1.view(EXPERTS, 2 * padded, -1).view(dtypes.fp4x2),
+        s1.view(EXPERTS * 2 * padded, -1).view(dtypes.fp8_e8m0),
+        w2.view(dtypes.fp4x2),
+        s2.view(EXPERTS * MODEL_DIM, -1).view(dtypes.fp8_e8m0),
+    )
+
+
+def test_moe_a4w4_compact_skips_padded_calls(tmp_path, monkeypatch):
+    """A padded call never reaches the compact family, even with a tuned row."""
+    from aiter.ops.flydsl.fused_moe_a4w4_compact import tune_space
+
+    tokens, inter_dim, padded = 1024, 384, 512
+    calls = _spy_impl(monkeypatch)
+    path = tmp_path / "moe_a4w4_compact_tuned_fmoe.csv"
+    _install_row(path, monkeypatch, tokens, padded, tune_space(inter_dim)[-1])
+    try:
+        x, weights, ids, topk_weight = _problem(tokens, inter_dim)
+        weights = _pad_weights(weights, inter_dim, padded)
+        try:
+            _run(x, weights, ids, topk_weight, intermediate_pad=padded - inter_dim)
+        except NotImplementedError as error:  # a non-compact path may reject padding
+            assert "compact" not in str(error), error
+        assert not calls, "padded call dispatched to the compact family"
+    finally:
+        monkeypatch.undo()
+        _reset_tuned_config_caches()
 
 
 if __name__ == "__main__":

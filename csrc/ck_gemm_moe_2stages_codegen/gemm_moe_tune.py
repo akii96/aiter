@@ -6183,6 +6183,12 @@ def _gfx942_flydsl_candidates():
 
 
 def _moe_a4w4_compact_candidates(untunedf):
+    """FlyDSL A4W4 compact MoE candidates for A4W4 SwiGLU prefill rows.
+
+    The family runs unpadded shapes only, so rows are written at the true width
+    (``inter_dim % 128 == 0``, ``model_dim % 256 == 0``); a padded call never
+    selects them.
+    """
     from aiter.fused_moe_registry import FusedMoeRequest
     from aiter.ops.flydsl.fused_moe_a4w4_compact import (
         MIN_TOKENS,
@@ -6236,6 +6242,8 @@ def _moe_a4w4_compact_candidates(untunedf):
             and str(row["act_type"]) == str(ActivationType.Swiglu)
             and not bool(row["doweight_stage1"])
             and int(row["token"]) >= MIN_TOKENS
+            and int(row["inter_dim"]) % 128 == 0
+            and int(row["model_dim"]) % 256 == 0
         )
 
     seen = set()
