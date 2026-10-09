@@ -2,9 +2,10 @@
 
 The FlyDSL A4W4 compact MoE is a kernel family for MXFP4 weights and activations (fp4 e2m1,
 e8m0 scales per 1x32 group) with the SwiGLU-OAI activation, built for prefill-sized
-batches (512 to 32768 tokens per call) on MI355X. It is reached through `fused_moe`
-like every other backend: a tuned row whose `kernelName1` is `impl__flydsl_a4w4_compact__<config>`
-dispatches the whole MoE to it through `aiter.fused_moe_registry`.
+batches (512 to 32768 tokens per call) on gfx950 (MI350X / MI355X). It is reached through
+`fused_moe` like every other backend: a tuned row whose `kernelName1` is
+`impl__flydsl_a4w4_compact__<config>` dispatches the whole MoE to it through
+`aiter.fused_moe_registry`.
 
 ## What is different
 
@@ -24,11 +25,13 @@ dispatches the whole MoE to it through `aiter.fused_moe_registry`.
 
 Weights are prepared exactly as for the other `per_1x32` fp4 paths:
 `shuffle_weight(w, layout=(16, 16))`, `e8m0_shuffle(scale)`, gate/up
-`GateMode.SEPARATED`. The family repacks them into its own layout once per weight tensor
-on first use and keeps that copy for the tensor's lifetime.
+`GateMode.SEPARATED`. The kernels read the fp4 weights in place; only the e8m0 scales
+(about 6% of the weight bytes) are repacked, once per weight tensor.
 
-Unsupported calls (other activations, bias, expert parallelism, padding, prequantized
-activations, `doweight_stage1`) never reach the family: `unsupported_reason` lists them.
+The family never runs on padded weights. Rows are written at the true `inter_dim` only,
+and a call with `hidden_pad` or `intermediate_pad` falls back to the existing kernels.
+Other unsupported calls (other activations, bias, expert parallelism, prequantized
+activations, `doweight_stage1`) also fall back: `unsupported_reason` lists them.
 
 Environment:
 
@@ -62,16 +65,21 @@ and `diagF` are `+`-joined:
 ```bash
 python csrc/ck_gemm_moe_2stages_codegen/gemm_moe_tune.py \
     -i aiter/configs/model_configs/minimax_m3_fp4_untuned_fmoe.csv \
-    -o aiter/configs/model_configs/minimax_m3_fp4_tuned_fmoe.csv --e2e_tune
+    -o aiter/configs/model_configs/minimax_m3_fp4_tuned_fmoe.csv \
+    --e2e_tune --fused-shared-expert
 ```
 
 On gfx950 `--e2e_tune` times every compact candidate from
-`aiter/ops/flydsl/moe_a4w4_compact/configs/` against the existing row and keeps the faster one.
+`aiter/ops/flydsl/moe_a4w4_compact/configs/` against the existing row and keeps the faster
+one. `--fused-shared-expert` routes expert `E-1` once per token, as vLLM does with fused
+shared experts, so fused-combine candidates are timed under the routing they need.
 
 ## Tests
 
 ```bash
 python -m pytest op_tests/test_moe_a4w4_compact.py
+AITER_MINIMAX_M3_MXFP4_PATH=/path/to/MiniMax-M3-MXFP4 \
+    python -m pytest op_tests/test_moe_a4w4_compact.py -k checkpoint
 ```
 
-Measurements, end-to-end results and open items: [moe_a4w4_compact_findings.md](moe_a4w4_compact_findings.md).
+Measurements and open items: [moe_a4w4_compact_findings.md](moe_a4w4_compact_findings.md).
