@@ -53,3 +53,5 @@ On gfx950 `--e2e_tune` times every FlyMoE candidate from
 ```bash
 python -m pytest op_tests/test_flymoe.py
 ```
+
+Measurements, end-to-end results and open items: [flymoe_findings.md](flymoe_findings.md).
