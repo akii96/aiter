@@ -133,6 +133,33 @@ def _all_finite(tensor: torch.Tensor) -> bool:
     return bool(torch.isfinite(tensor).all().item())
 
 
+def _fused_shared_expert_enabled(args) -> bool:
+    """Opt-in vLLM fused-shared-expert routing for whole-graph MoE candidates."""
+    return bool(getattr(args, "fused_shared_expert", False)) or (
+        os.environ.get("AITER_TUNE_FUSED_SHARED_EXPERT", "0") == "1"
+    )
+
+
+def _fused_shared_expert_topk(hidden, score, topk):
+    """Route ``topk - 1`` experts among the first E-1, then the shared expert E-1.
+
+    Mirrors vLLM fused shared experts: expert E-1 is appended to every token
+    with weight 1.0, so it is routed exactly once per token. Fused-combine
+    candidates (FlyMoE ``FC=1``) are exact only under this routing.
+    """
+    expert = score.shape[-1]
+    weights, ids = fused_topk(
+        hidden, score[:, : expert - 1].contiguous(), topk - 1, True
+    )
+    tokens = ids.shape[0]
+    shared_ids = torch.full((tokens, 1), expert - 1, dtype=ids.dtype, device=ids.device)
+    shared_w = torch.ones((tokens, 1), dtype=weights.dtype, device=weights.device)
+    return (
+        torch.cat([weights, shared_w], dim=1).contiguous(),
+        torch.cat([ids, shared_ids], dim=1).contiguous(),
+    )
+
+
 def _parse_tuning_type(value):
     if isinstance(value, (torch.dtype, ActivationType, QuantType)):
         return value
@@ -497,6 +524,15 @@ class FmoeTuner(TunerCommon):
             action="store_true",
             required=False,
             help="On gfx1250, tune the FlyDSL grouped-GEMM MoE path instead of the normal fmoe tuner.",
+        )
+        self.parser.add_argument(
+            "--fused-shared-expert",
+            action="store_true",
+            required=False,
+            help="Route topk-1 experts among the first E-1 and append the shared "
+            "expert E-1 with weight 1.0 (vLLM fused shared experts), for the kernel "
+            "and the reference. Also enabled by AITER_TUNE_FUSED_SHARED_EXPERT=1. "
+            "Required for fused-combine whole-graph candidates (FlyMoE FC=1).",
         )
         self.parser.add_argument(
             "--mxfp4-flydsl",
@@ -4805,7 +4841,12 @@ class FmoeTuner(TunerCommon):
                 w2_qt_fmoe.is_shuffled = True
 
                 score = torch.randn((token, expert), dtype=dtype, device="cuda")
-                topk_weights, topk_ids = fused_topk(hidden, score, topk, True)
+                if _fused_shared_expert_enabled(args):
+                    topk_weights, topk_ids = _fused_shared_expert_topk(
+                        hidden, score, topk
+                    )
+                else:
+                    topk_weights, topk_ids = fused_topk(hidden, score, topk, True)
                 if q_type == QuantType.per_1x128:
                     a1_qt, a1_scale = aiter.pertoken_quant(
                         hidden.view(token, -1, 128), quant_dtype=q_dtype_a
