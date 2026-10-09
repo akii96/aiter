@@ -22,13 +22,26 @@ def swiglu_oai(g, u, alpha=ALPHA, limit=LIMIT):
     return g * torch.sigmoid(alpha * g) * (u + 1.0)
 
 
-def moe_ref(x, topk_ids, topk_w, w_gate, s_gate, w_up, s_up, w_down, s_down,
-            requant_h=True, x_quant=None, even=True, quant_x=True):
+def moe_ref(
+    x,
+    topk_ids,
+    topk_w,
+    w_gate,
+    s_gate,
+    w_up,
+    s_up,
+    w_down,
+    s_down,
+    requant_h=True,
+    x_quant=None,
+    even=True,
+    quant_x=True,
+):
     """x [T, H] bf16; topk_ids [T, k] int; topk_w [T, k] f32; weights fp4x2 + e8m0.
 
     Returns (y [T, H] f32, a_q, a_s, h dict for debugging).
     """
-    T, H = x.shape
+    T = x.shape[0]
     if not quant_x:
         a_q = a_s = None
         a = x.float()

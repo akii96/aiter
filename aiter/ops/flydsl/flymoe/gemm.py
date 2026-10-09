@@ -1,29 +1,28 @@
 """Grouped A4W4 GEMM for the MoE, both stages, one kernel template.
 
 Work unit: a tile (expert, row_start, nrows) of the compact, expert-sorted row
-array (exactly T*topk rows, never padded to BM) times a 256-column N block.
+array (exactly T*topk rows, never padded to BM) times a BN-column N block.
 
-CTA = 4 waves. Wave w owns 64 output columns (4 MFMA n16 tiles); all waves
-share the BM-row A tile.
-
-pipe="async": A tile, B atoms, B scales and A scales for each 128-K step go
-    global -> LDS by async DMA into an NSTG-deep ring (no staging VGPRs).
-pipe="regs":  A through VGPRs into a 2-slot LDS ring, B straight into VGPRs,
-    D steps ahead.
+pipe="async":   A tile, B atoms, B scales and A scales for each 128-K step go
+                global -> LDS by async DMA into a ring (no staging VGPRs).
+pipe="hybrid":  A through an async LDS ring, B straight to VGPRs, D steps ahead.
+pipe="hybrid2": hybrid with the next step's LDS operands read during the MFMAs.
+pipe="il4":     persistent 2x2-wave 256x256 tile, accumulators in AGPRs, one wave
+                per SIMD; the next tile's prologue overlaps this tile's epilogue.
 
 stage 1: A = quantized hidden rows gathered by token; epilogue = SwiGLU-OAI +
-         fp4 requant of h, written in compact row order ([R, I/2] + [R, I/32]).
-stage 2: A = h rows (identity); epilogue = topk weight applied, then
-         "rows"       : bf16 per compact row, combined by combine.py (deterministic)
-         "f32atomic"  : fp32 atomic add into out[T, H]
-         "bf16atomic" : packed bf16 atomic add into out[T, H]
+         fp4 requant of h, written in compact row order ([R, I/2] + [R, I/32]) or,
+         with HT, K-step-major (h_t [I/128][R][64 B], scales [I/128][R][4 B]).
+stage 2: A = h rows; epilogue = topk weight applied, then
+         "rows"  : bf16 per compact row, summed by combine.py (deterministic)
+         "fused" : shared-expert tiles add the token's routed rows and write out
 """
 
 import functools
 
 import flydsl.compiler as flyc
-from flydsl.compiler.ast_rewriter import ASTRewriter
 import flydsl.expr as fx
+from flydsl.compiler.ast_rewriter import ASTRewriter
 from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr import math as fmath
 from flydsl.expr.typing import T
@@ -31,50 +30,31 @@ from flydsl.expr.typing import T
 from . import hw
 
 NUM_CUS = 256
-CF_CC = 4  # cf: combine CTAs per token
-
-
-def qf_parts(K, NW):
-    """qf: quant CTAs per token (one 32-element group per thread)."""
-    return (K // 32 + 64 * NW - 1) // (64 * NW)
-
-
-def qf_ctas(T, K, NW):
-    """qf: the quant CTAs ahead of the tiles in the stage-1 grid (a multiple of the 8 XCDs)."""
-    return (T * qf_parts(K, NW) + 7) // 8 * 8
-EPOCH_OFF = 64  # qf / cf: the epoch's byte offset from the (single-spec) ntiles pointer
 OOB = 0x7FFFFFC0  # voffset sentinel: >= hw.REC_CAP even with a 63 B chunk offset added
 
 
-def _swz(row, mode=3):
-    """XOR (in 16 B units) applied to the logical K chunk of an A-tile LDS row (64 B rows)."""
-    if mode == 0:
-        return row * 0
-    if mode == 1:
-        return ((row >> 2) & 3) * 16
-    if mode == 2:
-        return (row & 3) * 16
-    if mode == 3:
-        return ((row >> 1) & 3) * 16
-    return (((row >> 2) ^ row) & 3) * 16
+def _swz(row):
+    """XOR (in 16 B units) on the logical K chunk of an A-tile LDS row (64 B rows):
+    zero bank conflicts for the 16 B/lane operand reads (measured)."""
+    return ((row >> 1) & 3) * 16
 
 
-def _il4_plan(n_dma, has_next, mbw, bar, dsp=0, early=False):
+def _il4_plan(n_dma, has_next, mbw, bar):
     """il4 issue plan for one K step: per MFMA slot (MFMA i = half i // 32, row block
     (i % 32) // 4, tile 4 * half + i % 4), the (kind, index) ops issued after that MFMA.
       own: this step's B scale / B tiles 4-7 (5 reads, slots 0-4)
-      bar: DMA wait + barrier (slot `bar`); d: next DMAs, one every `dsp` slots after the
-           barrier (0: spread over the rest of the step; bursts fill the TA queue and stall
-           issue, measured ~300 cycles per DMA at 2 slots)
+      bar: DMA wait + barrier (slot `bar`); d: next DMAs spread over the rest of the step
+           (bursts fill the TA queue and stall issue)
       nb:  next step's B scale / B tiles 0-3 (5 reads, after slot 31, their last use)
-      na:  next step's A row block rb + its scale (after slot 35 + 4 rb, its last use)"""
+      na:  next step's A row block rb + its scale (after slot 35 + 4 rb, its last use)
+    """
     slots = [[] for _ in range(32 * 2)]
     for k in range(5):
         slots[k].append(("own", k))
     if has_next:
         slots[bar].append(("bar", 0))
-    first = 5 if early else bar + 1  # early: the refilled slot is free from step start
-    step = dsp or max(1, (63 - first) // max(n_dma, 1))
+    first = bar + 1
+    step = max(1, (63 - first) // max(n_dma, 1))
     for k in range(n_dma):
         slots[min(first + step * k, 63)].append(("d", k))
     if has_next:
@@ -85,85 +65,83 @@ def _il4_plan(n_dma, has_next, mbw, bar, dsp=0, early=False):
     return slots
 
 
-@functools.lru_cache(maxsize=None)
-def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = False,
-               epi: str = "rows", xcd_remap: bool = True, pipe: str = "async", NW: int = 4,
-               GM: int = 1, diag: str = "", WM: int = 1, EF: bool = False, MV: int = 0, AST: bool = False,
-               HT: bool = False, KTOP: int = 5, PERS: int = 0,
-               alpha: float = 1.702, limit: float = 7.0):
+@functools.cache
+def build_gemm(
+    stage: int,
+    K: int,
+    N: int,
+    BM: int,
+    D: int = 3,
+    epi: str = "rows",
+    pipe: str = "async",
+    NW: int = 4,
+    diag: str = "",
+    WM: int = 1,
+    EF: bool = False,
+    MV: int = 0,
+    AST: bool = False,
+    HT: bool = False,
+    KTOP: int = 5,
+    PERS: int = 0,
+    alpha: float = 1.702,
+    limit: float = 7.0,
+):
     assert stage in (1, 2)
-    assert epi in ("rows", "f32atomic", "bf16atomic", "fused")
+    assert epi in ("rows", "fused")
     assert epi != "fused" or stage == 2
-    assert pipe in ("async", "regs", "hybrid", "hybrid2", "async2", "pingpong", "il4")
-    assert NW in (1, 2, 4, 8) and WM in (1, 2, 4) and NW % WM == 0
-    WN = NW // WM  # waves along N; WM wave-rows share each B slice through LDS
+    assert pipe in ("async", "hybrid", "hybrid2", "il4")
+    assert NW in (1, 2, 4) and WM in (1, 2) and NW % WM == 0
+    WN = NW // WM
     # il4: one wave per SIMD owning 128 output columns (two 64-column groups, 8 n16 tiles)
     CG = 2 if pipe == "il4" else 1
     TWN = 4 * CG  # n16 tiles per wave
     BN = 64 * WN * CG
     THREADS = 64 * NW
     assert K % 128 == 0 and N % BN == 0 and BM % (16 * WM) == 0
-    assert WM == 1 or pipe in ("async", "async2", "pingpong", "il4"), "WM > 1 needs B staged in LDS"
-    assert pipe != "pingpong" or WM == 2, "pingpong alternates the two wave-rows (WM=2)"
-    assert pipe != "il4" or (NW == 4 and AST and BM == 256 and WM == 2), \
-        "il4: 4 waves as 2x2 (256x256 CTA), step-major A scales"
-    assert pipe != "il4" or stage == 1 or (HT and epi == "rows"), "il4 stage 2: h_t A (HT), rows epilogue"
+    assert WM == 1 or pipe == "il4", "WM > 1: il4 only"
+    assert pipe != "il4" or (
+        NW == 4 and AST and BM == 256 and WM == 2 and PERS
+    ), "il4: persistent 4 waves as 2x2 (256x256 CTA), step-major A scales"
+    assert pipe == "il4" or not PERS, "PERS: il4 only"
+    assert (
+        pipe != "il4" or stage == 1 or (HT and epi == "rows")
+    ), "il4 stage 2: h_t A, rows"
     KS = K // 128
-    # diag=skN: split-K over N units per tile (stage 1); KSL = K steps per unit (loop length),
-    # KS stays the stride of the full-K weight layouts.
-    SK = next((int(t[2:]) for t in diag.split("+") if t.startswith("sk") and t[2:].isdigit()), 1)
-    assert SK == 1 or (stage == 1 and pipe not in ("il4", "regs") and not PERS and KS % SK == 0)
-    KSL = KS // SK
     MB = BM // 16
     MBW = MB // WM  # row blocks per wave
     NB = N // BN
-    A_INSTR = BM // 16  # 1 KB (16 rows x 64 B) per wave-wide DMA / load
+    A_INSTR = BM // 16  # 1 KB (16 rows x 64 B) per wave-wide DMA
     A_IT = (A_INSTR + NW - 1) // NW
-    A_CH = (BM * 4) // THREADS
     KH = K // 2
     KG = K // 32
     INTER = N // 2
-    b_cm = hw.NT if b_nt else 0
 
-    SLOT = BM * 64
-    if pipe in ("async", "hybrid", "hybrid2", "async2", "pingpong", "il4"):
-        prefetch = pipe in ("hybrid2", "async2")
-        NSTG = max(3 if pipe in ("hybrid2", "async2", "pingpong", "il4") else 2, min(D, KSL + 1))
-        DB = min(D, KSL) if pipe in ("hybrid", "hybrid2") else min(3, KSL)
-        b_lds = pipe in ("async", "async2", "pingpong", "il4")
-        # LDS is laid out per buffer kind across ring slots ([A x NSTG][B x NSTG][BS][AS]) so
-        # every LDS read is (one hoisted base VGPR per kind) + an immediate offset < 64 KB:
-        # no per-read address VALU, which would queue behind the partner wave's MFMAs.
-        SA = BM * 64
-        SB = WN * CG * 4096 if b_lds else 0
-        SBS = WN * CG * 256 if b_lds else 0
-        SAS = max(BM * 4, 1024) if (AST and BM >= 256) else max(BM, 64) * 4
-        # il4 sc2: on even steps each wave issues one 16 B/lane scale DMA (waves 0/1: B / A
-        # scales of step t, waves 2/3: of step t+1), 2 per step per CTA instead of 8 x 4 B.
-        # Step t+1's scales land a step early, hence one more scale ring slot than NSTG.
-        SC2 = pipe == "il4" and "nosc2" not in diag.split("+")
-        # il4 r4: one extra A/B ring slot, so step s+NSTG's slot is free from the start of
-        # step s and its DMAs spread over the whole step, not just after the mid-step barrier.
-        RING = NSTG + 1 if (pipe == "il4" and "r4" in diag.split("+")) else NSTG
-        SCD = (NSTG + 1 + (RING - NSTG)) if SC2 else NSTG
-        RB = RING * SA
-        RBS = RB + RING * SB
-        RAS = RBS + SCD * SBS
-        lds_bytes = RAS + SCD * SAS
-        assert lds_bytes <= 160 * 1024, lds_bytes
-    else:
-        assert A_CH >= 1 and (BM * 4) % THREADS == 0, "regs pipe needs BM*4 >= threads"
-        D = max(1, min(D, KS))
-        SLOT = BM * 64
-        lds_bytes = 2 * SLOT
+    prefetch = pipe == "hybrid2"
+    NSTG = max(3 if pipe in ("hybrid2", "il4") else 2, min(D, KS + 1))
+    DB = min(D, KS) if pipe in ("hybrid", "hybrid2") else min(3, KS)
+    b_lds = pipe in ("async", "il4")
+    # LDS is laid out per buffer kind across ring slots ([A x NSTG][B x NSTG][BS][AS]) so
+    # every LDS read is (one hoisted base VGPR per kind) + an immediate offset < 64 KB.
+    SA = BM * 64
+    SB = WN * CG * 4096 if b_lds else 0
+    SBS = WN * CG * 256 if b_lds else 0
+    SAS = max(BM * 4, 1024) if (AST and BM >= 256) else max(BM, 64) * 4
+    # il4 sc2: on even steps each wave issues one 16 B/lane scale DMA (waves 0/1: B / A
+    # scales of step t, waves 2/3: of step t+1), 2 per step per CTA instead of 8 x 4 B.
+    # Step t+1's scales land a step early, hence one more scale ring slot than NSTG.
+    SC2 = pipe == "il4"
+    RING = NSTG
+    SCD = NSTG + 1 if SC2 else NSTG
+    RB = RING * SA
+    RBS = RB + RING * SB
+    RAS = RBS + SCD * SBS
+    lds_bytes = RAS + SCD * SAS
+    assert lds_bytes <= 160 * 1024, lds_bytes
 
-    name = f"flymoe_s{stage}_k{K}_n{N}_bm{BM}_w{NW}{'x' + str(WM) if WM > 1 else ''}_{pipe}{D}{'_nt' if b_nt else ''}"
+    name = f"flymoe_s{stage}_k{K}_n{N}_bm{BM}_w{NW}{'x' + str(WM) if WM > 1 else ''}_{pipe}{D}"
     if stage == 2:
         name += f"_{epi}"
-    if xcd_remap:
-        name += "_xcd"
-    if GM > 1:
-        name += f"_gm{GM}"
+    name += "_xcd"
     if EF:
         name += "_ef"
     if MV:
@@ -172,7 +150,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         name += "_ast"
     if HT:
         name += "_ht"
-    if epi == "fused" or "qf" in diag.split("+") or "cf" in diag.split("+"):
+    if epi == "fused":
         name += f"_k{KTOP}"
     if PERS:
         name += f"_p{PERS}"
@@ -182,152 +160,95 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
     if (alpha, limit) != (1.702, 7.0):
         name += f"_a{alpha}_l{limit}".replace(".", "p")
     name += "_" + hw.SRC_HASH
-    DG = tuple(sorted(diag.split("+"))) if diag else ()  # tuple: part of the FlyDSL JIT cache key (sets are not)
-    SKIP = "skip" in DG
-    IL4_BAR = next((int(t[3:]) for t in DG if t.startswith("bar") and t[3:].isdigit()), 5)
-    IL4_DSP = next((int(t[3:]) for t in DG if t.startswith("dsp") and t[3:].isdigit()), 0)
-    STG = next((int(t[3:]) for t in DG if t.startswith("stg") and t[3:].isdigit()), 0)
-    IL4_ASM = pipe == "il4" and "noasm" not in DG
-    SE = "se" in DG  # "even" e8m0 scale rule (checkpoint / runtime quant), else ceil_pow2(amax/6)
-    # ap: stage-1 A pre-gathered by the quant into plan-row order, K-step-major
-    # (a_q_t[H/128][R][64 B]), so each A DMA is a contiguous 1 KB; needs AST, n_a_rows = R.
-    AP = stage == 1 and "ap" in DG
-    assert not AP or AST, "ap: needs the step-major A scales"
-    HTA = (HT and stage == 2) or AP   # A is K-step-major: [K/128][R][64 B]
-    # S1S: stage-1 il4 epilogue staged per wave in a private LDS region past the ring (no
-    # barrier): ROWS_W rows x CG*16 B of h, then ROWS_W x CG scale bytes; written back as
-    # 16 B/lane h rows and CG-byte scale runs instead of one global byte store per value.
-    # With HT the same runs go to h_t / the step-major h scales.
-    S1S = stage == 1 and pipe == "il4" and "nos1s" not in DG
-    HTW = HT and stage == 1 and not S1S   # stage-1 epilogue writes h_t + step-major h scales
-    # s1st: the row-major (non-HT) h bytes staged per wave in the freed LDS ring, then stored
-    # as one 16 B row slice per lane instead of 1 B per lane per row
-    STW = stage == 1 and not S1S and not HT and "s1st" in DG
-    assert not STW or (CG == 1 and not PERS)
-    # Uniform scale DMAs for the 2x4 ping-pong tile: every wave issues exactly one 256 B
-    # scale DMA per step (wave-row 0: its B-scale block, wave-row 1: a quarter of the
-    # step-major A scales), so all waves carry identical DMA counts and vmcnt is exact.
-    UNI = "uni" in DG and pipe == "pingpong" and WM == 2 and WN == 4 and BM == 256 and AST
-    SWZ = next((int(t[3:]) for t in DG if t.startswith("swz")), 3)  # mode 3: zero LDS bank conflicts (measured)
-
+    DG = (
+        tuple(sorted(diag.split("+"))) if diag else ()
+    )  # tuple: part of the JIT cache key
+    IL4_BAR = next(
+        (int(t[3:]) for t in DG if t.startswith("bar") and t[3:].isdigit()), 5
+    )
+    SE = (
+        "se" in DG
+    )  # "even" e8m0 scale rule (checkpoint / runtime quant), else ceil_pow2(amax/6)
+    HTA = HT and stage == 2  # A is K-step-major: [K/128][R][64 B]
+    # S1S: the stage-1 il4 epilogue is staged per wave in a private LDS region past the ring:
+    # ROWS_W rows x CG*16 B of h, then ROWS_W x CG scale bytes; written back as 16 B/lane h
+    # rows and CG-byte scale runs (HT: to h_t / the step-major h scales).
+    S1S = stage == 1 and pipe == "il4"
+    HTW = (
+        HT and stage == 1 and not S1S
+    )  # stage-1 epilogue writes h_t + step-major h scales
     # Stage-2 wide stores: each wave stages its weighted bf16 tile (rows x 64 cols = 128 B
     # per row) in LDS, then writes 16 B/lane full-line row segments.
-    S2W = stage == 2 and pipe != "il4" and ((epi == "rows" and "nos2w" not in DG) or epi == "fused")
-    # il4 stage 2: each wave transposes one 16-row block (16 x 128 cols bf16 = 4 KB) at a time
-    # through a private LDS region past the ring, so persistent prologue DMAs keep the ring.
+    S2W = (
+        stage == 2
+        and pipe != "il4"
+        and ((epi == "rows" and "nos2w" not in DG) or epi == "fused")
+    )
+    # il4 stage 2: C^T MFMAs (operands swapped): a lane holds 4 consecutive output columns of
+    # one row per tile; each wave transposes one 16-row block at a time through a private LDS
+    # row buffer past the ring (one 16 B write per tile pair, 256 B row stores).
     S2I = stage == 2 and pipe == "il4"
-    # s2tr: il4 stage 2 computes C^T (MFMA operands swapped): a lane holds 4 consecutive columns
-    # of one row, so an even/odd W2 tile pair is 8 consecutive bf16 -> direct 16 B stores.
-    # s2tl: s2tr's C^T MFMAs, but the rows still go through the private LDS row buffer (one 16 B
-    # write per tile pair, 256 B row stores) instead of s2tr's direct 64 B row-piece stores.
-    S2TL = S2I and "s2tl" in DG
-    S2TR = S2I and ("s2tr" in DG or S2TL)
-    # s1tr: stage-1 il4 MFMAs with A/B swapped (C^T): a lane holds 4 consecutive columns of one row
-    # per tile, so each lane owns 8 consecutive h values (4 fp4 bytes) of a row and group: one e8m0
-    # per (row, group) per lane, a 2-level cross-row max, and 4 B LDS writes in the S1S epilogue.
+    assert not S2I or "s2tl" in DG, "il4 stage 2 needs s2tl"
+    # s1tr: stage-1 il4 MFMAs with A/B swapped (C^T): a lane holds 4 consecutive columns of one
+    # row per tile, so each lane owns 8 consecutive h values (4 fp4 bytes) of a row and group:
+    # one e8m0 per (row, group) per lane, a 2-level cross-row max, 4 B LDS writes.
     S1TR = stage == 1 and pipe == "il4" and "s1tr" in DG
-    assert not S1TR or (S1S and EF and SE and IL4_ASM and "nopk" not in DG), "s1tr: S1S packed EF/SE epilogue"
+    assert not S1TR or (EF and SE), "s1tr: EF epilogue, SR=even"
     S2NT = "s2nt" in DG
-    # fz (bodies of build_fused): h crosses XCDs inside one launch, so stage 1 writes it through
-    # to memory (sc0 sc1) and stage 2 reads it past its own, possibly stale, L2.
-    # Flags hold the forward's epoch (an int32 at ntiles_ptr + EPOCH_OFF that the plan bumps
-    # once per forward), so they only grow: no consumer atomics, no re-arming.
-    # qf (stage 1): the first ceil(T*QC/8)*8 CTAs quantize a token's KG/QC groups each (x =
-    # aux_ptr) and set its flag (rw_ptr: int32[T][4]); a tile issues its weight loads, waits for
-    # its rows' tokens, then reads a_q / a_s past its L2.
-    # cf (stage 2): CTAs past the tiles combine (out[t] = sum of the token's KTOP rows, slot
-    # order, as combine.py), CC per token; every tile CTA sets rtok_ptr: int32[R][NB] for its
-    # rows and n-block once its rows are acknowledged.
-    QF = stage == 1 and "qf" in DG
-    QFT = QF and "qft" in DG  # timeline: CTA (start, quant done / wait released, end) after the flags
-    QFNW = QF and "qfnw" in DG  # knock-out: tiles do not wait for the quant (wrong results)
-    CF = stage == 2 and "cf" in DG
-    assert not QF or (not PERS and pipe not in ("il4", "pingpong", "regs") and BM <= 64 and SK == 1
-                      and not AST and GM == 1)
-    assert not CF or (not PERS and epi == "rows" and pipe not in ("il4", "regs") and BM <= 64 and GM == 1)
-    H_CM = 17 if ("fz" in DG and stage == 1) else 0
-    A_CM = 17 if (("fz" in DG and stage == 2) or QF) else 0
-    Y_CM = 17 if CF else 0
-    # ytl: FC-only y_rows layout [N/BN][R][BN] (written by the rows launch, read by the fused one).
-    YTL = stage == 2 and "ytl" in DG
-    assert not YTL or (S2W and "nofcb" not in DG), "ytl needs the LDS-staged rows / batched FC epilogues"
     ROWS_W = MBW * 16
-    # Persistent prefetch (hybrid2 / async2 rows): tile w+1's prologue DMAs land in the ring
-    # during tile w's epilogue, so the row staging area sits after the ring.
-    PF = (bool(PERS) and "pf" in DG and stage == 2 and epi == "rows" and S2W
-          and pipe in ("hybrid2", "async2"))
-    PFB = PF and pipe == "hybrid2" and "pfb" in DG
-    S2W_BASE = lds_bytes if PF else 0
     if S2W:
-        lds_bytes = max(lds_bytes, S2W_BASE + NW * ROWS_W * 128)
+        lds_bytes = max(lds_bytes, NW * ROWS_W * 128)
     RWP = max(ROWS_W, 64)
-    # s1sd: the s1st staging gets its own LDS past the ring (no barrier before the epilogue)
-    STD = STW and "s1sd" in DG
-    STW_BASE = lds_bytes if STD else 0
-    if HTW or STW:
-        lds_bytes = max(lds_bytes, STW_BASE + NW * RWP * (17 if STW else 16))
-    assert not S1S or CG == 2
+    if HTW:
+        lds_bytes = max(lds_bytes, NW * RWP * 16)
     S1S_H = ROWS_W * CG * 16
     S1S_W = S1S_H + ROWS_W * CG
     S1S_BASE = lds_bytes
     S2I_W = 16 * (16 * TWN) * 2  # one row block: 16 rows x (16 * TWN) cols bf16
-    IL4P = bool(PERS) and pipe == "il4" and "nopro" not in DG
     if S1S:
         lds_bytes = S1S_BASE + NW * S1S_W
     # s2db: two row-block buffers per wave (block rb + 1's writes need not wait for rb's reads)
     S2NB = 2 if S2I and "s2db" in DG else 1
     if S2I:
         lds_bytes = S1S_BASE + NW * S2I_W * S2NB
-    SK_UB = BM * BN * 4  # one unit's fp32 partial tile
-    # Partials bypass the per-XCD L2 (sc0 sc1: write-through / read from the memory side), so
-    # the arrival counter needs no agent-scope fences, which write back / invalidate all of L2.
-    # skf: fences + cached partials instead.
-    SKF = "skf" in DG
-    SK_CM = (0 if SKF else 17) | (hw.NT if "sknt" in DG else 0)
-    SK_LDS = lds_bytes
-    if SK > 1:
-        lds_bytes += 16
-    CC = CF_CC
-    CW = N // CC
-    NBC = CW // BN
-    QC = qf_parts(K, NW)
-    assert not CF or (CW % 8 == 0 and CW % BN == 0)
-    assert not QF or (QC <= 4 and BM * QC <= 64)
     assert lds_bytes <= 160 * 1024, lds_bytes
 
     @fx.struct
     class SharedStorage:
         raw: fx.Array[fx.Uint8, lds_bytes, 16]
 
-    def _kbody(a_ptr, as_ptr, b_ptr, bs_ptr, tiles_ptr, ntiles_ptr, rtok_ptr, rw_ptr, o_ptr, os_ptr,
-               aux_ptr, n_a_rows, n_rows, n_out, lds_base, fwork=None, hook=None, frange=None):
-        # Bodies inside build_fused's kernel: fwork = the tile of one work index; frange = work
-        # indices [lo, hi) in order (PF: each tile's prologue overlaps the previous epilogue);
-        # hook: called in the (first) prologue after the B (weight) loads, before the A loads.
+    def _kbody(
+        a_ptr,
+        as_ptr,
+        b_ptr,
+        bs_ptr,
+        tiles_ptr,
+        ntiles_ptr,
+        rtok_ptr,
+        rw_ptr,
+        o_ptr,
+        os_ptr,
+        aux_ptr,
+        n_a_rows,
+        n_rows,
+        n_out,
+        lds_base,
+    ):
         tid = fx.Int32(gpu.thread_id("x"))
         bid = fx.Int32(gpu.block_id("x"))
         lane = tid % 64
         wave = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tid // 64)))
-        wm = wave // WN
-        wn = wave % WN
 
         r_misc = hw.rsrc(ntiles_ptr, 4)
         ntiles = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_misc, 0, T.i32)))
-        bound = ntiles * (NB * SK)
+        bound = ntiles * NB
         n_rows_k, n_a_rows_k, lane_k, wave_k = n_rows, n_a_rows, lane, wave
 
         def _decode(work):
-            if const_expr(GM == 1):
-                return work // NB, work % NB
-            # Groups of GM m-tiles sweep the N blocks together, so concurrently
-            # running CTAs share a few weight column slices (L2 reuse).
-            grp = work // (GM * NB)
-            within = work % (GM * NB)
-            gsize = fx.min(ntiles - grp * GM, fx.Int32(GM))
-            return grp * GM + within % gsize, within // gsize
+            return work // NB, work % NB
 
-        def _tile_body(work, mode="full", nxt=None, st=None, defer=False, hook=None):
-            # IL4P modes: "pro" = setup + prologue DMAs only; "main" = the tile with its
+        def _tile_body(work, mode="full", nxt=None, st=None, defer=False):
+            # il4 modes: "pro" = setup + prologue DMAs only; "main" = the tile with its
             # prologue already in flight, issuing tile `nxt`'s prologue before its epilogue.
             # st = [e, row_start, nrows, raw token of each A DMA row]: a tile's loaded state,
             # carried across the tile loop so no body waits on its own tile / token loads.
@@ -339,15 +260,7 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             lane = hw.v_opaque(lane_k, work) if const_expr(PERS) else lane_k
             wave = hw.s_opaque(wave_k, work) if const_expr(PERS) else wave_k
             wm, wn = wave // WN, wave % WN
-            if const_expr(PERS and mode == "full"):
-                gpu.barrier()  # previous tile's LDS use is finished before the ring refills
-            if const_expr(SK > 1):
-                unit, ksp = work // SK, work % SK
-                tile, nblk = _decode(unit)
-                k0 = ksp * KSL
-            else:
-                tile, nblk = _decode(work)
-                k0 = 0
+            tile, nblk = _decode(work)
             r_tiles = hw.rsrc(tiles_ptr)
             if const_expr(st is None):
                 tv = fx.Vector(hw.bload(r_tiles, tile * 16, T.i32x4))
@@ -361,26 +274,21 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             st_out = None
             pro_ops = []
 
-            # split-K: every resource base starts at the unit's first K step k0
-            ka = fx.Int64(k0 * 64)
-            kas = fx.Int64(n_rows) * fx.Int64(k0 * 4) if const_expr(AST) else fx.Int64(k0 * 4)
-            r_a = hw.rsrc(fx.Int64(a_ptr) + ka if const_expr(SK > 1) else a_ptr,
-                          fx.Int64(n_a_rows) * fx.Int64(KH))
-            r_as = hw.rsrc(fx.Int64(as_ptr) + kas if const_expr(SK > 1) else as_ptr,
-                           fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG))
+            r_a = hw.rsrc(a_ptr, fx.Int64(n_a_rows) * fx.Int64(KH))
+            r_as = hw.rsrc(
+                as_ptr, fx.Int64(n_rows if const_expr(AST) else n_a_rows) * fx.Int64(KG)
+            )
             r_tok = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
             b_exp = fx.Int64(N // 16) * fx.Int64(KS * 1024)
             bs_exp = fx.Int64(N // 64) * fx.Int64(KS * 256)
-            kb = fx.Int64(k0 * 1024) if const_expr(SK > 1) else fx.Int64(0)
-            kbs = fx.Int64(k0 * ((N // 64) * 256)) if const_expr(SK > 1) else fx.Int64(0)
-            r_b = hw.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp + kb, b_exp)
-            r_bs = hw.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp + kbs, bs_exp)
+            r_b = hw.rsrc(fx.Int64(b_ptr) + fx.Int64(e) * b_exp, b_exp)
+            r_bs = hw.rsrc(fx.Int64(bs_ptr) + fx.Int64(e) * bs_exp, bs_exp)
 
             def a_row_of(row, it=None):
                 valid = row < nrows
-                if const_expr(stage == 1 and not AP and toks is not None and it is not None):
+                if const_expr(stage == 1 and toks is not None and it is not None):
                     t = toks[it]
-                elif const_expr(stage == 1 and not AP):
+                elif const_expr(stage == 1):
                     t = fx.Int32(hw.bload(r_tok, (row_start + row) * 4, T.i32))
                 else:
                     t = row_start + row
@@ -397,7 +305,8 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             def a_soff(s):
                 # h_t layout: K step s of every row lives in plane s ([KS][R][64 B])
                 return n_rows * (s * 64) if const_expr(HTA) else s * 64
-            a_rd = l16 * 64 + ((lg * 16) ^ _swz(l16, SWZ))
+
+            a_rd = l16 * 64 + ((lg * 16) ^ _swz(l16))
             b_voff = []
             for j in range_constexpr(4):
                 nt = nblk * (4 * WN) + wn * 4 + j
@@ -413,1203 +322,971 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
             # B-scale block stride: stage 1 is K-step-major (blocks of a step adjacent), stage 2
             # keeps each 64-column block's KS steps together.
             BSB = 256 if stage == 1 else KS * 256
-            bs4_voff = (nblk * (WN * CG) + wave) * BSB + lane * 4
             # One 16 B/lane DMA covers the CTA's 4 B-scale blocks (1 KB) for a step.
             BS1 = WN == 4 and stage == 1
             bs16_voff = (nblk * WN) * 256 + lane * 16
-            bs_wave = 1 if NW <= 4 else 4  # the wave issuing the B-scale DMA
             rb0 = wm * MBW  # first row block owned by this wave
             zero = hw.raw(fx.Vector.filled(4, 0.0, fx.Float32))
             acc = [[zero] * TWN for _ in range(MBW)]
 
-            if const_expr(pipe != "regs"):
-                # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
-                pc = lane % 4
-                a_dma_voff = []
-                if const_expr(IL4P and toks is None and stage == 1 and not AP):
-                    toks = [fx.Int32(hw.bload(r_tok, (row_start + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
-                            for it in range_constexpr(A_IT)]
-                    st_out = [e, row_start, nrows] + toks
-                elif const_expr((IL4P or PF) and st is None):
-                    st_out = [e, row_start, nrows]
-                for it in range_constexpr(A_IT):
-                    row = (wave + it * NW) * 16 + lane // 4
-                    a_dma_voff.append(a_row_of(row, it) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row, SWZ)))
-                as_uni_voff = as_off(wn * 64 + lane)
-                as4_voff = as_off(wave * (BM // NW) + lane)
-                # sc2: the CTA's 1 KB of B scales / 256 rows x 4 B of A scales for one step
-                bs16_voff4 = (nblk * (WN * CG) + lane // 16) * BSB + (lane % 16) * 16
-                as16_voff = as_off(lane * 4)
-                AS16 = AST and BM >= 256
-                if const_expr(AS16):
-                    # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
-                    AS_W = (BM + 255) // 256
-                    AS_IT = (AS_W + NW - 1) // NW
-                    as_dma_voff = [as_off((wave + it * NW) * 256 + lane * 4)
-                                   for it in range_constexpr(AS_IT)]
-                elif const_expr(AST):
-                    # K-step-major compact scales, 64 rows (256 B) per 4 B/lane DMA: exact for BM < 256.
-                    AS_W = (max(BM, 64) // 64)
-                    AS_IT = (AS_W + NW - 1) // NW
-                    as_dma_voff = [as_off((wave + it * NW) * 64 + lane)
-                                   for it in range_constexpr(AS_IT)]
-                else:
-                    AS_W = (max(BM, 64) // 64)
-                    AS_IT = (AS_W + NW - 1) // NW
-                    as_dma_voff = [a_row_of((wave + it * NW) * 64 + lane) * KG for it in range_constexpr(AS_IT)]
-
-                def dma_ops(s, part="all"):
-                    """This wave's DMA instructions for K step s, as thunks (issue order).
-                    part "b": B / B-scale DMAs only, "a": A / A-scale only."""
-                    slot = s % RING
-                    oA, oB = slot * SA, RB + slot * SB
-                    oBS, oAS = RBS + (s % SCD) * SBS, RAS + (s % SCD) * SAS
-                    ops = []
-                    for it in range_constexpr(A_IT if ("nodmaA" not in DG and part != "b") else 0):
-                        if const_expr(A_INSTR % NW == 0):
-                            ops.append(lambda it=it: hw.dma_async(
-                                r_a, lds_base, wave * 1024 + (oA + it * NW * 1024), a_dma_voff[it], soff=a_soff(s), cm=A_CM))
-                        else:
-                            def _a(it=it):
-                                if wave + it * NW < fx.Int32(A_INSTR):
-                                    hw.dma_async(r_a, lds_base, wave * 1024 + (oA + it * NW * 1024),
-                                                 a_dma_voff[it], soff=a_soff(s), cm=A_CM)
-                            ops.append(_a)
-                    if const_expr(UNI):
-                        def _sc():
-                            if wm == fx.Int32(0):
-                                hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
-                                             soff=s * BS_STEP, nbytes=4, cm=b_cm)
-                            else:
-                                hw.dma_async(r_as, lds_base, wn * 256 + oAS, as_uni_voff,
-                                             soff=n_rows * (s * 4), nbytes=4, cm=A_CM)
-                    if const_expr(pipe == "il4"):
-                        # Branch-free: every wave issues the same DMA mix. B: WN*TWN 1 KB tiles
-                        # dealt round-robin; B scales: WN*CG 256 B blocks (4 B/lane); A scales:
-                        # BM/NW rows of 4 B per wave (4 B/lane).
-                        for q in range_constexpr((WN * TWN) // NW if "nodmaB" not in DG else 0):
-                            ops.append(lambda q=q: hw.dma_async(
-                                r_b, lds_base, wave * 1024 + (oB + q * NW * 1024),
-                                b4_voff + (q * NW) * (KS * 1024), soff=s * 1024, cm=b_cm))
-                        if const_expr(SC2):
-                            def _sc2():
-                                ts = fx.Int32(s) + (wave >> 1)
-                                isb = (wave & 1) == fx.Int32(0)
-                                sl = ((wave >> 1) == fx.Int32(0)).select(fx.Int32(s % SCD), fx.Int32((s + 1) % SCD))
-                                hw.dma_async(hw.select_rsrc(isb, r_bs, r_as), lds_base,
-                                             isb.select(RBS + sl * SBS, RAS + sl * SAS),
-                                             isb.select(bs16_voff4, as16_voff),
-                                             soff=isb.select(ts * BS_STEP, n_rows * (ts * 4)), cm=b_cm)
-                            if const_expr(s % 2 == 0):
-                                ops.append(_sc2)
-                            return ops
-                        for q in range_constexpr((WN * CG) // NW):
-                            ops.append(lambda q=q: hw.dma_async(
-                                r_bs, lds_base, wave * 256 + (oBS + q * NW * 256), bs4_voff + (q * NW) * BSB,
-                                soff=s * BS_STEP, nbytes=4, cm=b_cm))
-                        ops.append(lambda: hw.dma_async(r_as, lds_base, wave * 256 + oAS, as4_voff,
-                                                        soff=n_rows * (s * 4), nbytes=4, cm=A_CM))
-                        return ops
-                    elif const_expr(b_lds and "nodmaB" not in DG and part != "a"):
-                        for jj in range_constexpr(4 // WM):
-                            if const_expr(WM == 1):
-                                ops.append(lambda jj=jj: hw.dma_async(
-                                    r_b, lds_base, wn * 4096 + (oB + jj * 1024), b_voff[jj],
-                                    soff=s * 1024, cm=b_cm))
-                            else:
-                                def _b(jj=jj):
-                                    j = wm * (4 // WM) + jj
-                                    hw.dma_async(r_b, lds_base, wn * 4096 + j * 1024 + oB,
-                                                 b_voff[0] + j * (KS * 1024), soff=s * 1024, cm=b_cm)
-                                ops.append(_b)
-                        if const_expr(UNI):
-                            ops.append(_sc)
-                        elif const_expr(BS1 and NW > 1):
-                            def _bs1():
-                                if wave == fx.Int32(bs_wave):
-                                    hw.dma_async(r_bs, lds_base, oBS, bs16_voff, soff=s * BS_STEP,
-                                                 nbytes=16, cm=b_cm)
-                            ops.append(_bs1)
-                        elif const_expr(WM == 1):
-                            ops.append(lambda: hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
-                                                            soff=s * BS_STEP, nbytes=4, cm=b_cm))
-                        else:
-                            def _bs():
-                                if wm == fx.Int32(0):
-                                    hw.dma_async(r_bs, lds_base, wn * 256 + oBS, bs_voff,
-                                                 soff=s * BS_STEP, nbytes=4, cm=b_cm)
-                            ops.append(_bs)
-                    for it in range_constexpr(AS_IT if (not UNI and part != "b") else 0):
-                        if const_expr(AS16):
-                            def _as(it=it):
-                                if wave + it * NW < fx.Int32(AS_W):
-                                    hw.dma_async(r_as, lds_base, wave * 1024 + (oAS + it * NW * 1024),
-                                                 as_dma_voff[it], soff=n_rows * (s * 4), nbytes=16, cm=A_CM)
-                        elif const_expr(AST):
-                            def _as(it=it):
-                                if wave + it * NW < fx.Int32(AS_W):
-                                    hw.dma_async(r_as, lds_base, wave * 256 + (oAS + it * NW * 256),
-                                                 as_dma_voff[it], soff=n_rows * (s * 4), nbytes=4, cm=A_CM)
-                        else:
-                            def _as(it=it):
-                                if wave + it * NW < fx.Int32(AS_W):
-                                    hw.dma_async(r_as, lds_base, wave * 256 + (oAS + it * NW * 256),
-                                                 as_dma_voff[it], soff=s * 4, nbytes=4, cm=A_CM)
-                        ops.append(_as)
-                    return ops
-
-                def issue(s):
-                    for op in dma_ops(s):
-                        op()
-                    rocdl.asyncmark()
-
-                def issue_b(s):
-                    bb = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm) for j in range_constexpr(4)]
-                    return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP, cm=b_cm)
-
-                def b_state():
-                    # pfb: the first DB steps' B registers, carried in the tile state
-                    out = []
-                    for p in range_constexpr(DB):
-                        bb, bsp = issue_b(p)
-                        out += [fx.Vector(b) for b in bb] + [fx.Int32(bsp)]
-                    return out
-
-                breg = {}
-                if const_expr(not b_lds and mode != "pro"):
-                    for p in range_constexpr(DB):
-                        if const_expr(PFB and st is not None):
-                            q = st[3 + 5 * p:8 + 5 * p]
-                            breg[p] = ([hw.raw(v) for v in q[:4]], q[4])
-                        else:
-                            breg[p] = issue_b(p)
-                if const_expr(mode == "pro" and defer):
-                    # (issue order) the prologue's DMAs + asyncmarks, for the caller to spread
-                    thunks = []
-                    for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KSL)):
-                        thunks += dma_ops(p) + [rocdl.asyncmark]
-                    if const_expr(PFB):
-                        thunks.append(lambda: st.extend(b_state()))
-                    return thunks
-                HK = hook is not None and mode in ("full", "pro") and not defer
-                assert not HK or (pipe not in ("il4", "pingpong") and not UNI)
-                if const_expr(HK):
-                    if const_expr(b_lds):
-                        for p in range_constexpr(min(NSTG - 1, KSL)):
-                            for op in dma_ops(p, "b"):
-                                op()
-                    hook(row_start, nrows)
-                for p in range_constexpr(min(NSTG if pipe == "il4" else NSTG - 1, KSL) if mode != "main" else 0):
-                    if const_expr(HK and b_lds):
-                        # step p's group also holds the later steps' B DMAs issued above
-                        for op in dma_ops(p, "a"):
-                            op()
-                        rocdl.asyncmark()
-                    else:
-                        issue(p)
-                if const_expr(mode == "pro"):
-                    if const_expr(PFB):
-                        st_out += b_state()
-                    return st_out
-
-                # Per-kind LDS read bases (lane-varying part + region start), computed once.
-                as_rd = l16 * 4 + lg + rb0 * 64 + RAS
-                b_rd = lane * 16 + wn * 4096 + RB
-                bs_rd = lane * 4 + wn * 256 + RBS
-
-                def read_a(s, dmas=None, every=3):
-                    """LDS operand reads for step s. dmas: DMA thunks to interleave, one after
-                    every `every` reads, fenced so the scheduler keeps the interleave."""
-                    if const_expr(dmas is not None):
-                        return read_a_il(s, dmas, every)
-                    slot = s % RING
-                    oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
-                    ops = [hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4)
-                           for rb in range_constexpr(MBW)]
-                    sc = [fx.Int32(fx.Uint8(hw.lds_load(lds_base, as_rd + (oAS + rb * 64),
-                                                        T.i8, align=1)))
-                          for rb in range_constexpr(MBW)]
-                    if const_expr(b_lds):
-                        bo = [hw.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4)
-                              for j in range_constexpr(4)]
-                        bsv = hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4)
-                        return ops, sc, (bo, bsv)
-                    return ops, sc, None
-
-                def read_a_il(s, dmas, every):
-                    slot = s % RING
-                    oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
-                    thunks = []
-                    for rb in range_constexpr(MBW):
-                        thunks.append(lambda rb=rb: hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4))
-                    for j in range_constexpr(4):
-                        thunks.append(lambda j=j: hw.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4))
-                    thunks.append(lambda: hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4))
-                    for rb in range_constexpr(MBW):
-                        thunks.append(lambda rb=rb: hw.lds_load(lds_base, as_rd + (oAS + rb * 64), T.i8, align=1))
-                    vals = []
-                    di = 0
-                    for i in range_constexpr(len(thunks)):
-                        vals.append(thunks[i]())
-                        if const_expr(i % every == every - 1 and di < len(dmas)):
-                            rocdl.sched_barrier(0)
-                            dmas[di]()
-                            di += 1
-                            rocdl.sched_barrier(0)
-                    for k2 in range_constexpr(di, len(dmas)):
-                        dmas[k2]()
-                    ops = vals[:MBW]
-                    bo = vals[MBW:MBW + 4]
-                    bsv = vals[MBW + 4]
-                    sc = [fx.Int32(fx.Uint8(v)) for v in vals[MBW + 5:]]
-                    return ops, sc, (bo, bsv)
-
-                if const_expr(pipe == "il4"):
-                    # One wave per SIMD, 128x128 per wave, no operand double buffer. A step is
-                    # two halves: half h runs every row block against B tiles 4h..4h+3, so B
-                    # tiles 0-3 of step s+1 load during half 1 of step s, tiles 4-7 of step s
-                    # at the start of step s (used from half 1), and each A row block reloads
-                    # right after its last use. Mid-step barrier: step s+1 has landed and step
-                    # s's slot is no longer read, so step s+NSTG's DMAs refill it right away.
-                    b_rd4 = lane * 16 + wn * (TWN * 1024) + RB
-                    bs_rd4 = lane * 4 + wn * (CG * 256) + RBS
-                    a_rd4 = a_rd + rb0 * 1024
-
-                    def offs(s):
-                        slot = s % RING
-                        return slot * SA, slot * SB, (s % SCD) * SBS, (s % SCD) * SAS
-
-                    def rd_bh(s, h):
-                        oA, oB, oBS, oAS = offs(s)
-                        return ([lambda: hw.lds_load(lds_base, bs_rd4 + (oBS + h * 256), T.i32, align=4)]
-                                + [lambda j=j: hw.lds_load(lds_base, b_rd4 + (oB + (4 * h + j) * 1024), T.i32x4)
-                                   for j in range_constexpr(4)])
-
-                    kosa_c = {}
-
-                    def rd_a(s, rb):
-                        oA, oB, oBS, oAS = offs(s)
-                        if const_expr("kosa" in DG and s > 0):
-                            # timing knock-out (wrong results): A scales never re-read from LDS
-                            return [lambda: hw.lds_load(lds_base, a_rd4 + (oA + rb * 1024), T.i32x4),
-                                    lambda: kosa_c[rb]]
-                        def sc():
-                            v = hw.lds_load_u8(lds_base, as_rd + (oAS + rb * 64))
-                            if const_expr("kosa" in DG):
-                                kosa_c[rb] = v
-                            return v
-                        return [lambda: hw.lds_load(lds_base, a_rd4 + (oA + rb * 1024), T.i32x4), sc]
-
-                    rocdl.wait_asyncmark(max(0, min(NSTG, KS) - 1))
-                    gpu.barrier()
-                    v = [f() for f in rd_bh(0, 0)]
-                    bsv = [v[0], None]
-                    b_ops = v[1:] + [None] * 4
-                    a_ops, sa = [None] * MBW, [None] * MBW
-                    for rb in range_constexpr(MBW):
-                        a_ops[rb], sa[rb] = [f() for f in rd_a(0, rb)]
-                    NMF = MBW * TWN
-                    kob_c = {}
-                    if const_expr(mode == "main"):
-                        # Tile `nxt`'s state loads, long before its prologue needs them.
-                        tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
-                    for s in range_constexpr(KS):
-                        has_next = s + 1 < KS
-                        dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS and "kod" not in DG) else []
-                        plan = _il4_plan(len(dms), has_next, MBW, IL4_BAR, IL4_DSP, early=RING > NSTG)
-                        own = rd_bh(s, 1)
-                        nb0 = rd_bh(s + 1, 0) if const_expr(has_next) else []
-                        if const_expr("kob" in DG and s > 0):
-                            # timing knock-out (wrong results): B operands never re-read from LDS
-                            own = [lambda k=k: kob_c[(1, k)] for k in range(5)]
-                            nb0 = [lambda k=k: kob_c[(0, k)] for k in range(5)] if const_expr(has_next) else []
-                        elif const_expr("kob" in DG):
-                            own = [lambda k=k, f=f: kob_c.setdefault((1, k), f()) for k, f in enumerate(own)]
-                            nb0 = [lambda k=k, f=f: kob_c.setdefault((0, k), f()) for k, f in enumerate(nb0)]
-                        nxt_b, nxt_bs = [None] * 4, None
-                        nxt_a, nxt_sa = [None] * MBW, [None] * MBW
-                        for i in range_constexpr(NMF):
-                            h, rb, j = i // 32, (i % 32) // 4, i % 4
-                            t = 4 * h + j
-                            if const_expr(IL4_ASM and (S2TR or S1TR)):
-                                acc[rb][t] = hw.mfma_fp4_agpr(acc[rb][t] if const_expr(s > 0) else None,
-                                                              b_ops[t], a_ops[rb], bsv[h], sa[rb], 0, j)
-                            elif const_expr(IL4_ASM):
-                                acc[rb][t] = hw.mfma_fp4_agpr(acc[rb][t] if const_expr(s > 0) else None,
-                                                              a_ops[rb], b_ops[t], sa[rb], bsv[h], j)
-                            elif const_expr(S2TR):
-                                acc[rb][t] = hw.mfma_fp4(acc[rb][t], b_ops[t], a_ops[rb], bsv[h], sa[rb], j, 0)
-                            else:
-                                acc[rb][t] = hw.mfma_fp4(acc[rb][t], a_ops[rb], b_ops[t], sa[rb], bsv[h], 0, j)
-                            if const_expr(mode == "main" and s == KS // 2 and i == 16):
-                                rocdl.sched_barrier(0)
-                                e_n, rs_n, nr_n = [fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q])))
-                                                   for q in range_constexpr(3)]
-                                st_out = [e_n, rs_n, nr_n] + [
-                                    fx.Int32(hw.bload(r_tok, (rs_n + (wave + it * NW) * 16 + lane // 4) * 4, T.i32))
-                                    for it in range_constexpr(A_IT if stage == 1 and not AP else 0)]
-                                rocdl.sched_barrier(0)
-                            for k2 in range_constexpr(len(plan[i])):
-                                kind, idx = plan[i][k2]
-                                rocdl.sched_barrier(0)
-                                if const_expr(kind == "own"):
-                                    val = own[idx]()
-                                    if const_expr(idx == 0):
-                                        bsv[1] = val
-                                    else:
-                                        b_ops[4 + idx - 1] = val
-                                elif const_expr(kind == "bar"):
-                                    last = min(s - 1 + NSTG, KS - 1)
-                                    rocdl.wait_asyncmark(max(0, last - (s + 1)))
-                                    gpu.barrier()
-                                elif const_expr(kind == "d"):
-                                    dms[idx]()
-                                    if const_expr(idx == len(dms) - 1):
-                                        rocdl.asyncmark()
-                                elif const_expr(kind == "nb"):
-                                    val = nb0[idx]()
-                                    if const_expr(idx == 0):
-                                        nxt_bs = val
-                                    else:
-                                        nxt_b[idx - 1] = val
-                                else:
-                                    nxt_a[idx], nxt_sa[idx] = [f() for f in rd_a(s + 1, idx)]
-                                rocdl.sched_barrier(0)
-                        if const_expr(has_next):
-                            bsv = [nxt_bs, None]
-                            b_ops = nxt_b + [None] * 4
-                            a_ops, sa = nxt_a, nxt_sa
-                    if const_expr(IL4_ASM):
-                        rocdl.sched_barrier(0)
-                        fenced = hw.mfma_drain([acc[rb][t] for rb in range_constexpr(MBW) for t in range_constexpr(TWN)])
-                        acc = [fenced[rb * TWN:(rb + 1) * TWN] for rb in range_constexpr(MBW)]
-                        rocdl.sched_barrier(0)
-                    if const_expr(mode == "main"):
-                        gpu.barrier()  # every wave is past its last ring read
-                        pro_ops = _tile_body(nxt, "pro", st=st_out, defer=True)
-                        rocdl.sched_barrier(0)
-
-                if const_expr(pipe == "pingpong"):
-                    # Ping-pong: wave-row 1 runs one barrier behind wave-row 0, so on every
-                    # SIMD one wave is in its MFMA phase while the other is in its memory
-                    # phase (DMA issue + LDS operand reads + DMA completion wait).
-                    rocdl.wait_asyncmark(max(0, min(NSTG - 2, KSL - 1)))
-                    gpu.barrier()
-                    if const_expr("nobar" not in DG):
-                        if wm == fx.Int32(1):
-                            gpu.barrier()
-                    IL = "il" in DG  # DMA issue interleaved into the MFMA phase
-                    for s in range_constexpr(KSL):
-                        dma_now = s + NSTG - 1 < KSL and "nodma" not in DG
-                        # RF: LDS operand reads first, then DMA issue, so the LDS pipe and the
-                        # texture/DMA path work concurrently (they touch different ring slots).
-                        RF = "dmafirst" not in DG
-                        ILM = next((int(t[3:]) for t in DG if t.startswith("ilm")), 2)  # measured best: 2
-                        if const_expr(dma_now and not IL and not RF and not ILM):
-                            issue(s + NSTG - 1)
-                        if const_expr(ILM and dma_now and not IL):
-                            # LDS reads and this step's DMA issue interleaved (TA and LDS overlap)
-                            a_ops, sa, bl = read_a(s, dmas=dma_ops(s + NSTG - 1), every=ILM)
-                            rocdl.asyncmark()
-                        else:
-                            a_ops, sa, bl = read_a(0 if const_expr("nolds" in DG) else s)
-                        b_ops, bs = bl
-                        if const_expr(dma_now and not IL and RF and not ILM):
-                            issue(s + NSTG - 1)
-                        if const_expr(s + 1 < KSL and "nodma" not in DG):
-                            # IL: this step's DMA has not been issued yet (it goes into the MFMA phase).
-                            pend = min(NSTG - 2, KSL - 2 - s) - (1 if IL and dma_now else 0)
-                            rocdl.wait_asyncmark(max(0, pend))
-                        rocdl.sched_barrier(0)
-                        if const_expr("nobar" not in DG):
-                            gpu.barrier()
-                        rocdl.s_setprio(1)
-                        ops = dma_ops(s + NSTG - 1) if const_expr(IL and dma_now) else []
-                        for rb in range_constexpr(MBW):
-                            if const_expr(SKIP):
-                                # Row blocks past the tile's valid rows skip their MFMAs
-                                # (wave-uniform: nrows and rb0 are SGPR values).
-                                acc_rb = acc[rb]
-                                if (rb0 + rb) * 16 < nrows:
-                                    acc_rb = [hw.mfma_fp4(acc_rb[j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
-                                              for j in range_constexpr(4)]
-                                acc[rb] = acc_rb
-                            else:
-                                for j in range_constexpr(4):
-                                    acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
-                            if const_expr(IL and rb < len(ops)):
-                                rocdl.sched_barrier(0)
-                                ops[rb]()
-                                rocdl.sched_barrier(0)
-                        if const_expr(IL and dma_now):
-                            for k2 in range_constexpr(MBW, len(ops)):
-                                ops[k2]()
-                            rocdl.asyncmark()
-                        rocdl.s_setprio(0)
-                        rocdl.sched_barrier(0)
-                        if const_expr("nobar" not in DG):
-                            gpu.barrier()
-                    if const_expr("nobar" not in DG):
-                        if wm == fx.Int32(0):
-                            gpu.barrier()
-                if const_expr(prefetch):
-                    # LDS operands for step s+1 are read while step s's MFMAs run.
-                    rocdl.wait_asyncmark(max(0, min(NSTG - 2, KSL - 1)))
-                    gpu.barrier()
-                    if const_expr(mode == "main"):
-                        tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
-                    cur = read_a(0)
-                    cur0 = cur
-                    for s in range_constexpr(KSL):
-                        a_ops, sa, bl = cur
-                        if const_expr(b_lds):
-                            b_ops, bs = bl
-                        else:
-                            b_ops, bs = breg[s]
-                            if const_expr(s + DB < KSL):
-                                breg[s + DB] = breg[s] if const_expr("nob" in DG and s + DB >= DB) else issue_b(s + DB)
-                        for rb in range_constexpr(MBW):
-                            for j in range_constexpr(4):
-                                acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
-                        if const_expr(s + 1 < KSL):
-                            if const_expr("nobar" not in DG):
-                                rocdl.wait_asyncmark(max(0, min(NSTG - 3, KSL - 2 - s)))
-                                gpu.barrier()
-                            if const_expr(s + NSTG - 1 < KSL and "nodma" not in DG):
-                                issue(s + NSTG - 1)
-                            cur = cur0 if const_expr("nolds" in DG) else read_a(s + 1)
-                    if const_expr(mode == "main"):
-                        st_out = [fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q]))) for q in range_constexpr(3)]
-                        gpu.barrier()  # every wave is past its last ring read
-                        pro_ops = _tile_body(nxt, "pro", st=st_out, defer=True)
-                for s in range_constexpr(KSL if not (prefetch or pipe in ("pingpong", "il4")) else 0):
-                    rocdl.wait_asyncmark(min(NSTG - 2, KSL - 1 - s))
-                    gpu.barrier()
-                    if const_expr(s + NSTG - 1 < KSL):
-                        issue(s + NSTG - 1)
-                    if const_expr((not b_lds) and s + DB < KSL):
-                        breg[s + DB] = issue_b(s + DB)
-                    a_ops, sa, bl = read_a(s)
-                    if const_expr(b_lds):
-                        b_ops, bs = bl
-                    else:
-                        b_ops, bs = breg.pop(s)
-                    for rb in range_constexpr(MBW):
-                        for j in range_constexpr(4):
-                            acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j)
-            else:
-                lc = tid % 4
-                a_voff = []
-                a_lds = []
-                for i in range_constexpr(A_CH):
-                    row = fx.Int32(i * (THREADS // 4)) + tid // 4
-                    a_voff.append(a_row_of(row) * (64 if HTA else KH) + lc * 16)
-                    a_lds.append(row * 64 + ((lc * 16) ^ _swz(row, SWZ)))
-                as_voff = []
-                for rb in range_constexpr(MB):
-                    if const_expr(AST):
-                        as_voff.append(as_off(fx.Int32(rb * 16) + l16) + lg)
-                    else:
-                        as_voff.append(a_row_of(fx.Int32(rb * 16) + l16) * KG + lg)
-
-                def issue_r(s):
-                    a = [hw.bload(r_a, a_voff[i], T.i32x4, soff=a_soff(s)) for i in range_constexpr(A_CH)]
-                    b = [hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024, cm=b_cm)
-                         for j in range_constexpr(4)]
-                    bs = hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP, cm=b_cm)
-                    sa = [fx.Int32(fx.Uint8(hw.bload(r_as, as_voff[rb], T.i8,
-                                                     soff=(n_rows * (s * 4)) if const_expr(AST) else s * 4)))
-                          for rb in range_constexpr(MB)]
-                    return a, b, bs, sa
-
-                def stage_a(regs, slot):
-                    for i in range_constexpr(A_CH):
-                        hw.lds_store(regs[i], lds_base, a_lds[i] + slot * SLOT)
-
-                inflight = {}
-                for s in range_constexpr(D):
-                    inflight[s] = issue_r(s)
-                stage_a(inflight[0][0], 0)
-                gpu.barrier()
-                for s in range_constexpr(KS):
-                    if const_expr(s + D < KS):
-                        inflight[s + D] = issue_r(s + D)
-                    if const_expr(s + 1 < KS):
-                        stage_a(inflight[s + 1][0], (s + 1) % 2)
-                    _, b, bs, sa = inflight.pop(s)
-                    slot = s % 2
-                    a_ops = [hw.lds_load(lds_base, a_rd + (slot * SLOT + rb * 1024), T.i32x4)
-                             for rb in range_constexpr(MB)]
-                    for rb in range_constexpr(MB):
-                        for j in range_constexpr(4):
-                            acc[rb][j] = hw.mfma_fp4(acc[rb][j], a_ops[rb], b[j], sa[rb], bs, 0, j)
-                    gpu.barrier()
-
-            if const_expr(SK > 1):
-                # Split-K: each unit writes its fp32 partial (workspace aux_ptr, [unit][k][BM*BN]),
-                # then bumps the tile's counter (rw_ptr). The last of the SK units sums the SK
-                # partials in fixed k order (deterministic) and runs the epilogue; the others
-                # run it with nrows = 0 (every store masked) and load nothing (OOB offsets).
-                r_ws = hw.rsrc(fx.Int64(aux_ptr) + fx.Int64(unit) * fx.Int64(SK * SK_UB), SK * SK_UB)
-                lo = wave * (MBW * TWN * 1024) + lane * 16
-                for rb in range_constexpr(MBW):
-                    for j in range_constexpr(TWN):
-                        hw.bstore(acc[rb][j], r_ws, ksp * SK_UB + lo + (rb * TWN + j) * 1024, cm=SK_CM)
-                if const_expr(SKF):
-                    hw.fence("release")
-                else:
-                    rocdl.s_waitcnt(0x0F70)  # vmcnt(0): this wave's write-through partials are done
-                gpu.barrier()
-                if tid == fx.Int32(0):
-                    sk_old = hw.gatomic_add(fx.Int64(rw_ptr) + fx.Int64(unit) * fx.Int64(4), 1)
-                    hw.lds_store(sk_old, lds_base, SK_LDS, align=4)
-                gpu.barrier()
-                sk_last = fx.Int32(rocdl.readfirstlane(
-                    T.i32, hw.raw(hw.lds_load(lds_base, SK_LDS, T.i32, align=4)))) == fx.Int32(SK - 1)
-                if const_expr(SKF):
-                    hw.fence("acquire")
-                for rb in range_constexpr(MBW):
-                    for j in range_constexpr(TWN):
-                        tot = None
-                        own = fx.Vector(acc[rb][j])
-                        for k in range_constexpr(SK):
-                            # own partial from registers (the same values it wrote)
-                            mine = ksp == fx.Int32(k)
-                            off = (sk_last & ~mine).select(lo + (k * SK_UB + (rb * TWN + j) * 1024), fx.Int32(OOB))
-                            v = fx.Vector(hw.bload(r_ws, off, T.f32x4, cm=SK_CM))
-                            v = mine.select(own, v)
-                            tot = v if const_expr(k == 0) else tot + v
-                        acc[rb][j] = hw.raw(tot)
-                # the last unit re-arms the counter for the next launch
-                r_cnt = hw.rsrc(rw_ptr, fx.Int64(ntiles * NB) * fx.Int64(4))
-                hw.bstore(fx.Int32(0), r_cnt, (sk_last & (tid == fx.Int32(0))).select(unit * 4, fx.Int32(OOB)))
-                nrows = sk_last.select(nrows, fx.Int32(0))
-            if const_expr("noepi" in DG):
-                tot = fx.Float32(0.0)
-                for rb in range_constexpr(MBW):
-                    for j in range_constexpr(TWN):
-                        tot = tot + fx.Float32(fx.Vector(acc[rb][j])[0])
-                hw.bstore(tot, hw.rsrc(o_ptr, 4), fx.Int32(0) * tid)
-            elif const_expr(stage == 1):
-                r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
-                if const_expr(HTW or STW):
-                    if const_expr(not STD):
-                        gpu.barrier()  # all waves done with the LDS ring
-                    hwb = STW_BASE + wave * (RWP * (17 if STW else 16))
-                r_os = hw.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
-                lim = fx.Float32(limit)
-
-                def swiglu(gv, uv):
-                    gg = fx.min(fx.Float32(gv), lim)
-                    uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
-                    if const_expr(EF):
-                        sig = hw.fast_rcp(fx.Float32(1.0) + hw.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E)))
-                    else:
-                        sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
-                    return gg * sig * (uu + fx.Float32(1.0))
-
-                def swiglu2(g0, g1, u0, u1):
-                    """swiglu of an (even, odd) pair: same operations and order, the
-                    elementwise mul/add as packed v_pk_*_f32. EF only."""
-                    gg = fx.Vector.from_elements([fx.min(fx.Float32(g0), lim), fx.min(fx.Float32(g1), lim)],
-                                                 fx.Float32)
-                    uu = fx.Vector.from_elements([hw.fmed3(u0, -lim, lim), hw.fmed3(u1, -lim, lim)], fx.Float32)
-                    t = gg * fx.Vector.filled(2, NEG_ALPHA_LOG2E, fx.Float32)
-                    den = fx.Vector.from_elements([hw.exp2_raw(t[0]), hw.exp2_raw(t[1])], fx.Float32) \
-                        + fx.Vector.filled(2, 1.0, fx.Float32)
-                    sig = fx.Vector.from_elements([hw.fast_rcp(den[0]), hw.fast_rcp(den[1])], fx.Float32)
-                    h = gg * sig * (uu + fx.Vector.filled(2, 1.0, fx.Float32))
-                    return fx.Float32(h[0]), fx.Float32(h[1])
-
-                PK = EF and "nopk" not in DG
-                # epgN: N row blocks per epilogue batch (more independent chains in flight)
-                EPG = next((int(t[3:]) for t in DG if t.startswith("epg") and t[3:].isdigit()), 1)
-                assert MBW % EPG == 0
-                for rbb in range_constexpr(MBW // EPG if S1S else 0):
-                    # All CG*4 (group, row) chains of a row block at once: the DPP row-max
-                    # levels interleave across chains instead of stalling on DPP hazards.
-                    per = -(-len(pro_ops) // (MBW // EPG))
-                    per1 = -(-len(pro_ops) // MBW)
-                    for op in pro_ops[rbb * per:(rbb + 1) * per] if const_expr(not S1TR) else []:
-                        rocdl.sched_barrier(0)
-                        op()
-                        rocdl.sched_barrier(0)
-                    sw = S1S_BASE + wave * S1S_W
-                    if const_expr(S1TR):
-                        # lane (row l16, quarter lg) holds columns 4lg..4lg+3 of every tile: h bytes
-                        # 4lg..4lg+3 of group gi of row rb*16 + l16
-                        hv, ms = [], []
-                        for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
-                            # next-tile prologue ops spread per row block, whatever the batch size
-                            for op in pro_ops[rb * per1:(rb + 1) * per1]:
-                                rocdl.sched_barrier(0)
-                                op()
-                                rocdl.sched_barrier(0)
-                            for gi in range_constexpr(CG):
-                                vg_e = fx.Vector(acc[rb][4 * gi + 0])
-                                vg_o = fx.Vector(acc[rb][4 * gi + 1])
-                                vu_e = fx.Vector(acc[rb][4 * gi + 2])
-                                vu_o = fx.Vector(acc[rb][4 * gi + 3])
-                                hs = [swiglu2(vg_e[i], vg_o[i], vu_e[i], vu_o[i]) for i in range_constexpr(4)]
-                                m = None
-                                for h0, h1 in hs:
-                                    mm = fx.max(fmath.absf(h0), fmath.absf(h1))
-                                    m = mm if m is None else fx.max(m, mm)
-                                hv.append((rb, gi, hs))
-                                ms.append(m)
-                        ms = hw.rows4_max_nonneg_f32_multi(ms)
-                        bx = {}
-                        for k in range_constexpr(len(hv)):
-                            rb, gi, hs = hv[k]
-                            bexp = hw.e8m0_even_small(ms[k])
-                            qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
-                            pk = hw.raw(fx.Int32(0))
-                            for i in range_constexpr(4):
-                                pk = rocdl.cvt_scalef32_pk_fp4_f32(
-                                    T.i32, pk, hw.raw(hs[i][0]), hw.raw(hs[i][1]), hw.raw(qs), i)
-                            rl = fx.Int32(rb * 16) + l16
-                            hw.lds_store(fx.Int32(pk), lds_base, sw + rl * (CG * 16) + (gi * 16) + lg * 4, align=4)
-                            bx[(rb, gi)] = bexp
-                        for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
-                            # row rb*16 + l16: its CG == 2 scale bytes (the 4 quarters write the same)
-                            sd = bx[(rb, 0)] | (bx[(rb, 1)] << fx.Int32(8))
-                            hw.lds_store(sd.to(fx.Int16), lds_base, sw + S1S_H + (fx.Int32(rb * 16) + l16) * CG,
-                                         align=2)
-                    else:
-                        ch = []
-                        for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
-                            for gi in range_constexpr(CG):
-                                vg_e = fx.Vector(acc[rb][4 * gi + 0])
-                                vg_o = fx.Vector(acc[rb][4 * gi + 1])
-                                vu_e = fx.Vector(acc[rb][4 * gi + 2])
-                                vu_o = fx.Vector(acc[rb][4 * gi + 3])
-                                for v in range_constexpr(4):
-                                    if const_expr(PK):
-                                        ch.append((rb, gi, v) + swiglu2(vg_e[v], vg_o[v], vu_e[v], vu_o[v]))
-                                    else:
-                                        ch.append((rb, gi, v, swiglu(vg_e[v], vu_e[v]), swiglu(vg_o[v], vu_o[v])))
-                        ms = [fx.max(fmath.absf(h0), fmath.absf(h1)) for _, _, _, h0, h1 in ch]
-                        if const_expr(EF):
-                            ms = hw.row16_max_nonneg_f32_multi(ms)
-                        else:
-                            for k in range_constexpr(len(ms)):
-                                for off in (1, 2, 4, 8):
-                                    ms[k] = fx.max(ms[k], ms[k].shuffle_xor(fx.Int32(off), fx.Int32(64)))
-                        bx = {}
-                        for k in range_constexpr(len(ch)):
-                            rb, gi, v, h0, h1 = ch[k]
-                            if const_expr(SE):
-                                # |h| <= limit * (limit + 1): the bounded form is exact
-                                bexp = hw.e8m0_even_small(ms[k])
-                            else:
-                                bits = (ms[k] * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
-                                bexp = fx.min(((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF),
-                                              fx.Int32(254))
-                            qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
-                            pk = rocdl.cvt_scalef32_pk_fp4_f32(
-                                T.i32, hw.raw(fx.Int32(0)), hw.raw(h0), hw.raw(h1), hw.raw(qs), 0)
-                            rl = fx.Int32(rb * 16) + lg * 4 + v
-                            hw.lds_store(fx.Int32(pk).to(fx.Int8), lds_base, sw + rl * (CG * 16) + (gi * 16) + l16,
-                                         align=1)
-                            bx[(rb, v, gi)] = bexp
-                        for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
-                            # The row block's scales for this lane's 4 rows x CG groups are 8 contiguous
-                            # bytes (row-major, CG == 2): one 8 B write. The 16 lanes of a row group
-                            # write the same bytes to the same address.
-                            sd = [bx[(rb, 2 * q, 0)] | (bx[(rb, 2 * q, 1)] << fx.Int32(8))
-                                  | (bx[(rb, 2 * q + 1, 0)] << fx.Int32(16))
-                                  | (bx[(rb, 2 * q + 1, 1)] << fx.Int32(24)) for q in range_constexpr(2)]
-                            hw.lds_store(fx.Vector.from_elements(sd, fx.Int32), lds_base,
-                                         sw + S1S_H + (fx.Int32(rb * 16) + lg * 4) * CG, align=8)
-                if const_expr(not S1S):
-                    for op in pro_ops:
-                        op()
-                for rbg in range_constexpr(MBW * CG if not S1S else 0):
-                    rb, gi = rbg // CG, rbg % CG
-                    g = (nblk * WN + wn) * CG + gi
-                    vg_e = fx.Vector(acc[rb][4 * gi + 0])
-                    vg_o = fx.Vector(acc[rb][4 * gi + 1])
-                    vu_e = fx.Vector(acc[rb][4 * gi + 2])
-                    vu_o = fx.Vector(acc[rb][4 * gi + 3])
-                    for v in range_constexpr(4):
-                        row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v
-                        hs = []
-                        for gv, uv in ((vg_e[v], vu_e[v]), (vg_o[v], vu_o[v])):
-                            gg = fx.min(fx.Float32(gv), lim)
-                            uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
-                            if const_expr(EF):
-                                # gate <= limit bounds the exp2 argument from below; a very negative gate
-                                # gives exp2 -> inf, rcp -> 0, silu -> gg * 0 = 0 (finite inputs only)
-                                sig = hw.fast_rcp(fx.Float32(1.0) + hw.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E)))
-                            else:
-                                sig = fx.Float32(1.0) / (fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha)))
-                            hs.append(gg * sig * (uu + fx.Float32(1.0)))
-                        m = fx.max(fmath.absf(hs[0]), fmath.absf(hs[1]))
-                        if const_expr(EF):
-                            m = hw.row16_max_nonneg_f32(m)
-                        else:
-                            for off in (1, 2, 4, 8):
-                                m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
-                        if const_expr(SE):
-                            bexp = hw.e8m0_even(m)
-                        else:
-                            bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
-                            bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
-                            bexp = fx.min(bexp, fx.Int32(254))
-                        qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
-                        pk = rocdl.cvt_scalef32_pk_fp4_f32(
-                            T.i32, hw.raw(fx.Int32(0)), hw.raw(hs[0]), hw.raw(hs[1]), hw.raw(qs), 0
+            # Physical 16 B chunk pc of LDS row r holds logical chunk pc ^ swz(r).
+            pc = lane % 4
+            a_dma_voff = []
+            if const_expr(PERS and toks is None and stage == 1):
+                toks = [
+                    fx.Int32(
+                        hw.bload(
+                            r_tok,
+                            (row_start + (wave + it * NW) * 16 + lane // 4) * 4,
+                            T.i32,
                         )
-                        valid = row < nrows
-                        grow = row_start + row
-                        soff_ok = valid & (l16 == fx.Int32(0))
-                        if const_expr(HTW or STW):
-                            # stage h bytes per wave in LDS (rows x 16 B), stored below as 16 B rows
-                            rl = fx.Int32(rb * 16) + lg * 4 + v
-                            hw.lds_store(fx.Int32(pk).to(fx.Int8), lds_base, hwb + rl * 16 + l16, align=1)
-                            if const_expr(HTW):
-                                hs_off = ((g // 4) * n_rows + grow) * 4 + (g % 4)
-                            else:
-                                # the 16 lanes of the row write the same byte
-                                hw.lds_store(bexp.to(fx.Int8), lds_base, hwb + RWP * 16 + rl, align=1)
-                        else:
-                            off = valid.select(grow * (INTER // 2) + g * 16 + l16, fx.Int32(0x7FFFFFF0))
-                            hw.bstore(fx.Int32(pk).to(fx.Int8), r_o, off, cm=H_CM)
-                            hs_off = grow * (INTER // 32) + g
-                        if const_expr(not STW):
-                            soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
-                            hw.bstore(bexp.to(fx.Int8), r_os, soff, cm=H_CM)
-                if const_expr(S1S):
-                    # h[row][g0*16 .. g0*16 + CG*16): CG*16 B per row, 16 B per lane
-                    sw = S1S_BASE + wave * S1S_W
-                    g0 = (nblk * WN + wn) * CG
-                    LPR = CG  # lanes per row
-                    for it in range_constexpr((ROWS_W * LPR) // 64):
-                        rl = fx.Int32(it * (64 // LPR)) + lane // LPR
-                        part = lane % LPR
-                        v16 = hw.lds_load(lds_base, sw + rl * (CG * 16) + part * 16, T.i32x4)
-                        row = rb0 * 16 + rl
-                        if const_expr(HT):
-                            # h_t[g//4][row][64 B]; g0 is even, so both groups sit in plane g0//4
-                            off = ((g0 // 4) * n_rows + row_start + row) * 64 + (g0 % 4) * 16 + part * 16
-                        else:
-                            off = (row_start + row) * (INTER // 2) + g0 * 16 + part * 16
-                        hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFFF0)), cm=H_CM)
-                    # scales: CG bytes per row at h_s[row][g0 .. g0 + CG) (HT: [g0//4][row][4 B])
-                    for it in range_constexpr((ROWS_W + 63) // 64):
-                        rl = fx.Int32(it * 64) + lane
-                        row = rb0 * 16 + rl
-                        sv = hw.lds_load(lds_base, sw + S1S_H + rl * CG, T.i16, align=2)
-                        if const_expr(HT):
-                            off = ((g0 // 4) * n_rows + row_start + row) * 4 + (g0 % 4)
-                        else:
-                            off = (row_start + row) * (INTER // 32) + g0
-                        hw.bstore(sv, r_os, ((row < nrows) & (rl < fx.Int32(ROWS_W))).select(off, fx.Int32(0x7FFFFFF0)), cm=H_CM)
-                if const_expr(HTW):
-                    # h_t[g//4][row][64 B]: this wave's 16 B column group of each row
-                    for it in range_constexpr((ROWS_W + 63) // 64):
-                        rl = fx.Int32(it * 64) + lane
-                        v16 = hw.lds_load(lds_base, hwb + rl * 16, T.i32x4)
-                        row = rb0 * 16 + rl
-                        off = ((g // 4) * n_rows + row_start + row) * 64 + (g % 4) * 16
-                        ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
-                        hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)), cm=H_CM)
-                if const_expr(STW):
-                    # h[row][g * 16 .. +16): this wave's 16 B column group of each row
-                    for it in range_constexpr((ROWS_W + 63) // 64):
-                        rl = fx.Int32(it * 64) + lane
-                        v16 = hw.lds_load(lds_base, hwb + rl * 16, T.i32x4)
-                        row = rb0 * 16 + rl
-                        off = (row_start + row) * (INTER // 2) + g * 16
-                        ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
-                        hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)), cm=H_CM)
-                        sv = hw.lds_load(lds_base, hwb + RWP * 16 + rl, T.i8, align=1)
-                        hw.bstore(sv, r_os, ok.select((row_start + row) * (INTER // 32) + g, fx.Int32(0x7FFFFFF0)),
-                                  cm=H_CM)
-            elif const_expr(S2I):
-                # W2 columns are even/odd interleaved per 32: tiles (4g + 2p, 4g + 2p + 1) give
-                # output columns gb + 32p + 2c, +1 of 64-column group g (gb = wn*128 + 64g).
-                r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
-                r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
-                              fx.Int64(n_rows - row_start) * fx.Int64(N * 2))
-                cm_o = (hw.NT if const_expr(S2NT) else 0) | Y_CM
-                sw0 = S1S_BASE + wave * (S2I_W * S2NB)
-                per = -(-len(pro_ops) // MBW)
-                # Every row block's weights before any store: vmcnt also counts stores, so a
-                # per-block load would wait for all earlier stores to drain.
-                if const_expr(S2TR):
-                    wts = [fx.Float32(hw.bload(r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + l16) * 4, T.f32))
-                           for rb in range_constexpr(MBW)]
-                else:
-                    wvs = [fx.Vector(hw.bload(r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + lg * 4) * 4,
-                                              T.vec(4, T.f32))) for rb in range_constexpr(MBW)]
-                for rb in range_constexpr(MBW):
-                    for op in pro_ops[rb * per:(rb + 1) * per]:
-                        rocdl.sched_barrier(0)
-                        op()
-                        rocdl.sched_barrier(0)
-                    sw = sw0 + (rb % S2NB) * S2I_W
-                    if const_expr(S2TL):
-                        # C^T: lane = row l16, output columns 64gi + 32p + 8lg .. +7 of the wave's 128:
-                        # 16 B chunk 8gi + 4p + lg of the row, at chunk ^ (row & 7) (8 consecutive rows
-                        # of one write hit distinct banks; the 16 B row reads below stay conflict-free).
-                        wv8 = fx.Vector.from_elements([wts[rb]] * 8, fx.Float32)
-                        for gi in range_constexpr(CG):
-                            for p in range_constexpr(2):
-                                ve_ = fx.Vector(acc[rb][4 * gi + 2 * p])
-                                vo_ = fx.Vector(acc[rb][4 * gi + 2 * p + 1])
-                                v8 = fx.Vector.from_elements(
-                                    [fx.Float32(x[v]) for v in range_constexpr(4) for x in (ve_, vo_)], fx.Float32)
-                                c = (fx.Int32(gi * 8 + p * 4) + lg) ^ (l16 & 7)
-                                hw.lds_store((v8 * wv8).to(fx.BFloat16), lds_base, sw + l16 * 256 + c * 16, align=16)
-                        for it in range_constexpr(4):
-                            rl = fx.Int32(it * 4) + lane // 16
-                            c = lane % 16
-                            v16 = hw.lds_load(lds_base, sw + rl * 256 + ((c ^ (rl & 7)) * 16), T.i32x4)
-                            row = rb0 * 16 + fx.Int32(rb * 16) + rl
-                            off = row * (N * 2) + (nblk * BN + wn * 128) * 2 + c * 16
-                            hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
-                    elif const_expr(S2TR):
-                        # C^T: the lane holds row l16, columns 4*lg .. 4*lg+3 of each n16 tile, so
-                        # a tile pair is output columns gb + 32p + 8*lg .. +7: one 16 B store.
-                        row = rb0 * 16 + fx.Int32(rb * 16) + l16
-                        ok = row < nrows
-                        wv8 = fx.Vector.from_elements([wts[rb]] * 8, fx.Float32)
-                        for gi in range_constexpr(CG):
-                            for p in range_constexpr(2):
-                                ve_ = fx.Vector(acc[rb][4 * gi + 2 * p])
-                                vo_ = fx.Vector(acc[rb][4 * gi + 2 * p + 1])
-                                v8 = fx.Vector.from_elements(
-                                    [fx.Float32(x[v]) for v in range_constexpr(4) for x in (ve_, vo_)], fx.Float32)
-                                off = row * (N * 2) + (nblk * BN + wn * 128 + gi * 64 + p * 32) * 2 + lg * 16
-                                hw.bstore((v8 * wv8).to(fx.BFloat16), r_o, ok.select(off, fx.Int32(0x7FFFFF00)),
-                                          cm=cm_o)
-                    else:
-                        # lane holds rows lg*4 + v, columns gb + 32p + 2*l16, +1: weighted bf16 pairs
-                        # -> private LDS (16 rows x 256 B, 16 B chunk c of row r at c ^ (r & 12))
-                        # -> 16 B/lane row stores (16 lanes per row).
-                        wv = wvs[rb]
-                        for v in range_constexpr(4):
-                            rl = lg * 4 + v
-                            w = fx.Float32(wv[v])
-                            for gi in range_constexpr(CG):
-                                for p in range_constexpr(2):
-                                    xe = fx.Vector(acc[rb][4 * gi + 2 * p])
-                                    xo = fx.Vector(acc[rb][4 * gi + 2 * p + 1])
-                                    pk = fx.Vector.from_elements([fx.Float32(xe[v]) * w, fx.Float32(xo[v]) * w],
-                                                                 fx.Float32).to(fx.BFloat16)
-                                    c = (fx.Int32(gi * 8 + p * 4) + l16 // 4) ^ (rl & 12)
-                                    hw.lds_store(pk, lds_base, sw + rl * 256 + c * 16 + (l16 % 4) * 4, align=4)
-                        for it in range_constexpr(4):
-                            rl = fx.Int32(it * 4) + lane // 16
-                            c = lane % 16
-                            v16 = hw.lds_load(lds_base, sw + rl * 256 + ((c ^ (rl & 12)) * 16), T.i32x4)
-                            row = rb0 * 16 + fx.Int32(rb * 16) + rl
-                            off = row * (N * 2) + (nblk * BN + wn * 128) * 2 + c * 16
-                            hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
-                for op in pro_ops[MBW * per:]:
-                    op()
+                    )
+                    for it in range_constexpr(A_IT)
+                ]
+                st_out = [e, row_start, nrows] + toks
+            elif const_expr(PERS and st is None):
+                st_out = [e, row_start, nrows]
+            for it in range_constexpr(A_IT):
+                row = (wave + it * NW) * 16 + lane // 4
+                a_dma_voff.append(
+                    a_row_of(row, it) * (64 if HTA else KH) + ((pc * 16) ^ _swz(row))
+                )
+            # sc2: the CTA's 1 KB of B scales / 256 rows x 4 B of A scales for one step
+            bs16_voff4 = (nblk * (WN * CG) + lane // 16) * BSB + (lane % 16) * 16
+            as16_voff = as_off(lane * 4)
+            AS16 = AST and BM >= 256
+            if const_expr(AS16):
+                # K-step-major compact scales: 256 rows x 4 B = one 16 B/lane DMA per 256 rows.
+                AS_W = (BM + 255) // 256
+                AS_IT = (AS_W + NW - 1) // NW
+                as_dma_voff = [
+                    as_off((wave + it * NW) * 256 + lane * 4)
+                    for it in range_constexpr(AS_IT)
+                ]
+            elif const_expr(AST):
+                # K-step-major compact scales, 64 rows (256 B) per 4 B/lane DMA: exact for BM < 256.
+                AS_W = max(BM, 64) // 64
+                AS_IT = (AS_W + NW - 1) // NW
+                as_dma_voff = [
+                    as_off((wave + it * NW) * 64 + lane)
+                    for it in range_constexpr(AS_IT)
+                ]
             else:
-                # W2 columns are even/odd interleaved per 32: tiles (0,1) and (2,3) of
-                # this wave give each lane output columns (gb + 2c, gb + 2c + 1).
-                r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
-                if const_expr(epi == "f32atomic"):
-                    r_o = hw.rsrc(o_ptr, fx.Int64(n_out) * fx.Int64(N * 4))
-                elif const_expr(epi == "bf16atomic"):
-                    r_o = hw.rsrc(o_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
-                else:
-                    # 64-bit per-tile base (no 32-bit offset overflow for any R). The record
-                    # count spans all remaining rows: a tile-sized count measured ~30% slower.
-                    r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
-                                  fx.Int64(n_rows - row_start) * fx.Int64(N * 2))
-                    if const_expr(YTL and epi == "rows"):
-                        # y_rows column-block-major ([N/BN][R][BN]): a tile's store is one
-                        # contiguous block.
-                        r_oy = hw.rsrc(fx.Int64(o_ptr) + (fx.Int64(nblk * n_rows) + fx.Int64(row_start))
-                                       * fx.Int64(BN * 2), fx.Int64(n_rows - row_start) * fx.Int64(BN * 2))
-                col0 = nblk * BN + wn * 64 + l16 * 2
-                if const_expr(S2W):
-                    if const_expr(not PF):
-                        gpu.barrier()  # every wave is done reading the LDS ring
-                    wb = S2W_BASE + wave * (ROWS_W * 128)
-                    # pfl: the next tile's DMAs after the row staging (weights consumed, no
-                    # hoisted weight registers), else right after the hoisted weight loads.
-                    PFE = PF and "pfl" not in DG
-                    wvs = [fx.Vector(hw.bload(r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + lg * 4) * 4,
-                                              T.vec(4, T.f32))) for rb in range_constexpr(MBW if PFE else 0)]
-                    # after the weight loads: vmcnt drains in order
-                    for op in (pro_ops if PFE else []):
-                        op()
-                    for rb in range_constexpr(MBW):
-                        vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
-                        r4 = rb0 * 16 + fx.Int32(rb * 16) + lg * 4
-                        wv = wvs[rb] if const_expr(PFE) else fx.Vector(hw.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32)))
-                        for v in range_constexpr(4):
-                            rl = fx.Int32(rb * 16) + lg * 4 + v  # wave-local row
-                            w = fx.Float32(wv[v])
-                            for p in range_constexpr(2):
-                                pk = fx.Vector.from_elements(
-                                    [fx.Float32(vs[2 * p][v]) * w, fx.Float32(vs[2 * p + 1][v]) * w],
-                                    fx.Float32).to(fx.BFloat16)
-                                ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
-                                hw.lds_store(pk, lds_base, wb + rl * 128 + ch * 16 + (l16 % 4) * 4, align=4)
-                    for op in (pro_ops if not PFE else []):
-                        op()
-                    cm_o = (hw.NT if const_expr(S2NT) else 0) | Y_CM
-                    if const_expr(epi == "fused"):
-                        # Shared-expert tile: out[t] = own row + the token's routed rows
-                        # (y_rows, via inv), summed in fp32; no combine pass, no shared y rows.
-                        r_inv = hw.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
-                        r_out = hw.rsrc(os_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
-                    FCB = epi == "fused" and "nofcb" not in DG
-                    if const_expr(FCB):
-                        # Batched FC epilogue: every row's token id, then all its routed-row
-                        # indices, up front; routed rows prefetched one iteration ahead. Rows
-                        # past nrows are clamped to a valid row and their store is dropped.
-                        NIT = ROWS_W // 8
-                        ch = lane % 8
-                        colb = (nblk * BN + wn * 64) * 2 + ch * 16
-                        rls = [fx.Int32(it * 8) + lane // 8 for it in range_constexpr(NIT)]
-                        oks = [rb0 * 16 + rl < nrows for rl in rls]
-                        grows = [row_start + ok.select(rb0 * 16 + rl, fx.Int32(0)) for ok, rl in zip(oks, rls)]
-                        ts = [fx.Int32(hw.bload(r_tok, g * 4, T.i32)) for g in grows]
-                        srcs = []
-                        for it in range_constexpr(NIT):
-                            ss = []
-                            for sl in range_constexpr(KTOP):
-                                rs = fx.Int32(hw.bload(r_inv, (ts[it] * KTOP + sl) * 4, T.i32))
-                                rs = fx.max(fx.min(rs, n_rows - 1), fx.Int32(0))
-                                ss.append(rs)
-                            srcs.append(ss)
+                AS_W = max(BM, 64) // 64
+                AS_IT = (AS_W + NW - 1) // NW
+                as_dma_voff = [
+                    a_row_of((wave + it * NW) * 64 + lane) * KG
+                    for it in range_constexpr(AS_IT)
+                ]
 
-                        def fc_rows(it):
-                            if const_expr("fcnor" in DG):
-                                return [fx.Vector.filled(8, 0.0, fx.BFloat16) for _ in range_constexpr(KTOP)]
-                            if const_expr(YTL):
-                                yb = (fx.Int64(o_ptr) + fx.Int64(nblk * n_rows) * fx.Int64(BN * 2)
-                                      + fx.Int64((wn * 64) * 2 + ch * 16))
-                                return [fx.Vector(hw.gload(yb + fx.Int64(srcs[it][sl]) * fx.Int64(BN * 2),
-                                                           T.vec(8, T.bf16)))
-                                        for sl in range_constexpr(KTOP)]
-                            if const_expr("fcsk" in DG):
-                                # the own (shared) slot's value is dropped: load another slot of the
-                                # token instead (fetched anyway, an L2 hit) of the never-written row
-                                src = [(srcs[it][sl] != grows[it]).select(srcs[it][sl], srcs[it][(sl + 1) % KTOP])
-                                       for sl in range_constexpr(KTOP)]
-                            else:
-                                src = srcs[it]
-                            return [fx.Vector(hw.gload(fx.Int64(o_ptr) + fx.Int64(src[sl]) * fx.Int64(N * 2)
-                                                       + fx.Int64(colb), T.vec(8, T.bf16), nt="fcnt" in DG))
-                                    for sl in range_constexpr(KTOP)]
+            def dma_ops(s):
+                """This wave's DMA instructions for K step s, as thunks (issue order)."""
+                slot = s % RING
+                oA, oB = slot * SA, RB + slot * SB
+                oBS, oAS = RBS + (s % SCD) * SBS, RAS + (s % SCD) * SAS
+                ops = []
+                for it in range_constexpr(A_IT):
+                    if const_expr(A_INSTR % NW == 0):
+                        ops.append(
+                            lambda it=it: hw.dma_async(
+                                r_a,
+                                lds_base,
+                                wave * 1024 + (oA + it * NW * 1024),
+                                a_dma_voff[it],
+                                soff=a_soff(s),
+                            )
+                        )
+                    else:
 
-                        FCP = 2 if "fcp2" in DG else 1  # routed-row prefetch depth (iterations)
-                        ys = {i: fc_rows(i) for i in range_constexpr(min(FCP, NIT))}
-                        z8 = fx.Vector.filled(8, 0.0, fx.Float32)
-                        for it in range_constexpr(NIT):
-                            if const_expr(it + FCP < NIT):
-                                ys[it + FCP] = fc_rows(it + FCP)
-                            rl = rls[it]
-                            v16 = hw.lds_load(lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4)
-                            accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
-                            yl = ys.pop(it)
-                            for sl in range_constexpr(KTOP):
-                                other = srcs[it][sl] != grows[it]
-                                accv = accv + other.select(yl[sl].to(fx.Float32), z8)
-                            hw.bstore(accv.to(fx.BFloat16), r_out,
-                                      oks[it].select(ts[it] * (N * 2) + colb, fx.Int32(0x7FFFFFF0)))
-                    for it in range_constexpr(ROWS_W // 8 if not FCB else 0):
-                        rl = fx.Int32(it * 8) + lane // 8
-                        ch = lane % 8
-                        v16 = hw.lds_load(lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4)
-                        row = rb0 * 16 + rl
-                        colb = (nblk * BN + wn * 64) * 2 + ch * 16
-                        if const_expr(epi == "fused"):
-                            # Bad token / row ids (FC invariant broken) stay in bounds: the out
-                            # store is buffer-checked and routed rows are clamped into y_rows.
-                            if row < nrows:
-                                grow = row_start + row
-                                t = fx.Int32(hw.bload(r_tok, grow * 4, T.i32))
-                                accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
-                                for sl in range_constexpr(KTOP):
-                                    rs = fx.Int32(hw.bload(r_inv, (t * KTOP + sl) * 4, T.i32))
-                                    rs = fx.max(fx.min(rs, n_rows - 1), fx.Int32(0))
-                                    other = rs != grow
-                                    src = other.select(rs, grow)
-                                    yv = fx.Vector(hw.gload(fx.Int64(o_ptr) + fx.Int64(src) * fx.Int64(N * 2)
-                                                            + fx.Int64(colb), T.vec(8, T.bf16))).to(fx.Float32)
-                                    zero8 = fx.Vector.filled(8, 0.0, fx.Float32)
-                                    accv = accv + other.select(yv, zero8)
-                                hw.bstore(accv.to(fx.BFloat16), r_out, t * (N * 2) + colb)
-                        elif const_expr(YTL):
-                            off = row * (BN * 2) + (wn * 64) * 2 + ch * 16
-                            hw.bstore(v16, r_oy, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
+                        def _a(it=it):
+                            if wave + it * NW < fx.Int32(A_INSTR):
+                                hw.dma_async(
+                                    r_a,
+                                    lds_base,
+                                    wave * 1024 + (oA + it * NW * 1024),
+                                    a_dma_voff[it],
+                                    soff=a_soff(s),
+                                )
+
+                        ops.append(_a)
+                if const_expr(pipe == "il4"):
+                    # Branch-free: every wave issues the same DMA mix. B: WN*TWN 1 KB tiles
+                    # dealt round-robin; scales: one sc2 DMA on even steps.
+                    for q in range_constexpr((WN * TWN) // NW):
+                        ops.append(
+                            lambda q=q: hw.dma_async(
+                                r_b,
+                                lds_base,
+                                wave * 1024 + (oB + q * NW * 1024),
+                                b4_voff + (q * NW) * (KS * 1024),
+                                soff=s * 1024,
+                            )
+                        )
+
+                    def _sc2():
+                        ts = fx.Int32(s) + (wave >> 1)
+                        isb = (wave & 1) == fx.Int32(0)
+                        sl = ((wave >> 1) == fx.Int32(0)).select(
+                            fx.Int32(s % SCD), fx.Int32((s + 1) % SCD)
+                        )
+                        hw.dma_async(
+                            hw.select_rsrc(isb, r_bs, r_as),
+                            lds_base,
+                            isb.select(RBS + sl * SBS, RAS + sl * SAS),
+                            isb.select(bs16_voff4, as16_voff),
+                            soff=isb.select(ts * BS_STEP, n_rows * (ts * 4)),
+                        )
+
+                    if const_expr(s % 2 == 0):
+                        ops.append(_sc2)
+                    return ops
+                elif const_expr(b_lds):
+                    for jj in range_constexpr(4):
+                        ops.append(
+                            lambda jj=jj: hw.dma_async(
+                                r_b,
+                                lds_base,
+                                wn * 4096 + (oB + jj * 1024),
+                                b_voff[jj],
+                                soff=s * 1024,
+                            )
+                        )
+                    if const_expr(BS1 and NW > 1):
+
+                        def _bs1():
+                            if wave == fx.Int32(1):
+                                hw.dma_async(
+                                    r_bs,
+                                    lds_base,
+                                    oBS,
+                                    bs16_voff,
+                                    soff=s * BS_STEP,
+                                    nbytes=16,
+                                )
+
+                        ops.append(_bs1)
+                    else:
+                        ops.append(
+                            lambda: hw.dma_async(
+                                r_bs,
+                                lds_base,
+                                wn * 256 + oBS,
+                                bs_voff,
+                                soff=s * BS_STEP,
+                                nbytes=4,
+                            )
+                        )
+                for it in range_constexpr(AS_IT):
+                    if const_expr(AS16):
+
+                        def _as(it=it):
+                            if wave + it * NW < fx.Int32(AS_W):
+                                hw.dma_async(
+                                    r_as,
+                                    lds_base,
+                                    wave * 1024 + (oAS + it * NW * 1024),
+                                    as_dma_voff[it],
+                                    soff=n_rows * (s * 4),
+                                    nbytes=16,
+                                )
+
+                    elif const_expr(AST):
+
+                        def _as(it=it):
+                            if wave + it * NW < fx.Int32(AS_W):
+                                hw.dma_async(
+                                    r_as,
+                                    lds_base,
+                                    wave * 256 + (oAS + it * NW * 256),
+                                    as_dma_voff[it],
+                                    soff=n_rows * (s * 4),
+                                    nbytes=4,
+                                )
+
+                    else:
+
+                        def _as(it=it):
+                            if wave + it * NW < fx.Int32(AS_W):
+                                hw.dma_async(
+                                    r_as,
+                                    lds_base,
+                                    wave * 256 + (oAS + it * NW * 256),
+                                    as_dma_voff[it],
+                                    soff=s * 4,
+                                    nbytes=4,
+                                )
+
+                    ops.append(_as)
+                return ops
+
+            def issue(s):
+                for op in dma_ops(s):
+                    op()
+                rocdl.asyncmark()
+
+            def issue_b(s):
+                bb = [
+                    hw.bload(r_b, b_voff[j], T.i32x4, soff=s * 1024)
+                    for j in range_constexpr(4)
+                ]
+                return bb, hw.bload(r_bs, bs_voff, T.i32, soff=s * BS_STEP)
+
+            breg = {}
+            if const_expr(not b_lds and mode != "pro"):
+                for p in range_constexpr(DB):
+                    breg[p] = issue_b(p)
+            if const_expr(mode == "pro" and defer):
+                # (issue order) the prologue's DMAs + asyncmarks, for the caller to spread
+                thunks = []
+                for p in range_constexpr(min(NSTG, KS)):
+                    thunks += dma_ops(p) + [rocdl.asyncmark]
+                return thunks
+            NPRO = min(NSTG if pipe == "il4" else NSTG - 1, KS)
+            for p in range_constexpr(NPRO if mode != "main" else 0):
+                issue(p)
+            if const_expr(mode == "pro"):
+                return st_out
+
+            # Per-kind LDS read bases (lane-varying part + region start), computed once.
+            as_rd = l16 * 4 + lg + rb0 * 64 + RAS
+            b_rd = lane * 16 + wn * 4096 + RB
+            bs_rd = lane * 4 + wn * 256 + RBS
+
+            def read_a(s):
+                """LDS operand reads for step s."""
+                slot = s % RING
+                oA, oB, oBS, oAS = slot * SA, slot * SB, slot * SBS, slot * SAS
+                ops = [
+                    hw.lds_load(lds_base, a_rd + rb0 * 1024 + (oA + rb * 1024), T.i32x4)
+                    for rb in range_constexpr(MBW)
+                ]
+                sc = [
+                    fx.Int32(
+                        fx.Uint8(
+                            hw.lds_load(
+                                lds_base, as_rd + (oAS + rb * 64), T.i8, align=1
+                            )
+                        )
+                    )
+                    for rb in range_constexpr(MBW)
+                ]
+                if const_expr(b_lds):
+                    bo = [
+                        hw.lds_load(lds_base, b_rd + (oB + j * 1024), T.i32x4)
+                        for j in range_constexpr(4)
+                    ]
+                    bsv = hw.lds_load(lds_base, bs_rd + oBS, T.i32, align=4)
+                    return ops, sc, (bo, bsv)
+                return ops, sc, None
+
+            if const_expr(pipe == "il4"):
+                # One wave per SIMD, 128x128 per wave, no operand double buffer. A step is
+                # two halves: half h runs every row block against B tiles 4h..4h+3, so B
+                # tiles 0-3 of step s+1 load during half 1 of step s, tiles 4-7 of step s
+                # at the start of step s (used from half 1), and each A row block reloads
+                # right after its last use. Mid-step barrier: step s+1 has landed and step
+                # s's slot is no longer read, so step s+NSTG's DMAs refill it right away.
+                b_rd4 = lane * 16 + wn * (TWN * 1024) + RB
+                bs_rd4 = lane * 4 + wn * (CG * 256) + RBS
+                a_rd4 = a_rd + rb0 * 1024
+
+                def offs(s):
+                    slot = s % RING
+                    return slot * SA, slot * SB, (s % SCD) * SBS, (s % SCD) * SAS
+
+                def rd_bh(s, h):
+                    _, oB, oBS, _ = offs(s)
+                    return [
+                        lambda: hw.lds_load(
+                            lds_base, bs_rd4 + (oBS + h * 256), T.i32, align=4
+                        )
+                    ] + [
+                        lambda j=j: hw.lds_load(
+                            lds_base, b_rd4 + (oB + (4 * h + j) * 1024), T.i32x4
+                        )
+                        for j in range_constexpr(4)
+                    ]
+
+                def rd_a(s, rb):
+                    oA, _, _, oAS = offs(s)
+                    return [
+                        lambda: hw.lds_load(
+                            lds_base, a_rd4 + (oA + rb * 1024), T.i32x4
+                        ),
+                        lambda: hw.lds_load_u8(lds_base, as_rd + (oAS + rb * 64)),
+                    ]
+
+                rocdl.wait_asyncmark(max(0, min(NSTG, KS) - 1))
+                gpu.barrier()
+                v = [f() for f in rd_bh(0, 0)]
+                bsv = [v[0], None]
+                b_ops = v[1:] + [None] * 4
+                a_ops, sa = [None] * MBW, [None] * MBW
+                for rb in range_constexpr(MBW):
+                    a_ops[rb], sa[rb] = [f() for f in rd_a(0, rb)]
+                NMF = MBW * TWN
+                if const_expr(mode == "main"):
+                    # Tile `nxt`'s state loads, long before its prologue needs them.
+                    tvn = fx.Vector(hw.bload(r_tiles, _decode(nxt)[0] * 16, T.i32x4))
+                for s in range_constexpr(KS):
+                    has_next = s + 1 < KS
+                    dms = dma_ops(s + NSTG) if const_expr(s + NSTG < KS) else []
+                    plan = _il4_plan(len(dms), has_next, MBW, IL4_BAR)
+                    own = rd_bh(s, 1)
+                    nb0 = rd_bh(s + 1, 0) if const_expr(has_next) else []
+                    nxt_b, nxt_bs = [None] * 4, None
+                    nxt_a, nxt_sa = [None] * MBW, [None] * MBW
+                    for i in range_constexpr(NMF):
+                        h, rb, j = i // 32, (i % 32) // 4, i % 4
+                        t = 4 * h + j
+                        if const_expr(S2I or S1TR):
+                            acc[rb][t] = hw.mfma_fp4_agpr(
+                                acc[rb][t] if const_expr(s > 0) else None,
+                                b_ops[t],
+                                a_ops[rb],
+                                bsv[h],
+                                sa[rb],
+                                0,
+                                j,
+                            )
                         else:
-                            off = row * (N * 2) + colb
-                            hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFF00)), cm=cm_o)
-                for rb in range_constexpr(MBW if not S2W else 0):
-                    vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
-                    for v in range_constexpr(4):
-                        row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v
-                        valid = row < nrows
-                        grow = row_start + row
-                        w = fx.Float32(hw.bload(r_w, grow * 4, T.f32))
-                        if const_expr(epi == "rows"):
-                            dst_row = row
-                        else:
-                            dst_row = fx.Int32(hw.bload(r_tok, grow * 4, T.i32))
-                        for p in range_constexpr(2):
-                            ve = fx.Float32(vs[2 * p][v]) * w
-                            vo = fx.Float32(vs[2 * p + 1][v]) * w
-                            col = col0 + p * 32
-                            if const_expr(epi == "f32atomic"):
-                                off = valid.select((dst_row * N + col) * 4, fx.Int32(0x7FFFFF00))
-                                hw.batomic_fadd(ve, r_o, off)
-                                hw.batomic_fadd(vo, r_o, off + 4)
-                            else:
-                                pk = fx.Vector.from_elements([ve, vo], fx.Float32).to(fx.BFloat16)
-                                off = valid.select((dst_row * N + col) * 2, fx.Int32(0x7FFFFF00))
-                                if const_expr(epi == "bf16atomic"):
-                                    hw.batomic_fadd(pk, r_o, off)
+                            acc[rb][t] = hw.mfma_fp4_agpr(
+                                acc[rb][t] if const_expr(s > 0) else None,
+                                a_ops[rb],
+                                b_ops[t],
+                                sa[rb],
+                                bsv[h],
+                                j,
+                            )
+                        if const_expr(mode == "main" and s == KS // 2 and i == 16):
+                            rocdl.sched_barrier(0)
+                            e_n, rs_n, nr_n = [
+                                fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tvn[q])))
+                                for q in range_constexpr(3)
+                            ]
+                            st_out = [e_n, rs_n, nr_n] + [
+                                fx.Int32(
+                                    hw.bload(
+                                        r_tok,
+                                        (rs_n + (wave + it * NW) * 16 + lane // 4) * 4,
+                                        T.i32,
+                                    )
+                                )
+                                for it in range_constexpr(A_IT if stage == 1 else 0)
+                            ]
+                            rocdl.sched_barrier(0)
+                        for k2 in range_constexpr(len(plan[i])):
+                            kind, idx = plan[i][k2]
+                            rocdl.sched_barrier(0)
+                            if const_expr(kind == "own"):
+                                val = own[idx]()
+                                if const_expr(idx == 0):
+                                    bsv[1] = val
                                 else:
-                                    hw.bstore(pk, r_o, off, cm=Y_CM)
+                                    b_ops[4 + idx - 1] = val
+                            elif const_expr(kind == "bar"):
+                                last = min(s - 1 + NSTG, KS - 1)
+                                rocdl.wait_asyncmark(max(0, last - (s + 1)))
+                                gpu.barrier()
+                            elif const_expr(kind == "d"):
+                                dms[idx]()
+                                if const_expr(idx == len(dms) - 1):
+                                    rocdl.asyncmark()
+                            elif const_expr(kind == "nb"):
+                                val = nb0[idx]()
+                                if const_expr(idx == 0):
+                                    nxt_bs = val
+                                else:
+                                    nxt_b[idx - 1] = val
+                            else:
+                                nxt_a[idx], nxt_sa[idx] = [
+                                    f() for f in rd_a(s + 1, idx)
+                                ]
+                            rocdl.sched_barrier(0)
+                    if const_expr(has_next):
+                        bsv = [nxt_bs, None]
+                        b_ops = nxt_b + [None] * 4
+                        a_ops, sa = nxt_a, nxt_sa
+                rocdl.sched_barrier(0)
+                fenced = hw.mfma_drain(
+                    [
+                        acc[rb][t]
+                        for rb in range_constexpr(MBW)
+                        for t in range_constexpr(TWN)
+                    ]
+                )
+                acc = [fenced[rb * TWN : (rb + 1) * TWN] for rb in range_constexpr(MBW)]
+                rocdl.sched_barrier(0)
+                if const_expr(mode == "main"):
+                    gpu.barrier()  # every wave is past its last ring read
+                    pro_ops = _tile_body(nxt, "pro", st=st_out, defer=True)
+                    rocdl.sched_barrier(0)
+
+            if const_expr(prefetch):
+                # LDS operands for step s+1 are read while step s's MFMAs run.
+                rocdl.wait_asyncmark(max(0, min(NSTG - 2, KS - 1)))
+                gpu.barrier()
+                cur = read_a(0)
+                for s in range_constexpr(KS):
+                    a_ops, sa, bl = cur
+                    if const_expr(b_lds):
+                        b_ops, bs = bl
+                    else:
+                        b_ops, bs = breg[s]
+                        if const_expr(s + DB < KS):
+                            breg[s + DB] = issue_b(s + DB)
+                    for rb in range_constexpr(MBW):
+                        for j in range_constexpr(4):
+                            acc[rb][j] = hw.mfma_fp4(
+                                acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j
+                            )
+                    if const_expr(s + 1 < KS):
+                        rocdl.wait_asyncmark(max(0, min(NSTG - 3, KS - 2 - s)))
+                        gpu.barrier()
+                        if const_expr(s + NSTG - 1 < KS):
+                            issue(s + NSTG - 1)
+                        cur = read_a(s + 1)
+            for s in range_constexpr(KS if pipe in ("async", "hybrid") else 0):
+                rocdl.wait_asyncmark(min(NSTG - 2, KS - 1 - s))
+                gpu.barrier()
+                if const_expr(s + NSTG - 1 < KS):
+                    issue(s + NSTG - 1)
+                if const_expr((not b_lds) and s + DB < KS):
+                    breg[s + DB] = issue_b(s + DB)
+                a_ops, sa, bl = read_a(s)
+                if const_expr(b_lds):
+                    b_ops, bs = bl
+                else:
+                    b_ops, bs = breg.pop(s)
+                for rb in range_constexpr(MBW):
+                    for j in range_constexpr(4):
+                        acc[rb][j] = hw.mfma_fp4(
+                            acc[rb][j], a_ops[rb], b_ops[j], sa[rb], bs, 0, j
+                        )
+
+            if const_expr(stage == 1):
+                _epi1(acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0)
+            elif const_expr(S2I):
+                _epi2_il4(
+                    acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0
+                )
+            else:
+                _epi2(acc, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0, r_tok)
             return st_out
 
-        def _epoch():
-            # the forward's epoch: bumped once per forward by the plan (prologue, epoch=True)
-            r_ep = hw.rsrc(fx.Int64(ntiles_ptr) + fx.Int64(EPOCH_OFF), 4)
-            return fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_ep, 0, T.i32)))
+        def _epi1(acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0):
+            """Stage-1 epilogue: SwiGLU-OAI, per-32 amax, e8m0 + fp4 requant, h stores."""
+            l16 = lane % 16
+            lg = lane // 16
+            r_o = hw.rsrc(o_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 2))
+            if const_expr(HTW):
+                gpu.barrier()  # all waves done with the LDS ring
+                hwb = wave * (RWP * 16)
+            r_os = hw.rsrc(os_ptr, fx.Int64(n_rows) * fx.Int64(INTER // 32))
+            lim = fx.Float32(limit)
 
-        def _wave_any(pred):
-            v = pred.select(fx.Int32(1), fx.Int32(0))
-            for off in (1, 2, 4, 8, 16, 32):
-                v = fx.max(v, v.shuffle_xor(fx.Int32(off), fx.Int32(64)))
-            return fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(v))) != fx.Int32(0)
-
-        def _wait_flags(r_f, offs, oks, ep):
-            # wave 0: spin until every enabled flag has reached this forward's epoch
-            def pend(fs):
-                p = None
-                for f, ok in zip(fs, oks):
-                    q = ok & ((f - ep) < fx.Int32(0))
-                    p = q if p is None else (p | q)
-                return p
-            fs = [fx.Int32(hw.bload(r_f, o, T.i32, cm=17)) for o in offs]
-            while _wave_any(pend(fs)):
-                rocdl.s_sleep(1)
-                fs = [fx.Int32(hw.bload(r_f, o, T.i32, cm=17)) for o in offs]
-
-        def _stamp(slot):
-            if tid == fx.Int32(0):
-                a = fx.Int64(rw_ptr) + fx.Int64(n_out) * fx.Int64(16) + fx.Int64(bid) * fx.Int64(32)
-                hw.bstore(hw.realtime(), hw.rsrc(a, 32), slot * 8)
-
-        def _quant_part(q):
-            # = prologue.build_quant (same ops): token q // QC, groups (q % QC) * THREADS + tid;
-            # stores written through, then the part's flag = epoch
-            t = q // QC
-            if t < n_out:
-                ep = _epoch()
-                r_x = hw.rsrc(aux_ptr, fx.Int64(n_out) * fx.Int64(K * 2))
-                r_q = hw.rsrc(a_ptr, fx.Int64(n_out) * fx.Int64(KH))
-                r_s = hw.rsrc(as_ptr, fx.Int64(n_out) * fx.Int64(KG))
-                g = (q % QC) * THREADS + tid
-                gid = t * KG + g
-                okg = g < fx.Int32(KG)
-                vals = []
-                for c in range_constexpr(4):
-                    v = fx.Vector(hw.bload(r_x, okg.select(gid * 64 + c * 16, fx.Int32(OOB)),
-                                           T.vec(8, T.bf16))).to(fx.Float32)
-                    for i in range_constexpr(8):
-                        vals.append(fx.Float32(v[i]))
-                m = fmath.absf(vals[0])
-                for i in range_constexpr(1, 32):
-                    m = fx.max(m, fmath.absf(vals[i]))
-                if const_expr(SE):
-                    bexp = hw.e8m0_even(m)
+            def swiglu(gv, uv):
+                gg = fx.min(fx.Float32(gv), lim)
+                uu = fx.max(fx.min(fx.Float32(uv), lim), -lim)
+                if const_expr(EF):
+                    sig = hw.fast_rcp(
+                        fx.Float32(1.0) + hw.exp2_raw(gg * fx.Float32(NEG_ALPHA_LOG2E))
+                    )
                 else:
-                    bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
-                    bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(0xFF)
-                    bexp = fx.min(bexp, fx.Int32(254))
-                qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
-                words = []
-                for wi in range_constexpr(4):
-                    pk = hw.raw(fx.Int32(0))
-                    for p in range_constexpr(4):
+                    sig = fx.Float32(1.0) / (
+                        fx.Float32(1.0) + fmath.exp(gg * fx.Float32(-alpha))
+                    )
+                return gg * sig * (uu + fx.Float32(1.0))
+
+            def swiglu2(g0, g1, u0, u1):
+                """swiglu of an (even, odd) pair: same operations and order, the
+                elementwise mul/add as packed v_pk_*_f32. EF only."""
+                gg = fx.Vector.from_elements(
+                    [fx.min(fx.Float32(g0), lim), fx.min(fx.Float32(g1), lim)],
+                    fx.Float32,
+                )
+                uu = fx.Vector.from_elements(
+                    [hw.fmed3(u0, -lim, lim), hw.fmed3(u1, -lim, lim)], fx.Float32
+                )
+                t = gg * fx.Vector.filled(2, NEG_ALPHA_LOG2E, fx.Float32)
+                den = fx.Vector.from_elements(
+                    [hw.exp2_raw(t[0]), hw.exp2_raw(t[1])], fx.Float32
+                ) + fx.Vector.filled(2, 1.0, fx.Float32)
+                sig = fx.Vector.from_elements(
+                    [hw.fast_rcp(den[0]), hw.fast_rcp(den[1])], fx.Float32
+                )
+                h = gg * sig * (uu + fx.Vector.filled(2, 1.0, fx.Float32))
+                return fx.Float32(h[0]), fx.Float32(h[1])
+
+            def e8m0(m, bounded):
+                if const_expr(SE):
+                    # |h| <= limit * (limit + 1): the bounded form is exact
+                    return (
+                        hw.e8m0_even_small(m)
+                        if const_expr(bounded)
+                        else hw.e8m0_even(m)
+                    )
+                bits = (m * fx.Float32(1.0 / 6.0)).bitcast(fx.Int32)
+                bexp = ((bits + fx.Int32(0x7FFFFF)).shrui(fx.Int32(23))) & fx.Int32(
+                    0xFF
+                )
+                return fx.min(bexp, fx.Int32(254))
+
+            # epgN: N row blocks per epilogue batch (more independent chains in flight)
+            EPG = next(
+                (int(t[3:]) for t in DG if t.startswith("epg") and t[3:].isdigit()), 1
+            )
+            assert MBW % EPG == 0
+            for rbb in range_constexpr(MBW // EPG if S1S else 0):
+                # All CG*4 (group, row) chains of a row block at once: the DPP row-max
+                # levels interleave across chains instead of stalling on DPP hazards.
+                per = -(-len(pro_ops) // (MBW // EPG))
+                per1 = -(-len(pro_ops) // MBW)
+                for op in (
+                    pro_ops[rbb * per : (rbb + 1) * per] if const_expr(not S1TR) else []
+                ):
+                    rocdl.sched_barrier(0)
+                    op()
+                    rocdl.sched_barrier(0)
+                sw = S1S_BASE + wave * S1S_W
+                if const_expr(S1TR):
+                    # lane (row l16, quarter lg) holds columns 4lg..4lg+3 of every tile: h bytes
+                    # 4lg..4lg+3 of group gi of row rb*16 + l16
+                    hv, ms = [], []
+                    for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
+                        # next-tile prologue ops spread per row block, whatever the batch size
+                        for op in pro_ops[rb * per1 : (rb + 1) * per1]:
+                            rocdl.sched_barrier(0)
+                            op()
+                            rocdl.sched_barrier(0)
+                        for gi in range_constexpr(CG):
+                            vg_e = fx.Vector(acc[rb][4 * gi + 0])
+                            vg_o = fx.Vector(acc[rb][4 * gi + 1])
+                            vu_e = fx.Vector(acc[rb][4 * gi + 2])
+                            vu_o = fx.Vector(acc[rb][4 * gi + 3])
+                            hs = [
+                                swiglu2(vg_e[i], vg_o[i], vu_e[i], vu_o[i])
+                                for i in range_constexpr(4)
+                            ]
+                            m = None
+                            for h0, h1 in hs:
+                                mm = fx.max(fmath.absf(h0), fmath.absf(h1))
+                                m = mm if m is None else fx.max(m, mm)
+                            hv.append((rb, gi, hs))
+                            ms.append(m)
+                    ms = hw.rows4_max_nonneg_f32_multi(ms)
+                    bx = {}
+                    for k in range_constexpr(len(hv)):
+                        rb, gi, hs = hv[k]
+                        bexp = hw.e8m0_even_small(ms[k])
+                        qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+                        pk = hw.raw(fx.Int32(0))
+                        for i in range_constexpr(4):
+                            pk = rocdl.cvt_scalef32_pk_fp4_f32(
+                                T.i32,
+                                pk,
+                                hw.raw(hs[i][0]),
+                                hw.raw(hs[i][1]),
+                                hw.raw(qs),
+                                i,
+                            )
+                        rl = fx.Int32(rb * 16) + l16
+                        hw.lds_store(
+                            fx.Int32(pk),
+                            lds_base,
+                            sw + rl * (CG * 16) + (gi * 16) + lg * 4,
+                            align=4,
+                        )
+                        bx[(rb, gi)] = bexp
+                    for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
+                        # row rb*16 + l16: its CG == 2 scale bytes (the 4 quarters write the same)
+                        sd = bx[(rb, 0)] | (bx[(rb, 1)] << fx.Int32(8))
+                        hw.lds_store(
+                            sd.to(fx.Int16),
+                            lds_base,
+                            sw + S1S_H + (fx.Int32(rb * 16) + l16) * CG,
+                            align=2,
+                        )
+                else:
+                    ch = []
+                    for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
+                        for gi in range_constexpr(CG):
+                            vg_e = fx.Vector(acc[rb][4 * gi + 0])
+                            vg_o = fx.Vector(acc[rb][4 * gi + 1])
+                            vu_e = fx.Vector(acc[rb][4 * gi + 2])
+                            vu_o = fx.Vector(acc[rb][4 * gi + 3])
+                            for v in range_constexpr(4):
+                                if const_expr(EF):
+                                    ch.append(
+                                        (rb, gi, v)
+                                        + swiglu2(vg_e[v], vg_o[v], vu_e[v], vu_o[v])
+                                    )
+                                else:
+                                    ch.append(
+                                        (
+                                            rb,
+                                            gi,
+                                            v,
+                                            swiglu(vg_e[v], vu_e[v]),
+                                            swiglu(vg_o[v], vu_o[v]),
+                                        )
+                                    )
+                    ms = [
+                        fx.max(fmath.absf(h0), fmath.absf(h1)) for _, _, _, h0, h1 in ch
+                    ]
+                    if const_expr(EF):
+                        ms = hw.row16_max_nonneg_f32_multi(ms)
+                    else:
+                        for k in range_constexpr(len(ms)):
+                            for off in (1, 2, 4, 8):
+                                ms[k] = fx.max(
+                                    ms[k],
+                                    ms[k].shuffle_xor(fx.Int32(off), fx.Int32(64)),
+                                )
+                    bx = {}
+                    for k in range_constexpr(len(ch)):
+                        rb, gi, v, h0, h1 = ch[k]
+                        bexp = e8m0(ms[k], True)
+                        qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
                         pk = rocdl.cvt_scalef32_pk_fp4_f32(
-                            T.i32, pk, hw.raw(vals[wi * 8 + 2 * p]), hw.raw(vals[wi * 8 + 2 * p + 1]),
-                            hw.raw(qs), p)
-                    words.append(fx.Int32(pk))
-                hw.bstore(fx.Vector.from_elements(words, fx.Int32), r_q,
-                          okg.select(gid * 16, fx.Int32(OOB)), cm=17)
-                hw.bstore(bexp.to(fx.Int8), r_s, okg.select(gid, fx.Int32(OOB)), cm=17)
-                rocdl.s_waitcnt(0x0F70)  # vmcnt(0): this wave's stores are acknowledged
-                gpu.barrier()
-                if tid == fx.Int32(0):
-                    hw.bstore(ep, hw.rsrc(rw_ptr, fx.Int64(n_out) * fx.Int64(16)), q * 4 + (t * (4 - QC)) * 4,
-                              cm=17)
-                if const_expr(QFT):
-                    _stamp(1)
+                            T.i32,
+                            hw.raw(fx.Int32(0)),
+                            hw.raw(h0),
+                            hw.raw(h1),
+                            hw.raw(qs),
+                            0,
+                        )
+                        rl = fx.Int32(rb * 16) + lg * 4 + v
+                        hw.lds_store(
+                            fx.Int32(pk).to(fx.Int8),
+                            lds_base,
+                            sw + rl * (CG * 16) + (gi * 16) + l16,
+                            align=1,
+                        )
+                        bx[(rb, v, gi)] = bexp
+                    for rb in range_constexpr(rbb * EPG, (rbb + 1) * EPG):
+                        # The row block's scales for this lane's 4 rows x CG groups are 8
+                        # contiguous bytes (row-major, CG == 2): one 8 B write. The 16 lanes
+                        # of a row group write the same bytes to the same address.
+                        sd = [
+                            bx[(rb, 2 * q, 0)]
+                            | (bx[(rb, 2 * q, 1)] << fx.Int32(8))
+                            | (bx[(rb, 2 * q + 1, 0)] << fx.Int32(16))
+                            | (bx[(rb, 2 * q + 1, 1)] << fx.Int32(24))
+                            for q in range_constexpr(2)
+                        ]
+                        hw.lds_store(
+                            fx.Vector.from_elements(sd, fx.Int32),
+                            lds_base,
+                            sw + S1S_H + (fx.Int32(rb * 16) + lg * 4) * CG,
+                            align=8,
+                        )
+            for rbg in range_constexpr(MBW * CG if not S1S else 0):
+                rb, gi = rbg // CG, rbg % CG
+                g = (nblk * WN + wn) * CG + gi
+                vg_e = fx.Vector(acc[rb][4 * gi + 0])
+                vg_o = fx.Vector(acc[rb][4 * gi + 1])
+                vu_e = fx.Vector(acc[rb][4 * gi + 2])
+                vu_o = fx.Vector(acc[rb][4 * gi + 3])
+                for v in range_constexpr(4):
+                    row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v
+                    hs = [swiglu(vg_e[v], vu_e[v]), swiglu(vg_o[v], vu_o[v])]
+                    m = fx.max(fmath.absf(hs[0]), fmath.absf(hs[1]))
+                    if const_expr(EF):
+                        m = hw.row16_max_nonneg_f32(m)
+                    else:
+                        for off in (1, 2, 4, 8):
+                            m = fx.max(m, m.shuffle_xor(fx.Int32(off), fx.Int32(64)))
+                    bexp = e8m0(m, False)
+                    qs = (bexp << fx.Int32(23)).bitcast(fx.Float32)
+                    pk = rocdl.cvt_scalef32_pk_fp4_f32(
+                        T.i32,
+                        hw.raw(fx.Int32(0)),
+                        hw.raw(hs[0]),
+                        hw.raw(hs[1]),
+                        hw.raw(qs),
+                        0,
+                    )
+                    valid = row < nrows
+                    grow = row_start + row
+                    soff_ok = valid & (l16 == fx.Int32(0))
+                    if const_expr(HTW):
+                        # stage h bytes per wave in LDS (rows x 16 B), stored below as 16 B rows
+                        rl = fx.Int32(rb * 16) + lg * 4 + v
+                        hw.lds_store(
+                            fx.Int32(pk).to(fx.Int8),
+                            lds_base,
+                            hwb + rl * 16 + l16,
+                            align=1,
+                        )
+                        hs_off = ((g // 4) * n_rows + grow) * 4 + (g % 4)
+                    else:
+                        off = valid.select(
+                            grow * (INTER // 2) + g * 16 + l16, fx.Int32(0x7FFFFFF0)
+                        )
+                        hw.bstore(fx.Int32(pk).to(fx.Int8), r_o, off)
+                        hs_off = grow * (INTER // 32) + g
+                    soff = soff_ok.select(hs_off, fx.Int32(0x7FFFFFF0))
+                    hw.bstore(bexp.to(fx.Int8), r_os, soff)
+            if const_expr(S1S):
+                # h[row][g0*16 .. g0*16 + CG*16): CG*16 B per row, 16 B per lane
+                sw = S1S_BASE + wave * S1S_W
+                g0 = (nblk * WN + wn) * CG
+                LPR = CG  # lanes per row
+                for it in range_constexpr((ROWS_W * LPR) // 64):
+                    rl = fx.Int32(it * (64 // LPR)) + lane // LPR
+                    part = lane % LPR
+                    v16 = hw.lds_load(
+                        lds_base, sw + rl * (CG * 16) + part * 16, T.i32x4
+                    )
+                    row = rb0 * 16 + rl
+                    if const_expr(HT):
+                        # h_t[g//4][row][64 B]; g0 is even, so both groups sit in plane g0//4
+                        off = (
+                            ((g0 // 4) * n_rows + row_start + row) * 64
+                            + (g0 % 4) * 16
+                            + part * 16
+                        )
+                    else:
+                        off = (row_start + row) * (INTER // 2) + g0 * 16 + part * 16
+                    hw.bstore(v16, r_o, (row < nrows).select(off, fx.Int32(0x7FFFFFF0)))
+                # scales: CG bytes per row at h_s[row][g0 .. g0 + CG) (HT: [g0//4][row][4 B])
+                for it in range_constexpr((ROWS_W + 63) // 64):
+                    rl = fx.Int32(it * 64) + lane
+                    row = rb0 * 16 + rl
+                    sv = hw.lds_load(lds_base, sw + S1S_H + rl * CG, T.i16, align=2)
+                    if const_expr(HT):
+                        off = ((g0 // 4) * n_rows + row_start + row) * 4 + (g0 % 4)
+                    else:
+                        off = (row_start + row) * (INTER // 32) + g0
+                    ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
+                    hw.bstore(sv, r_os, ok.select(off, fx.Int32(0x7FFFFFF0)))
+            if const_expr(HTW):
+                # h_t[g//4][row][64 B]: this wave's 16 B column group of each row
+                g = nblk * WN + wn
+                for it in range_constexpr((ROWS_W + 63) // 64):
+                    rl = fx.Int32(it * 64) + lane
+                    v16 = hw.lds_load(lds_base, hwb + rl * 16, T.i32x4)
+                    row = rb0 * 16 + rl
+                    off = ((g // 4) * n_rows + row_start + row) * 64 + (g % 4) * 16
+                    ok = (row < nrows) & (rl < fx.Int32(ROWS_W))
+                    hw.bstore(v16, r_o, ok.select(off, fx.Int32(0x7FFFFFF0)))
 
-        def _qf_wait(row_start, nrows):
-            # lane l < nrows * QC: quant part l % QC of row l // QC's token
-            if wave == fx.Int32(0):
-                ep = _epoch()
-                ok = lane < nrows * QC
-                r_tk = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(4))
-                tok = fx.Int32(hw.bload(r_tk, ok.select((row_start + lane // QC) * 4, fx.Int32(OOB)), T.i32))
-                r_f = hw.rsrc(rw_ptr, fx.Int64(n_out) * fx.Int64(16))
-                if const_expr(not QFNW):
-                    _wait_flags(r_f, [ok.select((tok * 4 + lane % QC) * 4, fx.Int32(OOB))], [ok], ep)
-            gpu.barrier()
-            if const_expr(QFT):
-                _stamp(1)
+        def _epi2_il4(
+            acc, pro_ops, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0
+        ):
+            """il4 stage-2 epilogue: C^T lane = row l16, output columns 64gi + 32p + 8lg .. +7
+            of the wave's 128, through the private LDS row buffer: 16 B chunk 8gi + 4p + lg
+            of the row at chunk ^ (row & 7) (8 consecutive rows of one write hit distinct
+            banks; the 16 B row reads stay conflict-free)."""
+            l16 = lane % 16
+            lg = lane // 16
+            r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+            r_o = hw.rsrc(
+                fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
+                fx.Int64(n_rows - row_start) * fx.Int64(N * 2),
+            )
+            cm_o = hw.NT if const_expr(S2NT) else 0
+            sw0 = S1S_BASE + wave * (S2I_W * S2NB)
+            per = -(-len(pro_ops) // MBW)
+            # Every row block's weights before any store: vmcnt also counts stores, so a
+            # per-block load would wait for all earlier stores to drain.
+            wts = [
+                fx.Float32(
+                    hw.bload(
+                        r_w, (row_start + rb0 * 16 + fx.Int32(rb * 16) + l16) * 4, T.f32
+                    )
+                )
+                for rb in range_constexpr(MBW)
+            ]
+            for rb in range_constexpr(MBW):
+                for op in pro_ops[rb * per : (rb + 1) * per]:
+                    rocdl.sched_barrier(0)
+                    op()
+                    rocdl.sched_barrier(0)
+                sw = sw0 + (rb % S2NB) * S2I_W
+                wv8 = fx.Vector.from_elements([wts[rb]] * 8, fx.Float32)
+                for gi in range_constexpr(CG):
+                    for p in range_constexpr(2):
+                        ve_ = fx.Vector(acc[rb][4 * gi + 2 * p])
+                        vo_ = fx.Vector(acc[rb][4 * gi + 2 * p + 1])
+                        v8 = fx.Vector.from_elements(
+                            [
+                                fx.Float32(x[v])
+                                for v in range_constexpr(4)
+                                for x in (ve_, vo_)
+                            ],
+                            fx.Float32,
+                        )
+                        c = (fx.Int32(gi * 8 + p * 4) + lg) ^ (l16 & 7)
+                        hw.lds_store(
+                            (v8 * wv8).to(fx.BFloat16),
+                            lds_base,
+                            sw + l16 * 256 + c * 16,
+                            align=16,
+                        )
+                for it in range_constexpr(4):
+                    rl = fx.Int32(it * 4) + lane // 16
+                    c = lane % 16
+                    v16 = hw.lds_load(
+                        lds_base, sw + rl * 256 + ((c ^ (rl & 7)) * 16), T.i32x4
+                    )
+                    row = rb0 * 16 + fx.Int32(rb * 16) + rl
+                    off = row * (N * 2) + (nblk * BN + wn * 128) * 2 + c * 16
+                    hw.bstore(
+                        v16,
+                        r_o,
+                        (row < nrows).select(off, fx.Int32(0x7FFFFF00)),
+                        cm=cm_o,
+                    )
+            for op in pro_ops[MBW * per :]:
+                op()
 
-        def _cf_done(work):
-            # after this CTA's rows are acknowledged: flag (row, n-block) = epoch for its rows
-            rocdl.s_waitcnt(0x0F70)
-            gpu.barrier()
-            if wave == fx.Int32(0):
-                ep = _epoch()
-                tv = fx.Vector(hw.bload(hw.rsrc(tiles_ptr), (work // NB) * 16, T.i32x4))
-                rs0 = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[1])))
-                nr0 = fx.Int32(rocdl.readfirstlane(T.i32, hw.raw(tv[2])))
-                if lane < nr0:
-                    hw.bstore(ep, hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(NB * 4)),
-                              ((rs0 + lane) * NB + work % NB) * 4, cm=17)
+        def _epi2(acc, wave, lane, wn, nblk, row_start, nrows, n_rows, rb0, r_tok):
+            """Stage-2 epilogue (async / hybrid pipes): W2 columns are even/odd interleaved
+            per 32, so tiles (0,1) and (2,3) give each lane output columns (gb+2c, gb+2c+1).
+            """
+            l16 = lane % 16
+            lg = lane // 16
+            r_w = hw.rsrc(rw_ptr, fx.Int64(n_rows) * fx.Int64(4))
+            # 64-bit per-tile base (no 32-bit offset overflow for any R). The record count
+            # spans all remaining rows: a tile-sized count measured ~30% slower.
+            r_o = hw.rsrc(
+                fx.Int64(o_ptr) + fx.Int64(row_start) * fx.Int64(N * 2),
+                fx.Int64(n_rows - row_start) * fx.Int64(N * 2),
+            )
+            col0 = nblk * BN + wn * 64 + l16 * 2
+            if const_expr(S2W):
+                gpu.barrier()  # every wave is done reading the LDS ring
+                wb = wave * (ROWS_W * 128)
+                for rb in range_constexpr(MBW):
+                    vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
+                    r4 = rb0 * 16 + fx.Int32(rb * 16) + lg * 4
+                    wv = fx.Vector(hw.bload(r_w, (row_start + r4) * 4, T.vec(4, T.f32)))
+                    for v in range_constexpr(4):
+                        rl = fx.Int32(rb * 16) + lg * 4 + v  # wave-local row
+                        w = fx.Float32(wv[v])
+                        for p in range_constexpr(2):
+                            pk = fx.Vector.from_elements(
+                                [
+                                    fx.Float32(vs[2 * p][v]) * w,
+                                    fx.Float32(vs[2 * p + 1][v]) * w,
+                                ],
+                                fx.Float32,
+                            ).to(fx.BFloat16)
+                            ch = (fx.Int32(p * 4) + l16 // 4) ^ (rl & 7)
+                            hw.lds_store(
+                                pk,
+                                lds_base,
+                                wb + rl * 128 + ch * 16 + (l16 % 4) * 4,
+                                align=4,
+                            )
+                cm_o = hw.NT if const_expr(S2NT) else 0
+                if const_expr(epi == "fused"):
+                    # Shared-expert tile: out[t] = own row + the token's routed rows (y_rows,
+                    # via inv), summed in fp32; no combine pass, no shared y rows. Every row's
+                    # token id and routed-row indices up front, routed rows prefetched one
+                    # iteration ahead. Rows past nrows are clamped and their store dropped.
+                    r_inv = hw.rsrc(aux_ptr, fx.Int64(n_rows) * fx.Int64(4))
+                    r_out = hw.rsrc(os_ptr, fx.Int64(n_out) * fx.Int64(N * 2))
+                    NIT = ROWS_W // 8
+                    ch = lane % 8
+                    colb = (nblk * BN + wn * 64) * 2 + ch * 16
+                    rls = [fx.Int32(it * 8) + lane // 8 for it in range_constexpr(NIT)]
+                    oks = [rb0 * 16 + rl < nrows for rl in rls]
+                    grows = [
+                        row_start + ok.select(rb0 * 16 + rl, fx.Int32(0))
+                        for ok, rl in zip(oks, rls)
+                    ]
+                    ts = [fx.Int32(hw.bload(r_tok, g * 4, T.i32)) for g in grows]
+                    srcs = []
+                    for it in range_constexpr(NIT):
+                        ss = []
+                        for sl in range_constexpr(KTOP):
+                            rs = fx.Int32(
+                                hw.bload(r_inv, (ts[it] * KTOP + sl) * 4, T.i32)
+                            )
+                            rs = fx.max(fx.min(rs, n_rows - 1), fx.Int32(0))
+                            ss.append(rs)
+                        srcs.append(ss)
 
-        def _combine_part(q):
-            # token q // CC, columns [c * CW, (c + 1) * CW), c = q % CC: waits for exactly the
-            # NBC n-blocks of its KTOP rows, then sums them in slot order (= combine.py)
-            t = q // CC
-            c = q % CC
-            if t < n_out:
-                r_inv = hw.rsrc(aux_ptr, fx.Int64(n_out * KTOP) * fx.Int64(4))
-                if wave == fx.Int32(0):
-                    ep = _epoch()
-                    r_f = hw.rsrc(rtok_ptr, fx.Int64(n_rows) * fx.Int64(NB * 4))
-                    offs, oks = [], []
-                    for i in range_constexpr((KTOP * NBC + 63) // 64):
-                        idx = lane + i * 64
-                        ok = idx < fx.Int32(KTOP * NBC)
-                        row = fx.Int32(hw.bload(r_inv, ok.select((t * KTOP + idx // NBC) * 4, fx.Int32(OOB)),
-                                                T.i32))
-                        offs.append(ok.select((row * NB + c * NBC + idx % NBC) * 4, fx.Int32(OOB)))
-                        oks.append(ok)
-                    _wait_flags(r_f, offs, oks, ep)
-                gpu.barrier()
-                r_out = hw.rsrc(fx.Int64(os_ptr) + fx.Int64(t) * fx.Int64(N * 2), N * 2)
-                r_rows = []
-                for sl in range_constexpr(KTOP):
-                    rw_ = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_inv, (t * KTOP + sl) * 4, T.i32)))
-                    r_rows.append(hw.rsrc(fx.Int64(o_ptr) + fx.Int64(rw_) * fx.Int64(N * 2), N * 2))
-                for it in range_constexpr((CW + 8 * THREADS - 1) // (8 * THREADS)):
-                    j = tid + it * THREADS
-                    off = (j < fx.Int32(CW // 8)).select((c * CW + j * 8) * 2, fx.Int32(OOB))
-                    acc = None
-                    for sl in range_constexpr(KTOP):
-                        v = fx.Vector(hw.bload(r_rows[sl], off, T.vec(8, T.bf16), cm=17)).to(fx.Float32)
-                        acc = v if sl == 0 else acc + v
-                    hw.bstore(acc.to(fx.BFloat16), r_out, off)
+                    def fc_rows(it):
+                        if const_expr("fcsk" in DG):
+                            # the own (shared) slot's value is dropped: load another slot of the
+                            # token instead (fetched anyway, an L2 hit) of the never-written row
+                            src = [
+                                (srcs[it][sl] != grows[it]).select(
+                                    srcs[it][sl], srcs[it][(sl + 1) % KTOP]
+                                )
+                                for sl in range_constexpr(KTOP)
+                            ]
+                        else:
+                            src = srcs[it]
+                        return [
+                            fx.Vector(
+                                hw.gload(
+                                    fx.Int64(o_ptr)
+                                    + fx.Int64(src[sl]) * fx.Int64(N * 2)
+                                    + fx.Int64(colb),
+                                    T.vec(8, T.bf16),
+                                )
+                            )
+                            for sl in range_constexpr(KTOP)
+                        ]
+
+                    ys = {0: fc_rows(0)}
+                    z8 = fx.Vector.filled(8, 0.0, fx.Float32)
+                    for it in range_constexpr(NIT):
+                        if const_expr(it + 1 < NIT):
+                            ys[it + 1] = fc_rows(it + 1)
+                        rl = rls[it]
+                        v16 = hw.lds_load(
+                            lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4
+                        )
+                        accv = fx.Vector(v16).bitcast(fx.BFloat16).to(fx.Float32)
+                        yl = ys.pop(it)
+                        for sl in range_constexpr(KTOP):
+                            other = srcs[it][sl] != grows[it]
+                            accv = accv + other.select(yl[sl].to(fx.Float32), z8)
+                        hw.bstore(
+                            accv.to(fx.BFloat16),
+                            r_out,
+                            oks[it].select(
+                                ts[it] * (N * 2) + colb, fx.Int32(0x7FFFFFF0)
+                            ),
+                        )
+                else:
+                    for it in range_constexpr(ROWS_W // 8):
+                        rl = fx.Int32(it * 8) + lane // 8
+                        ch = lane % 8
+                        v16 = hw.lds_load(
+                            lds_base, wb + rl * 128 + ((ch ^ (rl & 7)) * 16), T.i32x4
+                        )
+                        row = rb0 * 16 + rl
+                        colb = (nblk * BN + wn * 64) * 2 + ch * 16
+                        off = row * (N * 2) + colb
+                        hw.bstore(
+                            v16,
+                            r_o,
+                            (row < nrows).select(off, fx.Int32(0x7FFFFF00)),
+                            cm=cm_o,
+                        )
+            for rb in range_constexpr(MBW if not S2W else 0):
+                vs = [fx.Vector(acc[rb][j]) for j in range_constexpr(4)]
+                for v in range_constexpr(4):
+                    row = rb0 * 16 + fx.Int32(rb * 16) + lg * 4 + v
+                    valid = row < nrows
+                    grow = row_start + row
+                    w = fx.Float32(hw.bload(r_w, grow * 4, T.f32))
+                    for p in range_constexpr(2):
+                        ve = fx.Float32(vs[2 * p][v]) * w
+                        vo = fx.Float32(vs[2 * p + 1][v]) * w
+                        col = col0 + p * 32
+                        pk = fx.Vector.from_elements([ve, vo], fx.Float32).to(
+                            fx.BFloat16
+                        )
+                        off = valid.select((row * N + col) * 2, fx.Int32(0x7FFFFF00))
+                        hw.bstore(pk, r_o, off)
 
         # CTAs are dealt round-robin over the 8 XCDs; each XCD gets a contiguous range of
         # work so an expert's m-tiles share one L2.
@@ -1617,67 +1294,22 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         xr = bound % 8
         xc = bid % 8
         xstart = xc * xq + fx.min(xc, xr)
-        if const_expr(frange is not None and PF):
-            lo, hi = frange
-            st = _tile_body(lo, "pro", hook=hook)
-            for w in range(lo, hi, 1):
-                st = _tile_body(fx.Int32(w), "main", fx.min(fx.Int32(w) + 1, hi - 1), st)
-            rocdl.wait_asyncmark(0)
-        elif const_expr(frange is not None):
-            lo, hi = frange
-            hook(fx.Int32(0), fx.Int32(0))
-            for w in range(lo, hi, 1):
-                _tile_body(fx.Int32(w))
-        elif const_expr(fwork is not None):
-            _tile_body(fwork, hook=hook)
-        elif const_expr(IL4P or PF):
-            # Persistent il4 / PF: tile w+1's prologue DMAs overlap tile w's epilogue. The next
+        if const_expr(PERS):
+            # Persistent il4: tile w+1's prologue DMAs overlap tile w's epilogue. The next
             # work index is clamped (the last tile re-fetches itself), so nothing branches.
             gx = fx.Int32(gpu.grid_dim.x) // 8
             wend = xstart + xq + (xc < xr).select(fx.Int32(1), fx.Int32(0))
             first = xstart + bid // 8
-            if const_expr(STG):
-                # stgN: every other CTA of an XCD starts ~N x 8k cycles late, so the CUs' epilogue
-                # (store) phases do not line up
-                if (bid // 8) % 2 == fx.Int32(1):
-                    for _ in range_constexpr(STG):
-                        rocdl.s_sleep(127)
             st = _tile_body(fx.max(fx.min(first, bound - 1), fx.Int32(0)), "pro")
             for w in range(first, wend, gx):
-                st = _tile_body(fx.Int32(w), "main", fx.min(fx.Int32(w) + gx, wend - 1), st)
+                st = _tile_body(
+                    fx.Int32(w), "main", fx.min(fx.Int32(w) + gx, wend - 1), st
+                )
             rocdl.wait_asyncmark(0)
-        elif const_expr(PERS):
-            # Persistent: grid = CUs * PERS CTAs; CTA c walks its XCD's range with stride
-            # (CTAs per XCD).
-            gx = fx.Int32(gpu.grid_dim.x) // 8
-            wend = xstart + xq + (xc < xr).select(fx.Int32(1), fx.Int32(0))
-            for w in range(xstart + bid // 8, wend, gx):
-                _tile_body(fx.Int32(w))
         else:
-            if const_expr(QF):
-                if const_expr(QFT):
-                    _stamp(0)
-                qn = ((n_out * QC + 7) // 8) * 8  # = qf_ctas(T, K, NW)
-                b2 = bid - qn
-                if bid < qn:
-                    _quant_part(bid)
-                elif b2 < bound:
-                    _tile_body(xstart + b2 // 8, hook=_qf_wait)
-                if const_expr(QFT):
-                    rocdl.s_waitcnt(0x0F70)
-                    _stamp(2)
-            elif const_expr(CF):
-                cbase = fx.Int32(gpu.grid_dim.x) - n_out * CC
-                if bid >= cbase:
-                    _combine_part(bid - cbase)
-                elif bid < bound:
-                    work0 = xstart + bid // 8
-                    _tile_body(work0)
-                    _cf_done(work0)
-            else:
-                work0 = (xstart + bid // 8) if const_expr(xcd_remap) else bid
-                if bid < bound:
-                    _tile_body(work0)
+            work0 = xstart + bid // 8
+            if bid < bound:
+                _tile_body(work0)
 
     _kbody = ASTRewriter.transform(_kbody)
 
@@ -1698,246 +1330,87 @@ def build_gemm(stage: int, K: int, N: int, BM: int, D: int = 3, b_nt: bool = Fal
         n_rows: fx.Int32,
         n_out: fx.Int32,
     ):
-        if const_expr(name == "" or MV < 0):  # name + MV in the JIT cache key (name encodes every build param)
+        if const_expr(
+            name == ""
+        ):  # name in the JIT cache key (it encodes every build param)
             pass
         lds_base = fx.Int32(
             fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr)
         )
-        _kbody(a_ptr, as_ptr, b_ptr, bs_ptr, tiles_ptr, ntiles_ptr, rtok_ptr, rw_ptr, o_ptr, os_ptr,
-               aux_ptr, n_a_rows, n_rows, n_out, lds_base)
+        _kbody(
+            a_ptr,
+            as_ptr,
+            b_ptr,
+            bs_ptr,
+            tiles_ptr,
+            ntiles_ptr,
+            rtok_ptr,
+            rw_ptr,
+            o_ptr,
+            os_ptr,
+            aux_ptr,
+            n_a_rows,
+            n_rows,
+            n_out,
+            lds_base,
+        )
 
     @flyc.jit
     def launch(
-        a_ptr: fx.Int64, as_ptr: fx.Int64, b_ptr: fx.Int64, bs_ptr: fx.Int64,
-        tiles_ptr: fx.Int64, ntiles_ptr: fx.Int64, rtok_ptr: fx.Int64, rw_ptr: fx.Int64,
-        o_ptr: fx.Int64, os_ptr: fx.Int64, aux_ptr: fx.Int64,
-        n_a_rows: fx.Int32, n_rows: fx.Int32, n_out: fx.Int32, grid: fx.Int32,
-        stream: fx.Stream = fx.Stream(None),
+        a_ptr: fx.Int64,
+        as_ptr: fx.Int64,
+        b_ptr: fx.Int64,
+        bs_ptr: fx.Int64,
+        tiles_ptr: fx.Int64,
+        ntiles_ptr: fx.Int64,
+        rtok_ptr: fx.Int64,
+        rw_ptr: fx.Int64,
+        o_ptr: fx.Int64,
+        os_ptr: fx.Int64,
+        aux_ptr: fx.Int64,
+        n_a_rows: fx.Int32,
+        n_rows: fx.Int32,
+        n_out: fx.Int32,
+        grid: fx.Int32,
+        stream: fx.Stream = fx.Stream(None),  # noqa: B008
     ):
-        kern(a_ptr, as_ptr, b_ptr, bs_ptr, tiles_ptr, ntiles_ptr, rtok_ptr, rw_ptr,
-             o_ptr, os_ptr, aux_ptr, n_a_rows, n_rows, n_out).launch(
-            grid=(grid, 1, 1), block=(THREADS, 1, 1), stream=stream)
+        kern(
+            a_ptr,
+            as_ptr,
+            b_ptr,
+            bs_ptr,
+            tiles_ptr,
+            ntiles_ptr,
+            rtok_ptr,
+            rw_ptr,
+            o_ptr,
+            os_ptr,
+            aux_ptr,
+            n_a_rows,
+            n_rows,
+            n_out,
+        ).launch(grid=(grid, 1, 1), block=(THREADS, 1, 1), stream=stream)
 
+    hints = {}
     if MV:
-        # MV=1: no AGPRs at all (amdgpu-agpr-alloc=0) -> MFMA accumulators in arch VGPRs,
-        #       no AGPR<->VGPR copies; MV=2: same + waves_per_eu=2.
-        launch.compile_hints = {"fn_attrs": {"amdgpu-agpr-alloc": "0"}}
-        if MV == 2:
-            launch.compile_hints["waves_per_eu"] = 2
+        # MV=1: no AGPRs (amdgpu-agpr-alloc=0): MFMA accumulators in arch VGPRs, no copies.
+        hints["fn_attrs"] = {"amdgpu-agpr-alloc": "0"}
     wpe = [int(t[3:]) for t in DG if t.startswith("wpe") and t[3:].isdigit()]
     if wpe:
-        # diag=wpeN: cap registers so N waves/SIMD fit (e.g. wpe3: <= 168 VGPRs).
-        launch.compile_hints = dict(getattr(launch, "compile_hints", None) or {}, waves_per_eu=wpe[0])
+        # wpeN: cap registers so N waves/SIMD fit (e.g. wpe3: <= 168 VGPRs).
+        hints["waves_per_eu"] = wpe[0]
     ag = [t[2:] for t in DG if t.startswith("ag") and t[2:].isdigit()]
-    ag += [t[3:] for t in DG if epi == "fused" and t.startswith("agf") and t[3:].isdigit()]
+    ag += [
+        t[3:] for t in DG if epi == "fused" and t.startswith("agf") and t[3:].isdigit()
+    ]
     if ag:
-        # diag=agN: AGPR share of the unified budget (LLVM default: half when AGPRs are used).
-        hints = dict(getattr(launch, "compile_hints", None) or {})
-        hints["fn_attrs"] = dict(hints.get("fn_attrs", {}), **{"amdgpu-agpr-alloc": ag[0]})
-        launch.compile_hints = hints
-    launch.persistent = PERS
-    launch.body, launch.lds_bytes, launch.threads, launch.kname = _kbody, lds_bytes, THREADS, name
-    return launch, NB
-
-
-def build_fused(c1: dict, c2: dict, sched: int = 1, ko: str = ""):
-    """ST-2: stage 1 and stage 2 in one persistent launch (small T).
-
-    c1 / c2: build_gemm kwargs of the two stages (same BM, so both walk one tile list, and the
-    same wave count). Every CTA runs its stage-1 items (tile, N block) before its stage-2
-    items, and the grid must fit on the GPU at once (a CTA spins on items of other CTAs).
-    A stage-1 item bumps its tile's arrival counter once its h stores (written through to
-    memory) are complete; stage 2 waits for the tile's NB1 arrivals, then reads h past its own
-    L2. Each stage-2 CTA adds the items it takes of a tile to the tile's consumed counter; the
-    one completing NB2 re-arms both (graph-safe, no host reset).
-    sync_ptr: int32 pairs [arrivals, consumed] per tile, SYNC_STRIDE bytes apart.
-    sched 1: item w on CTA w % grid. 2: tile t on XCD t % 8 (both stages). 3: stage 1 as 1,
-    stage 2 one contiguous chunk per CTA (waits only at tile changes).
-    ko: timing knock-outs (wrong results): nowait, nos1, nos2."""
-    l1, NB1 = build_gemm(1, **c1)
-    l2, NB2 = build_gemm(2, **c2)
-    assert l1.threads == l2.threads and c1.get("GM", 1) == 1 and c2.get("GM", 1) == 1
-    assert sched in (1, 2, 3)
-    THREADS = l1.threads
-    LDS = max(l1.lds_bytes, l2.lds_bytes)
-    body1, body2 = l1.body, l2.body
-    XS = 8 if sched == 2 else 1  # tile stride of a CTA's partition
-    CH = sched == 3 and "chunk" in ko  # stage-2 chunk as one body call (PF bodies prefetch across it)
-    SYS = SYNC_STRIDE  # bytes between tiles' counter pairs: spread over memory channels
-    SLP = next((int(t[3:]) for t in ko.split("+") if t.startswith("slp") and t[3:].isdigit()), 8)
-    name = f"flymoe_fused_s{sched}{ko.replace('+', '_')}__{l1.kname}__{l2.kname}"
-
-    @fx.struct
-    class SharedStorage:
-        raw: fx.Array[fx.Uint8, LDS + 16, 16]
-
-    @flyc.kernel(name=name, known_block_size=[THREADS, 1, 1])
-    def fkern(
-        a1: fx.Int64, as1: fx.Int64, b1: fx.Int64, bs1: fx.Int64, tl1: fx.Int64, nt1: fx.Int64,
-        rtok1: fx.Int64, rw1: fx.Int64, o1: fx.Int64, os1: fx.Int64, aux1: fx.Int64,
-        na1: fx.Int32, nr1: fx.Int32, no1: fx.Int32,
-        a2: fx.Int64, as2: fx.Int64, b2: fx.Int64, bs2: fx.Int64, tl2: fx.Int64, nt2: fx.Int64,
-        rtok2: fx.Int64, rw2: fx.Int64, o2: fx.Int64, os2: fx.Int64, aux2: fx.Int64,
-        na2: fx.Int32, nr2: fx.Int32, no2: fx.Int32,
-        sync_ptr: fx.Int64,
-    ):
-        if const_expr(name == ""):
-            pass
-        lds_base = fx.Int32(fx.ptrtoint(fx.SharedAllocator().allocate(SharedStorage).peek().raw.ptr))
-        tid = fx.Int32(gpu.thread_id("x"))
-        bid = fx.Int32(gpu.block_id("x"))
-        gsz = fx.Int32(gpu.grid_dim.x)
-        n1 = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(hw.rsrc(nt1, 4), 0, T.i32)))
-        bound1 = n1 * NB1
-        bound2 = n1 * NB2
-        sp = fx.Int64(sync_ptr)
-        TSR = "tsr" in ko  # timeline i64 [cta][8] at aux1: start, s1 done, 1st wait released, end, s2 items 1-3 done
-
-        def stamp(k):
-            if const_expr(TSR):
-                if tid == fx.Int32(0):
-                    hw.gstore(hw.realtime(), fx.Int64(aux1) + fx.Int64(bid) * fx.Int64(64) + fx.Int64(8) * fx.Int64(k),
-                              align=8)
-        stamp(0)
-
-        def s1_item(w):
-            if const_expr(TSR):
-                if tid == fx.Int32(0):
-                    hw.gstore(fx.Int64(w), fx.Int64(aux1) + fx.Int64(bid) * fx.Int64(64) + fx.Int64(56), align=8)
-            if const_expr("nos1" not in ko):
-                body1(a1, as1, b1, bs1, tl1, nt1, rtok1, rw1, o1, os1, aux1, na1, nr1, no1, lds_base, w)
-            rocdl.s_waitcnt(0x0F70)  # vmcnt(0): this wave's write-through h stores are done
-            gpu.barrier()
-            if tid == fx.Int32(0):
-                hw.gatomic_add(sp + fx.Int64(w // NB1) * fx.Int64(SYS), 1)
-
-        def s2_wait(t, k):
-            # wait for tile t's stage-1 arrivals, then register k consumed items of it
-            if tid == fx.Int32(0):
-                if const_expr("nowait" not in ko):
-                    r_c = hw.rsrc(sync_ptr, fx.Int64(n1) * fx.Int64(SYS))
-                    c = fx.Int32(hw.bload(r_c, t * SYS, T.i32, cm=17))
-                    while c < fx.Int32(NB1):
-                        rocdl.s_sleep(SLP)
-                        c = fx.Int32(hw.bload(r_c, t * SYS, T.i32, cm=17))
-                ta = sp + fx.Int64(t) * fx.Int64(SYS)
-                old = hw.gatomic_add(ta + fx.Int64(4), k)
-                if old + k == fx.Int32(NB2):
-                    hw.gatomic_add(ta, -NB1)
-                    hw.gatomic_add(ta + fx.Int64(4), -NB2)
-            gpu.barrier()
-
-        def s2_item(w2, hook):
-            # hook (the tile wait) runs inside the body's prologue, after its W2 loads are issued
-            if const_expr("nos2" in ko):
-                hook()
-            elif const_expr("nohk" in ko):
-                hook()
-                body2(a2, as2, b2, bs2, tl2, nt2, rtok2, rw2, o2, os2, aux2, na2, nr2, no2, lds_base, w2)
-            else:
-                body2(a2, as2, b2, bs2, tl2, nt2, rtok2, rw2, o2, os2, aux2, na2, nr2, no2, lds_base, w2,
-                      hook=hook)
-
-        if const_expr(sched == 3):
-            if const_expr("s1x" in ko):
-                # stage 1 as the standalone kernel's XCD remap: XCD x runs a contiguous range,
-                # so a tile's N blocks share its gathered A rows in one L2
-                xq, xr, xc = bound1 // 8, bound1 % 8, bid % 8
-                w = xc * xq + fx.min(xc, xr) + bid // 8
-                wend = xc * xq + fx.min(xc, xr) + xq + (xc < xr).select(fx.Int32(1), fx.Int32(0))
-                while w < wend:
-                    s1_item(w)
-                    w = w + gsz // 8
-            else:
-                w = bid
-                while w < bound1:
-                    s1_item(w)
-                    w = w + gsz
-            stamp(1)
-            # balanced chunks: every CTA gets floor or ceil(bound2 / grid) items
-            i = (bid * bound2) // gsz
-            iend = ((bid + 1) * bound2) // gsz
-            sb = iend - i
-            last = fx.Int32(-1)
-            if const_expr(CH):
-                # the whole chunk in one body call: wait for every tile it touches up front
-                def hk_all(*_):
-                    for t in range(i // NB2, (iend + NB2 - 1) // NB2, 1):
-                        s2_wait(t, fx.min(iend, (t + 1) * NB2) - fx.max(i, t * NB2))
-                    stamp(2)
-                if i < iend:
-                    if const_expr("nos2" in ko):
-                        hk_all()
-                    else:
-                        body2(a2, as2, b2, bs2, tl2, nt2, rtok2, rw2, o2, os2, aux2, na2, nr2, no2, lds_base,
-                              frange=(i, iend), hook=hk_all)
-                i = iend
-            while i < iend:
-                t2 = i // NB2
-
-                def hk(*_):
-                    if t2 != last:
-                        s2_wait(t2, fx.min(iend, (t2 + 1) * NB2) - i)
-                        if last == fx.Int32(-1):
-                            stamp(2)
-                s2_item(i, hk)
-                if const_expr(TSR):
-                    k_it = i - (bid * bound2) // gsz
-                    if k_it < fx.Int32(3):
-                        stamp(k_it + 4)
-                last = t2
-                i = i + 1
-            stamp(3)
-        else:
-            if const_expr(sched == 2):
-                xc, j = bid % 8, bid // 8
-                gx = gsz // 8
-                ntx = fx.max((n1 - xc + 7) // 8, fx.Int32(0))
-            else:
-                xc, j, gx, ntx = fx.Int32(0), bid, gsz, n1
-            c1 = ntx * NB1
-            tot = c1 + ntx * NB2
-            i = j
-            while i < tot:
-                if i < c1:
-                    s1_item((i // NB1) * (XS * NB1) + xc * NB1 + i % NB1)
-                else:
-                    i2 = i - c1
-                    t2 = (i2 // NB2) * XS + xc
-                    s2_item(t2 * NB2 + i2 % NB2, lambda *_: s2_wait(t2, fx.Int32(1)))
-                i = i + gx
-
-    @flyc.jit
-    def launch(
-        a1: fx.Int64, as1: fx.Int64, b1: fx.Int64, bs1: fx.Int64, tl1: fx.Int64, nt1: fx.Int64,
-        rtok1: fx.Int64, rw1: fx.Int64, o1: fx.Int64, os1: fx.Int64, aux1: fx.Int64,
-        na1: fx.Int32, nr1: fx.Int32, no1: fx.Int32,
-        a2: fx.Int64, as2: fx.Int64, b2: fx.Int64, bs2: fx.Int64, tl2: fx.Int64, nt2: fx.Int64,
-        rtok2: fx.Int64, rw2: fx.Int64, o2: fx.Int64, os2: fx.Int64, aux2: fx.Int64,
-        na2: fx.Int32, nr2: fx.Int32, no2: fx.Int32,
-        sync_ptr: fx.Int64, grid: fx.Int32,
-        stream: fx.Stream = fx.Stream(None),
-    ):
-        fkern(a1, as1, b1, bs1, tl1, nt1, rtok1, rw1, o1, os1, aux1, na1, nr1, no1,
-              a2, as2, b2, bs2, tl2, nt2, rtok2, rw2, o2, os2, aux2, na2, nr2, no2, sync_ptr).launch(
-            grid=(grid, 1, 1), block=(THREADS, 1, 1), stream=stream)
-
-    # register budget: the tighter of the two bodies' hints
-    h1 = getattr(l1, "compile_hints", None) or {}
-    h2 = getattr(l2, "compile_hints", None) or {}
-    hints = {}
-    fa = dict(h2.get("fn_attrs", {}), **h1.get("fn_attrs", {}))
-    a1_, a2_ = h1.get("fn_attrs", {}).get("amdgpu-agpr-alloc"), h2.get("fn_attrs", {}).get("amdgpu-agpr-alloc")
-    if a1_ is not None and a2_ is not None:
-        fa["amdgpu-agpr-alloc"] = str(min(int(a1_), int(a2_)))
-    if fa:
-        hints["fn_attrs"] = fa
-    wp = [h["waves_per_eu"] for h in (h1, h2) if "waves_per_eu" in h]
-    if wp:
-        hints["waves_per_eu"] = max(wp)
+        # agN: AGPR share of the unified budget (LLVM default: half when AGPRs are used).
+        hints["fn_attrs"] = dict(
+            hints.get("fn_attrs", {}), **{"amdgpu-agpr-alloc": ag[0]}
+        )
     if hints:
         launch.compile_hints = hints
-    return launch
+    return launch, NB
 
 
 class _Runner:
@@ -1955,35 +1428,36 @@ class _Runner:
 _runners = {}
 
 
-def run_gemm(stage, K, N, BM, args, max_tiles, D=3, b_nt=False, epi="rows", xcd_remap=True,
-             pipe="async", NW=4, GM=1, diag="", WM=1, EF=False, MV=0, AST=False, HT=False, KTOP=5,
-             PERS=0, stream=None, extra=0):
+def run_gemm(
+    stage,
+    K,
+    N,
+    BM,
+    args,
+    max_tiles,
+    D=3,
+    epi="rows",
+    pipe="async",
+    NW=4,
+    diag="",
+    WM=1,
+    EF=False,
+    MV=0,
+    AST=False,
+    HT=False,
+    KTOP=5,
+    PERS=0,
+    stream=None,
+):
     import torch
 
-    key = (stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV, AST, HT, KTOP, PERS)
+    key = (stage, K, N, BM, D, epi, pipe, NW, diag, WM, EF, MV, AST, HT, KTOP, PERS)
     if key not in _runners:
-        launch, nb = build_gemm(stage, K, N, BM, D, b_nt, epi, xcd_remap, pipe, NW, GM, diag, WM, EF, MV,
-                                AST, HT, KTOP, PERS)
+        launch, nb = build_gemm(
+            stage, K, N, BM, D, epi, pipe, NW, diag, WM, EF, MV, AST, HT, KTOP, PERS
+        )
         _runners[key] = (_Runner(launch), nb)
     r, nb = _runners[key]
     stream = torch.cuda.current_stream() if stream is None else stream
-    grid = NUM_CUS * PERS if PERS else max_tiles * nb * split_k(diag) + extra
+    grid = NUM_CUS * PERS if PERS else max_tiles * nb
     r(*args, grid, stream)
-
-
-_fused = {}
-SYNC_STRIDE = 4096
-
-
-def run_fused(c1, c2, args1, args2, sync_ptr, grid, sched=1, ko="", stream=None):
-    import torch
-
-    key = (tuple(sorted(c1.items())), tuple(sorted(c2.items())), sched, ko)
-    if key not in _fused:
-        _fused[key] = _Runner(build_fused(c1, c2, sched, ko))
-    stream = torch.cuda.current_stream() if stream is None else stream
-    _fused[key](*args1, *args2, sync_ptr, grid, stream)
-
-
-def split_k(diag):
-    return next((int(t[2:]) for t in diag.split("+") if t.startswith("sk") and t[2:].isdigit()), 1)

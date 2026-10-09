@@ -11,7 +11,24 @@ nearest e2m1 value (ties to even) and never saturate.
 import torch
 
 FP4_VALUES = torch.tensor(
-    [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
+    [
+        0.0,
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        3.0,
+        4.0,
+        6.0,
+        -0.0,
+        -0.5,
+        -1.0,
+        -1.5,
+        -2.0,
+        -3.0,
+        -4.0,
+        -6.0,
+    ]
 )
 
 
@@ -91,7 +108,9 @@ def quant(x: torch.Tensor, even: bool = False):
 def random_fp4(shape, device, gen=None, scale_center=127, scale_spread=2):
     """Random packed fp4 tensor [..., K/2] and e8m0 scales [..., K/32]."""
     *lead, k = shape
-    codes = torch.randint(0, 16, (*lead, k), device=device, dtype=torch.uint8, generator=gen)
+    codes = torch.randint(
+        0, 16, (*lead, k), device=device, dtype=torch.uint8, generator=gen
+    )
     scales = torch.randint(
         scale_center - scale_spread,
         scale_center + scale_spread + 1,

@@ -14,7 +14,7 @@ from flydsl.expr.typing import T
 from . import hw
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def build_combine(H: int, k: int, threads: int = 256):
     assert H % (8 * threads) == 0 or H % 8 == 0
     chunks = (H // 8 + threads - 1) // threads
@@ -23,7 +23,13 @@ def build_combine(H: int, k: int, threads: int = 256):
     kname = f"flymoe_combine_h{H}_k{k}_{hw.SRC_HASH}"
 
     @flyc.kernel(name=kname, known_block_size=[threads, 1, 1])
-    def kern(y_ptr: fx.Int64, inv_ptr: fx.Int64, o_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32):
+    def kern(
+        y_ptr: fx.Int64,
+        inv_ptr: fx.Int64,
+        o_ptr: fx.Int64,
+        n_rows: fx.Int32,
+        n_tok: fx.Int32,
+    ):
         if const_expr(kname == ""):  # name (incl. source hash) in the JIT cache key
             pass
         tid = fx.Int32(gpu.thread_id("x"))
@@ -33,13 +39,19 @@ def build_combine(H: int, k: int, threads: int = 256):
         r_o = hw.rsrc(fx.Int64(o_ptr) + fx.Int64(t) * fx.Int64(H * 2), H * 2)
         r_rows = []
         for s in range_constexpr(k):
-            row = fx.Int32(rocdl.readfirstlane(T.i32, hw.bload(r_inv, (t * k + s) * 4, T.i32)))
-            r_rows.append(hw.rsrc(fx.Int64(y_ptr) + fx.Int64(row) * fx.Int64(H * 2), H * 2))
+            row = fx.Int32(
+                rocdl.readfirstlane(T.i32, hw.bload(r_inv, (t * k + s) * 4, T.i32))
+            )
+            r_rows.append(
+                hw.rsrc(fx.Int64(y_ptr) + fx.Int64(row) * fx.Int64(H * 2), H * 2)
+            )
         for c in range_constexpr(chunks):
             col = (tid + c * threads) * 8
             ok = col < H if not exact else None
-            vals = [fx.Vector(hw.bload(r_rows[s], col * 2, T.vec(8, T.bf16))).to(fx.Float32)
-                    for s in range_constexpr(k)]
+            vals = [
+                fx.Vector(hw.bload(r_rows[s], col * 2, T.vec(8, T.bf16))).to(fx.Float32)
+                for s in range_constexpr(k)
+            ]
             acc = vals[0]
             for s in range_constexpr(1, k):
                 acc = acc + vals[s]
@@ -49,10 +61,17 @@ def build_combine(H: int, k: int, threads: int = 256):
             hw.bstore(acc.to(fx.BFloat16), r_o, off)
 
     @flyc.jit
-    def launch(y_ptr: fx.Int64, inv_ptr: fx.Int64, o_ptr: fx.Int64, n_rows: fx.Int32, n_tok: fx.Int32,
-               stream: fx.Stream = fx.Stream(None)):
+    def launch(
+        y_ptr: fx.Int64,
+        inv_ptr: fx.Int64,
+        o_ptr: fx.Int64,
+        n_rows: fx.Int32,
+        n_tok: fx.Int32,
+        stream: fx.Stream = fx.Stream(None),  # noqa: B008
+    ):
         kern(y_ptr, inv_ptr, o_ptr, n_rows, n_tok).launch(
-            grid=(n_tok, 1, 1), block=(threads, 1, 1), stream=stream)
+            grid=(n_tok, 1, 1), block=(threads, 1, 1), stream=stream
+        )
 
     return launch
 
@@ -65,8 +84,14 @@ def run_combine(y_rows, inv, out, k, stream=None):
 
     T_, H = out.shape
     key = (H, k)
-    args = (y_rows.data_ptr(), inv.data_ptr(), out.data_ptr(), y_rows.shape[0], T_,
-            torch.cuda.current_stream() if stream is None else stream)
+    args = (
+        y_rows.data_ptr(),
+        inv.data_ptr(),
+        out.data_ptr(),
+        y_rows.shape[0],
+        T_,
+        torch.cuda.current_stream() if stream is None else stream,
+    )
     if key not in _cf:
         _cf[key] = flyc.compile(build_combine(H, k), *args)
     else:
