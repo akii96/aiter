@@ -149,8 +149,10 @@ def _decode_v(raw, w, shift, NW: gl.constexpr, SPW: gl.constexpr):
 
 @gluon.jit
 def _decode_k(raw, w, shift):
-    """raw int32 [16, 256] (dword q of token n), w int32 [1, 256] scale words
-    -> uint8 [128, 256] e4m3fnuz, row k = head dim."""
+    """raw int32 [8, PART, 2] (dword 2 qp + h of token n), w int32 [1, PART, 1]
+    scale words, shift [8, 1, 1] -> uint8 [128, PART] e4m3fnuz, row = head dim.
+    The LUT is computed once per (dword pair, token): both dwords of a pair
+    lie in the same 32-dim chunk."""
     emax = gl.maximum(
         gl.maximum(w & 255, (w >> 8) & 255), gl.maximum((w >> 16) & 255, (w >> 24) & 255)
     )
@@ -158,13 +160,13 @@ def _decode_k(raw, w, shift):
     ec = (w >> shift) & 255
     lo, hi = _e2m1_lut(gl.maximum(emax - ec, 0))
     o0, o1 = _dec_dword(raw, lo, hi)
-    d = gl.join(o0, o1)  # [16, PART, 2]
+    d = gl.join(o0, o1)  # [8, PART, 2 (half), 2 (o0/o1)]
     b0 = d.to(gl.uint8)
     b1 = (d >> 8).to(gl.uint8)
     b2 = (d >> 16).to(gl.uint8)
     b3 = (d >> 24).to(gl.uint8)
-    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [16, raw.shape[1], 8])
-    x = gl.permute(x, [0, 2, 1])
+    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [8, raw.shape[1], 16])
+    x = gl.permute(x, [0, 2, 1])  # [qp, half * 8 + e, token]
     return gl.reshape(x, [128, raw.shape[1]])
 
 
@@ -288,21 +290,22 @@ def pa_decode_mxfp4_kernel(
                 block_bases=[],
                 shape=[NW, SPW, 16, 16],
             )
+        # [dword pair qp, token, half]: dword q = 2 qp + half (head dims 8q..8q+7)
         if PART == 256:
             kload_layout: gl.constexpr = gl.DistributedLinearLayout(
-                reg_bases=[[1, 0], [8, 0], [0, 64], [0, 128]],
-                lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
-                warp_bases=[[0, 16], [0, 32]],
+                reg_bases=[[0, 0, 1], [4, 0, 0], [0, 64, 0], [0, 128, 0]],
+                lane_bases=[[0, 1, 0], [0, 2, 0], [0, 4, 0], [0, 8, 0], [1, 0, 0], [2, 0, 0]],
+                warp_bases=[[0, 16, 0], [0, 32, 0]],
                 block_bases=[],
-                shape=[16, 256],
+                shape=[8, 256, 2],
             )
         else:
             kload_layout: gl.constexpr = gl.DistributedLinearLayout(
-                reg_bases=[[1, 0], [8, 0], [0, 64]],
-                lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
-                warp_bases=[[0, 16], [0, 32]],
+                reg_bases=[[0, 0, 1], [4, 0, 0], [0, 64, 0]],
+                lane_bases=[[0, 1, 0], [0, 2, 0], [0, 4, 0], [0, 8, 0], [1, 0, 0], [2, 0, 0]],
+                warp_bases=[[0, 16, 0], [0, 32, 0]],
                 block_bases=[],
-                shape=[16, 128],
+                shape=[8, 128, 2],
             )
     else:
         vload_layout: gl.constexpr = gl.DistributedLinearLayout(
@@ -334,9 +337,11 @@ def pa_decode_mxfp4_kernel(
     v_tok_dw = vt_idx[None, None, :, None] * 16 + vg_idx[None, None, None, :]
     v_shift = ((vg_idx // 4) * 8)[None, None, None, :]  # chunk of head dims 8g..8g+7
 
-    kq_idx = gl.arange(0, 16, layout=gl.SliceLayout(1, kload_layout))
-    kn_idx = gl.arange(0, PART, layout=gl.SliceLayout(0, kload_layout))
-    k_shift = ((kq_idx // 4) * 8)[:, None]
+    kqp_idx = gl.arange(0, 8, layout=gl.SliceLayout(1, gl.SliceLayout(2, kload_layout)))
+    kn_idx = gl.arange(0, PART, layout=gl.SliceLayout(0, gl.SliceLayout(2, kload_layout)))
+    kh_idx = gl.arange(0, 2, layout=gl.SliceLayout(0, gl.SliceLayout(1, kload_layout)))
+    k_dw = (kqp_idx * 2)[:, None, None] + kh_idx[None, None, :]
+    k_shift = ((kqp_idx // 2) * 8)[:, None, None]
 
     context_length = gl.load(context_lengths_ptr + seq)
     num_splits = gl.num_programs(2)
@@ -407,8 +412,8 @@ def pa_decode_mxfp4_kernel(
             block_tables_ptr, bt_off + p * NB, nvalid, kn_idx // 16, stride_kv_block, NUM_KV_HEADS
         )
         k_tok = kbase // 4 + krow * 16 + (kn_idx % 16) * 16  # token's first dword
-        k_raw = gl.load(kv_i32_ptr + (k_tok[None, :] + kq_idx[:, None]))
-        k_w = gl.load(kv_i32_ptr + (kbase // 4 + 2048 + krow + kn_idx % 16))[None, :]
+        k_raw = gl.load(kv_i32_ptr + (k_tok[None, :, None] + k_dw))
+        k_w = gl.load(kv_i32_ptr + (kbase // 4 + 2048 + krow + kn_idx % 16))[None, :, None]
         vbase, vrow = _page_bases(
             block_tables_ptr, bt_off + p * NB, nvalid, v_sub, stride_kv_block, NUM_KV_HEADS
         )
