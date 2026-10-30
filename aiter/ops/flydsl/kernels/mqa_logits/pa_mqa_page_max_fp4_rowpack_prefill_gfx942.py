@@ -210,7 +210,10 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                 + warp_id * fx.Int32(N_TILES_PER_WARP * MFMA_N)
                 + lane_mod_16
             )
-            phys_vec = bt_bt[batch_id * _stride_bt + (token_local_base >> fx.Int32(6))]
+            # A chunk's tail may run past the row's last mapped page; masked
+            # rows drop those tokens, but the page id must stay in the table.
+            bi = fx.min(token_local_base >> fx.Int32(6), fx.Int32(_stride_bt - 1))
+            phys_vec = bt_bt[batch_id * _stride_bt + bi]
             return [phys_vec] * N_TILES_PER_WARP
 
         def _prefetch_chunk(c_i32_arg, phys_list):
@@ -530,6 +533,8 @@ def flydsl_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     kv_block_size: int = 64,
     num_warps: int = DEFAULT_NUM_WARPS,
     parallel_unit_num: int | None = None,
+    cta_info: torch.Tensor | None = None,
+    total_ctas: int | None = None,
     stream: torch.cuda.Stream | None = None,
 ) -> torch.Tensor:
     """Signed per-64-token-page maxima of row-packed prefill index scores.
@@ -538,6 +543,13 @@ def flydsl_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     ``kv_scale_page_stride`` and ``kv_scale_offset`` (bytes) read a paged cache
     whose data and scales share one allocation. ``parallel_unit_num`` bounds
     the persistent grid (default four CTAs per CU, at least one per group).
+
+    ``cta_info``/``total_ctas`` pass a schedule built by
+    :func:`compute_prefill_schedule` (with ``block_k``) instead of building
+    one here: a caller scoring many layers over the same groups builds it once,
+    and a CUDA-graph caller keeps it at a stable address. Every page of every
+    group's ``[start, end)`` window is then written, so a caller that reads only
+    those pages may skip the ``-inf`` fill.
     """
     groups = q_fp4.shape[0]
     if tuple(q_fp4.shape[1:]) != (ROWS_PER_GROUP, q_fp4.shape[2]):
@@ -558,18 +570,28 @@ def flydsl_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     if groups == 0:
         return out
 
-    if parallel_unit_num is None:
-        props = torch.cuda.get_device_properties(q_fp4.device)
-        parallel_unit_num = 4 * props.multi_processor_count
-    parallel_unit_num = max(parallel_unit_num, groups)
-    _, cta_info, n_ctas = compute_prefill_schedule(
-        group_to_batch,
-        group_starts,
-        group_ends,
-        block_k,
-        parallel_unit_num,
-        max_seq_len,
-    )
+    if (cta_info is None) != (total_ctas is None):
+        raise ValueError("Pass both cta_info and total_ctas, or neither.")
+    if cta_info is None:
+        if parallel_unit_num is None:
+            props = torch.cuda.get_device_properties(q_fp4.device)
+            parallel_unit_num = 4 * props.multi_processor_count
+        parallel_unit_num = max(parallel_unit_num, groups)
+        _, cta_info, n_ctas = compute_prefill_schedule(
+            group_to_batch,
+            group_starts,
+            group_ends,
+            block_k,
+            parallel_unit_num,
+            max_seq_len,
+        )
+    else:
+        if total_ctas < groups or cta_info.shape[0] < total_ctas:
+            raise ValueError(
+                f"cta_info schedules {total_ctas} CTAs over {cta_info.shape[0]} "
+                f"rows for {groups} groups"
+            )
+        n_ctas = total_ctas
     launcher, _ = compile_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
         block_k=block_k,
         kv_block_size=kv_block_size,

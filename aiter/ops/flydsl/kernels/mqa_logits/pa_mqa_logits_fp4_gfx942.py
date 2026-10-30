@@ -341,6 +341,10 @@ def build_pa_mqa_logits_fp4_gfx942_module(
                 + lane_mod_16
             )
             bi_base = token_global_base // kv_block_size
+            # A chunk's tail can run past the row's last mapped page; the
+            # windowed store drops those tokens, but the page id itself must
+            # stay inside the table or the KV load faults.
+            bi_base = fx.min(bi_base, fx.Int32(_stride_bt - 1))
             phys_vec = bt_bt[pid_b * _stride_bt + bi_base]
             return _phys_to_list(phys_vec)
 
