@@ -183,14 +183,14 @@ def _decode_k(raw, w, shift):
     ec = (w >> shift) & 255
     lo, hi = _e2m1_lut(gl.maximum(emax - ec, 0))
     o0, o1 = _dec_dword(raw, lo, hi)
-    d = gl.join(o0, o1)  # [16, 256, 2]
+    d = gl.join(o0, o1)  # [16, PART, 2]
     b0 = d.to(gl.uint8)
     b1 = (d >> 8).to(gl.uint8)
     b2 = (d >> 16).to(gl.uint8)
     b3 = (d >> 24).to(gl.uint8)
-    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [16, 256, 8])
+    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [16, raw.shape[1], 8])
     x = gl.permute(x, [0, 2, 1])
-    return gl.reshape(x, [128, 256])
+    return gl.reshape(x, [128, raw.shape[1]])
 
 
 @gluon.jit
@@ -239,10 +239,10 @@ def pa_decode_mxfp4_kernel(
     CDNA_VERSION: gl.constexpr,
     ONE_SHOT: gl.constexpr,
     NUM_WARPS: gl.constexpr = 4,
+    PART: gl.constexpr = 256,
 ):
     GROUP: gl.constexpr = 16
     HEAD: gl.constexpr = 128
-    PART: gl.constexpr = 256
     NB: gl.constexpr = PART // 16
     SPLITS: gl.constexpr = HEAD // 16
     COMPUTE_TYPE: gl.constexpr = gl.float8e4b8
@@ -309,20 +309,38 @@ def pa_decode_mxfp4_kernel(
     )
     # [warp, sub-page in warp, token in sub-page, dword] matching v3_layout
     if NW == 4:
-        vload_layout: gl.constexpr = gl.DistributedLinearLayout(
-            reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0], [0, 2, 0, 0]],
-            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
-            warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
-            block_bases=[],
-            shape=[NW, SPW, 16, 16],
-        )
-        kload_layout: gl.constexpr = gl.DistributedLinearLayout(
-            reg_bases=[[1, 0], [8, 0], [0, 64], [0, 128]],
-            lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
-            warp_bases=[[0, 16], [0, 32]],
-            block_bases=[],
-            shape=[16, 256],
-        )
+        if PART == 256:
+            vload_layout: gl.constexpr = gl.DistributedLinearLayout(
+                reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0], [0, 2, 0, 0]],
+                lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
+                warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
+                block_bases=[],
+                shape=[NW, SPW, 16, 16],
+            )
+        else:
+            vload_layout: gl.constexpr = gl.DistributedLinearLayout(
+                reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0]],
+                lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
+                warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
+                block_bases=[],
+                shape=[NW, SPW, 16, 16],
+            )
+        if PART == 256:
+            kload_layout: gl.constexpr = gl.DistributedLinearLayout(
+                reg_bases=[[1, 0], [8, 0], [0, 64], [0, 128]],
+                lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
+                warp_bases=[[0, 16], [0, 32]],
+                block_bases=[],
+                shape=[16, 256],
+            )
+        else:
+            kload_layout: gl.constexpr = gl.DistributedLinearLayout(
+                reg_bases=[[1, 0], [8, 0], [0, 64]],
+                lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
+                warp_bases=[[0, 16], [0, 32]],
+                block_bases=[],
+                shape=[16, 128],
+            )
     else:
         vload_layout: gl.constexpr = gl.DistributedLinearLayout(
             reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0]],
@@ -594,6 +612,19 @@ def _partials(device, num_seqs, splits, group, head, dtype):
     )
 
 
+class _Ptr:
+    """Stand-in for a tensor argument of a cached launch: the HIP launcher only
+    calls ``data_ptr()``."""
+
+    __slots__ = ("ptr",)
+
+    def __init__(self, ptr):
+        self.ptr = ptr
+
+    def data_ptr(self):
+        return self.ptr
+
+
 def _resolve_launch(kernel, grid, args, kwargs, stream):
     """Launch ``kernel[grid](*args, **kwargs)`` once and return a closure that
     replays exactly that launch (same compiled kernel and bound values)."""
@@ -605,6 +636,9 @@ def _resolve_launch(kernel, grid, args, kwargs, stream):
         values = tuple(bound_args.values())
         g = tuple(grid) + (1,) * (3 - len(grid))
         meta = compiled.launch_metadata(g, stream, *values)
+        # Keep only the pointers: holding the tensors would pin every buffer a
+        # cached launch ever saw (activation-sized q / out included).
+        values = tuple(_Ptr(v.data_ptr()) if isinstance(v, torch.Tensor) else v for v in values)
         knobs = triton.knobs.runtime
 
         def replay():
@@ -615,16 +649,25 @@ def _resolve_launch(kernel, grid, args, kwargs, stream):
             )
 
         return replay
-    except Exception:  # noqa: BLE001 - Triton internals moved: plain JIT launch
-        return lambda: kernel[grid](*args, **kwargs)
+    except Exception:  # noqa: BLE001 - Triton internals moved: no replay
+        return None
 
 
-def _recommended_splits(device, num_seqs):
+def _recommended_config(device, num_seqs):
+    """(splits, partition_size). Sparse rows hold <= 16 x 128 tokens, so one
+    program usually owns one partition and its latency is the kernel time:
+    while the grid is small (< 128 rows ~ 1 program / CU), halve the partition
+    and double the splits."""
     key = (device, num_seqs)
-    s = _SPLITS.get(key)
-    if s is None:
-        s = _SPLITS[key] = get_recommended_splits(num_seqs, 1)
-    return s
+    c = _SPLITS.get(key)
+    if c is None:
+        splits = get_recommended_splits(num_seqs, 1)
+        if num_seqs * splits < 512:
+            c = (splits * 2, 128)
+        else:
+            c = (splits, 256)
+        _SPLITS[key] = c
+    return c
 
 
 def pa_decode_mxfp4_gluon(
@@ -637,17 +680,21 @@ def pa_decode_mxfp4_gluon(
     num_kv_heads: int,
     max_context_partition_num: int | None = None,
     num_warps: int = 4,
+    partition_size: int | None = None,
 ) -> torch.Tensor:
     """Sparse MXFP4 paged-attention decode; row ``r*H + h`` of ``block_tables``
     / ``context_lengths`` drives query row r, KV head h (heads h*G..h*G+G-1).
     ``max_context_partition_num`` (splits per row) defaults to AITER's
-    recommendation; 1 writes ``output`` directly without a reduce."""
+    recommendation; 1 writes ``output`` directly without a reduce.
+    ``partition_size`` (tokens per program step, 128 or 256) defaults to 128
+    for small grids (shorter per-program latency) and 256 otherwise."""
     stream = torch.cuda.current_stream(query.device).cuda_stream
     key = (
         output.data_ptr(), query.data_ptr(), query.shape[0], query.shape[1],
         kv_cache.data_ptr(), kv_cache.shape[0], kv_cache.stride(0),
         context_lengths.data_ptr(), block_tables.data_ptr(), block_tables.stride(0),
-        float(softmax_scale), num_kv_heads, max_context_partition_num, num_warps, stream,
+        float(softmax_scale), num_kv_heads, max_context_partition_num, num_warps,
+        partition_size, stream,
     )
     hit = _LAUNCHES.get(key)
     if hit is not None:
@@ -675,7 +722,12 @@ def pa_decode_mxfp4_gluon(
         return output
     q_view = query.view(num_seqs, group, head)
     out_view = output.view(num_seqs, group, head)
-    splits = max_context_partition_num or _recommended_splits(query.device, num_seqs)
+    if max_context_partition_num:
+        splits = max_context_partition_num
+        part = partition_size or 256
+    else:
+        splits, part = _recommended_config(query.device, num_seqs)
+        part = partition_size or part
     one_shot = splits <= 1
     if one_shot:
         exp_sums = max_logits = out_k = out_view  # exp/max unused
@@ -700,7 +752,7 @@ def pa_decode_mxfp4_gluon(
             ),
             dict(
                 NUM_KV_HEADS=H, CDNA_VERSION=get_cdna_version(), ONE_SHOT=one_shot,
-                NUM_WARPS=num_warps, num_warps=num_warps,
+                NUM_WARPS=num_warps, PART=part, num_warps=num_warps,
             ),
             stream,
         )
@@ -718,7 +770,8 @@ def pa_decode_mxfp4_gluon(
                 stream,
             )
         )
-    if len(_LAUNCHES) >= _MAX_LAUNCHES:
-        _LAUNCHES.clear()
-    _LAUNCHES[key] = tuple(launches)
+    if all(launch is not None for launch in launches):
+        if len(_LAUNCHES) >= _MAX_LAUNCHES:
+            _LAUNCHES.clear()
+        _LAUNCHES[key] = tuple(launches)
     return output
