@@ -391,19 +391,19 @@ def pa_decode_mxfp4_kernel(
             )
         return
 
+    # Q straight into the QK lhs operand layout (16 contiguous head dims per
+    # lane: two 16-byte loads), no shared-memory staging.
+    qg = gl.arange(0, GROUP, layout=gl.SliceLayout(1, lhs_layout))
+    qd = gl.arange(0, HEAD, layout=gl.SliceLayout(0, lhs_layout))
     q = gl.load(
-        query_ptr + seq * stride_q_seq + g_offs[:, None] * stride_q_group + d_offs[None, :],
-        mask=qrow_mask[:, None],
+        query_ptr + seq * stride_q_seq + qg[:, None] * stride_q_group + qd[None, :],
+        mask=(qg < query_group_size)[:, None],
         other=0.0,
     )
-    query_shared = gl.allocate_shared_memory(
-        COMPUTE_TYPE, [GROUP, HEAD], shared_query_layout
-    )
+    query_op = q.to(COMPUTE_TYPE)
     probs_shared = gl.allocate_shared_memory(
         COMPUTE_TYPE, [NW, GROUP, TPW], shared_p3_layout
     )
-    query_shared.store(q.to(COMPUTE_TYPE))
-    query_op = query_shared.load(lhs_layout)
     col_idx = gl.arange(0, PART, layout=col_layout)
 
     for p in range(part_start, part_end):
