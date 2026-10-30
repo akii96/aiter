@@ -64,6 +64,7 @@ v_mov_b32 $4, 0x05010400
 v_perm_b32 $0, $3, $2, $4
 v_mov_b32 $4, 0x07030602
 v_perm_b32 $1, $3, $2, $4
+s_nop 4
 """
 )
 _DEC_CON = gl.constexpr("=&v,=&v,=&v,=&v,=&v,v,v,v")
