@@ -151,7 +151,7 @@ def _decode_tile(raw, w, split_idx, NB: gl.constexpr, LAYOUT16: gl.constexpr):
 
 
 @gluon.jit
-def _decode_v(raw, w, shift):
+def _decode_v(raw, w, shift, NW: gl.constexpr, SPW: gl.constexpr):
     """raw int32 [4, 4, 16, 16] packed e2m1 (dword g = head dims 8g..8g+7) of
     [warp, sub-page, token, g]; w int32 [4, 4, 16, 1] token scale words ->
     uint8 [4, 64, 128] e4m3fnuz, column n = 16 * e + g holding dim 8g + e."""
@@ -167,9 +167,9 @@ def _decode_v(raw, w, shift):
     b1 = (d >> 8).to(gl.uint8)
     b2 = (d >> 16).to(gl.uint8)
     b3 = (d >> 24).to(gl.uint8)
-    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [4, 4, 16, 16, 8])
+    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [NW, SPW, 16, 16, 8])
     x = gl.permute(x, [0, 1, 2, 4, 3])  # [w, sp, t, e, g]
-    return gl.reshape(x, [4, 64, 128])
+    return gl.reshape(x, [NW, SPW * 16, 128])
 
 
 @gluon.jit
@@ -292,11 +292,14 @@ def pa_decode_mxfp4_kernel(
     # the eight columns a lane holds per token are one packed e2m1 dword: the
     # V loads stay 64 B-coalesced per token and the token-major -> K-contiguous
     # transpose the MFMA operand needs is register-local.
+    NW: gl.constexpr = NUM_WARPS
+    TPW: gl.constexpr = PART // NW  # tokens per warp slice (64 or 32)
+    SPW: gl.constexpr = TPW // 16  # sub-pages per warp slice
     pv3_layout: gl.constexpr = gl.amd.AMDMFMALayout(
         version=CDNA_VERSION,
         instr_shape=[16, 16, 32],
         transposed=True,
-        warps_per_cta=[4, 1, 1],
+        warps_per_cta=[NW, 1, 1],
     )
     p3_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=0, parent=pv3_layout, k_width=8
@@ -305,24 +308,40 @@ def pa_decode_mxfp4_kernel(
         operand_index=1, parent=pv3_layout, k_width=8
     )
     # [warp, sub-page in warp, token in sub-page, dword] matching v3_layout
-    vload_layout: gl.constexpr = gl.DistributedLinearLayout(
-        reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0], [0, 2, 0, 0]],
-        lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
-        warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
-        block_bases=[],
-        shape=[4, 4, 16, 16],
-    )
+    if NW == 4:
+        vload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0], [0, 2, 0, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
+            block_bases=[],
+            shape=[NW, SPW, 16, 16],
+        )
+        kload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[1, 0], [8, 0], [0, 64], [0, 128]],
+            lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
+            warp_bases=[[0, 16], [0, 32]],
+            block_bases=[],
+            shape=[16, 256],
+        )
+    else:
+        vload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0], [4, 0, 0, 0]],
+            block_bases=[],
+            shape=[NW, SPW, 16, 16],
+        )
+        kload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[1, 0], [8, 0], [0, 128]],
+            lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
+            warp_bases=[[0, 16], [0, 32], [0, 64]],
+            block_bases=[],
+            shape=[16, 256],
+        )
     shared_p3_layout: gl.constexpr = gl.SwizzledSharedLayout(8, 1, 8, order=[2, 1, 0])
     acc_layout: gl.constexpr = gl.SliceLayout(0, pv3_layout)
-    # [dword q of the token (head dims 8q..8q+7), token n] matching rhs_layout
-    # (k_width 16): a lane holds dwords 2c, 2c+1 (dims 16c..16c+15) of a token.
-    kload_layout: gl.constexpr = gl.DistributedLinearLayout(
-        reg_bases=[[1, 0], [8, 0], [0, 64], [0, 128]],
-        lane_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [2, 0], [4, 0]],
-        warp_bases=[[0, 16], [0, 32]],
-        block_bases=[],
-        shape=[16, 256],
-    )
+    # kload: [dword q of the token (head dims 8q..8q+7), token n] matching
+    # rhs_layout (k_width 16): a lane holds dwords 2c, 2c+1 of a token.
     col_layout: gl.constexpr = gl.SliceLayout(0, qk_linear_layout)
     row_layout: gl.constexpr = gl.SliceLayout(1, qk_linear_layout)
 
@@ -336,11 +355,11 @@ def pa_decode_mxfp4_kernel(
         t8[None, None, :, None] * 16 + s8[None, :, None, None] * 2 + c8[None, None, None, :]
     )
 
-    vw_idx = gl.arange(0, 4, layout=gl.SliceLayout(1, gl.SliceLayout(2, gl.SliceLayout(3, vload_layout))))
-    vsp_idx = gl.arange(0, 4, layout=gl.SliceLayout(0, gl.SliceLayout(2, gl.SliceLayout(3, vload_layout))))
+    vw_idx = gl.arange(0, NW, layout=gl.SliceLayout(1, gl.SliceLayout(2, gl.SliceLayout(3, vload_layout))))
+    vsp_idx = gl.arange(0, SPW, layout=gl.SliceLayout(0, gl.SliceLayout(2, gl.SliceLayout(3, vload_layout))))
     vt_idx = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(3, vload_layout))))
     vg_idx = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(2, vload_layout))))
-    v_sub = vw_idx[:, None] * 4 + vsp_idx[None, :]  # sub-page within the partition
+    v_sub = vw_idx[:, None] * SPW + vsp_idx[None, :]  # sub-page within the partition
     v_tok_dw = vt_idx[None, None, :, None] * 16 + vg_idx[None, None, None, :]
     v_shift = ((vg_idx // 4) * 8)[None, None, None, :]  # chunk of head dims 8g..8g+7
 
@@ -368,7 +387,7 @@ def pa_decode_mxfp4_kernel(
 
     max_logits = gl.full((GROUP,), float("-inf"), dtype=gl.float32, layout=row_layout)
     exp_sums = gl.full((GROUP,), 0.0, dtype=gl.float32, layout=row_layout)
-    acc3 = gl.zeros((4, GROUP, HEAD), dtype=gl.float32, layout=pv3_layout)
+    acc3 = gl.zeros((NW, GROUP, HEAD), dtype=gl.float32, layout=pv3_layout)
 
     if ONE_SHOT:
         out_offsets = seq * stride_out_seq + g_offs[:, None] * stride_out_group + d_offs[None, :]
@@ -405,7 +424,7 @@ def pa_decode_mxfp4_kernel(
         COMPUTE_TYPE, [GROUP, HEAD], shared_query_layout
     )
     probs_shared = gl.allocate_shared_memory(
-        COMPUTE_TYPE, [4, GROUP, PART // 4], shared_p3_layout
+        COMPUTE_TYPE, [NW, GROUP, TPW], shared_p3_layout
     )
     query_shared.store(q.to(COMPUTE_TYPE))
     query_op = query_shared.load(lhs_layout)
@@ -440,7 +459,7 @@ def pa_decode_mxfp4_kernel(
             query_op, k_op, gl.zeros((GROUP, PART), dtype=gl.float32, layout=mfma_layout)
         )
         # ---- V: decode (token-major) ----
-        v_op = _decode_v(v_raw, v_w, v_shift)
+        v_op = _decode_v(v_raw, v_w, v_shift, NW, SPW)
         v_op = gl.convert_layout(v_op.to(COMPUTE_TYPE, bitcast=True), v3_layout)
 
         # Per-token scales straight in the score-column layout (reshaping the
@@ -472,13 +491,13 @@ def pa_decode_mxfp4_kernel(
         inv_vmax = hip_libdevice.fast_dividef(1.0, v_scale_max + 1e-30)
         probs = (v_scale_b * (FP8_MAX * inv_vmax)) * probs
         prob_scale = v_scale_max * (1.0 / FP8_MAX)
-        p3 = gl.permute(gl.reshape(probs.to(COMPUTE_TYPE), [GROUP, 4, PART // 4]), [1, 0, 2])
+        p3 = gl.permute(gl.reshape(probs.to(COMPUTE_TYPE), [GROUP, NW, TPW]), [1, 0, 2])
         probs_shared.store(p3)
         probs_op = probs_shared.load(p3_layout)
         alpha3 = gl.convert_layout(alpha, gl.SliceLayout(0, gl.SliceLayout(2, pv3_layout)))
         acc3 = acc3 * alpha3[None, :, None]
         pv = gl.amd.cdna3.mfma(
-            probs_op, v_op, gl.zeros((4, GROUP, HEAD), dtype=gl.float32, layout=pv3_layout)
+            probs_op, v_op, gl.zeros((NW, GROUP, HEAD), dtype=gl.float32, layout=pv3_layout)
         )
         acc3 += prob_scale * pv
         max_logits = new_max
@@ -508,6 +527,106 @@ def pa_decode_mxfp4_kernel(
     gl.store(output_ptr + a_off, accf, mask=a_mask)
 
 
+@triton.jit
+def _pa_decode_mxfp4_reduce_kernel(
+    out_ptr,  # [num_seqs, G, D] bf16 (rows of the 3-D output view)
+    max_logits_ptr,  # [num_seqs, splits, G] fp32
+    exp_sums_ptr,  # [num_seqs, splits, G] fp32
+    tmp_ptr,  # [num_seqs, splits, G, D] bf16
+    stride_out_seq,
+    stride_out_group,
+    NSPLIT: tl.constexpr,
+    NSPLIT_POW2: tl.constexpr,
+    G: tl.constexpr,
+    D: tl.constexpr,
+):
+    """Merge the per-split (max, sum, normalized partial output) of one
+    (row, query head)."""
+    s = tl.program_id(0).to(tl.int64)
+    g = tl.program_id(1)
+    sp = tl.arange(0, NSPLIT_POW2)
+    d = tl.arange(0, D)
+    valid = sp < NSPLIT
+    ml_off = s * (NSPLIT * G) + sp * G + g
+    m = tl.load(max_logits_ptr + ml_off, mask=valid, other=float("-inf"))
+    e = tl.load(exp_sums_ptr + ml_off, mask=valid, other=0.0)
+    m_all = tl.max(m, axis=0)
+    m_all = tl.where(m_all == float("-inf"), 0.0, m_all)
+    w = e * tl.exp(m - m_all)
+    w_sum = tl.sum(w, axis=0)
+    w = w / tl.where(w_sum > 0, w_sum, 1.0)
+    o = tl.load(tmp_ptr + ml_off[:, None] * D + d[None, :], mask=valid[:, None], other=0.0)
+    r = tl.sum(o.to(tl.float32) * w[:, None], axis=0)
+    tl.store(out_ptr + s * stride_out_seq + g * stride_out_group + d, r.to(out_ptr.dtype.element_ty))
+
+
+# ---------------------------------------------------------------------------
+# Host launch path. Decode runs once per layer per step with persistent
+# buffers, so the launcher keeps (a) the split partials in a per-device buffer
+# grown on demand and (b) the resolved launches (compiled kernel + bound
+# argument list) keyed by the tensors' pointers / shapes / strides, the
+# scalars and the stream, and replays them without Triton's per-call argument
+# binding. Shape checks run only when a launch is first resolved.
+# ---------------------------------------------------------------------------
+_PARTIALS: dict = {}
+_LAUNCHES: dict = {}
+_MAX_LAUNCHES = 4096
+_SPLITS: dict = {}
+
+
+def _partials(device, num_seqs, splits, group, head, dtype):
+    n = num_seqs * splits * group
+    key = (device, dtype)
+    buf = _PARTIALS.get(key)
+    if buf is None or buf[0].numel() < n:
+        cap = max(n, 1 << 16)
+        buf = (
+            torch.empty(cap, dtype=torch.float32, device=device),
+            torch.empty(cap, dtype=torch.float32, device=device),
+            torch.empty(cap * head, dtype=dtype, device=device),
+        )
+        _PARTIALS[key] = buf
+        _LAUNCHES.clear()  # cached launches point into the old buffers
+    return (
+        buf[0][:n].view(num_seqs, splits, group),
+        buf[1][:n].view(num_seqs, splits, group),
+        buf[2][: n * head].view(num_seqs, splits, group, head),
+    )
+
+
+def _resolve_launch(kernel, grid, args, kwargs, stream):
+    """Launch ``kernel[grid](*args, **kwargs)`` once and return a closure that
+    replays exactly that launch (same compiled kernel and bound values)."""
+    compiled = kernel[grid](*args, **kwargs)
+    try:
+        device = triton.runtime.driver.active.get_current_device()
+        binder = kernel.device_caches[device][4]
+        bound_args, _, _ = binder(*args, **kwargs)
+        values = tuple(bound_args.values())
+        g = tuple(grid) + (1,) * (3 - len(grid))
+        meta = compiled.launch_metadata(g, stream, *values)
+        knobs = triton.knobs.runtime
+
+        def replay():
+            compiled.run(
+                g[0], g[1], g[2], stream, compiled.function,
+                compiled.packed_metadata, meta,
+                knobs.launch_enter_hook, knobs.launch_exit_hook, *values,
+            )
+
+        return replay
+    except Exception:  # noqa: BLE001 - Triton internals moved: plain JIT launch
+        return lambda: kernel[grid](*args, **kwargs)
+
+
+def _recommended_splits(device, num_seqs):
+    key = (device, num_seqs)
+    s = _SPLITS.get(key)
+    if s is None:
+        s = _SPLITS[key] = get_recommended_splits(num_seqs, 1)
+    return s
+
+
 def pa_decode_mxfp4_gluon(
     output: torch.Tensor,  # [rows, Hq, 128] bf16
     query: torch.Tensor,  # [rows, Hq, 128] bf16
@@ -517,98 +636,89 @@ def pa_decode_mxfp4_gluon(
     softmax_scale: float,
     num_kv_heads: int,
     max_context_partition_num: int | None = None,
-    exp_sums: torch.Tensor | None = None,
-    max_logits: torch.Tensor | None = None,
-    temporary_output: torch.Tensor | None = None,
     num_warps: int = 4,
 ) -> torch.Tensor:
     """Sparse MXFP4 paged-attention decode; row ``r*H + h`` of ``block_tables``
-    / ``context_lengths`` drives query row r, KV head h (heads h*G..h*G+G-1)."""
+    / ``context_lengths`` drives query row r, KV head h (heads h*G..h*G+G-1).
+    ``max_context_partition_num`` (splits per row) defaults to AITER's
+    recommendation; 1 writes ``output`` directly without a reduce."""
+    stream = torch.cuda.current_stream(query.device).cuda_stream
+    key = (
+        output.data_ptr(), query.data_ptr(), query.shape[0], query.shape[1],
+        kv_cache.data_ptr(), kv_cache.shape[0], kv_cache.stride(0),
+        context_lengths.data_ptr(), block_tables.data_ptr(), block_tables.stride(0),
+        float(softmax_scale), num_kv_heads, max_context_partition_num, num_warps, stream,
+    )
+    hit = _LAUNCHES.get(key)
+    if hit is not None:
+        for launch in hit:
+            launch()
+        return output
+
     rows, num_q_heads, head = query.shape
     H = num_kv_heads
     group = num_q_heads // H
-    assert head == HEAD_DIM and group == 16, "head_dim 128, GQA group 16 only"
-    assert kv_cache.dtype == torch.uint8 and kv_cache.is_contiguous()
-    assert kv_cache[0].numel() == 2 * H * PAGE_BYTES
-    assert query.is_contiguous() and output.is_contiguous()
-    assert block_tables.dtype == torch.int32 and block_tables.stride(1) == 1
+    if head != HEAD_DIM or group != 16 or num_q_heads != H * group:
+        raise ValueError("pa_decode_mxfp4_gluon: head_dim 128 and GQA group 16 only")
+    if kv_cache.dtype != torch.uint8 or kv_cache[0].numel() != 2 * H * PAGE_BYTES:
+        raise ValueError("MXFP4 K/V cache must be uint8 [blocks, 2H, 128, 68]")
+    if kv_cache.stride(-1) != 1 or kv_cache[0].is_contiguous() is False:
+        raise ValueError("MXFP4 K/V cache blocks must be contiguous")
+    if not (query.is_contiguous() and output.is_contiguous()):
+        raise ValueError("query and output must be contiguous")
+    if block_tables.dtype != torch.int32 or block_tables.stride(1) != 1:
+        raise ValueError("block_tables must be int32 with contiguous rows")
+    if context_lengths.dtype != torch.int32:
+        raise ValueError("context_lengths must be int32")
     num_seqs = rows * H
     if num_seqs == 0:
         return output
     q_view = query.view(num_seqs, group, head)
     out_view = output.view(num_seqs, group, head)
-    splits = max_context_partition_num or get_recommended_splits(num_seqs, 1)
+    splits = max_context_partition_num or _recommended_splits(query.device, num_seqs)
     one_shot = splits <= 1
-    if not one_shot:
-        shape = (num_seqs, 1, splits, group)
-        if exp_sums is None:
-            exp_sums = torch.empty(shape, dtype=torch.float32, device=query.device)
-        if max_logits is None:
-            max_logits = torch.empty(shape, dtype=torch.float32, device=query.device)
-        if temporary_output is None:
-            temporary_output = torch.empty(
-                *shape, head, dtype=query.dtype, device=query.device
-            )
-        out_k = temporary_output
-        so_seq, so_part, so_group = out_k.stride(0), out_k.stride(2), out_k.stride(3)
-        ml_seq, ml_part = exp_sums.stride(0), exp_sums.stride(2)
-    else:
-        out_k = out_view
-        exp_sums = max_logits = out_view  # unused
+    if one_shot:
+        exp_sums = max_logits = out_k = out_view  # exp/max unused
         so_seq, so_part, so_group = out_view.stride(0), 0, out_view.stride(1)
         ml_seq = ml_part = 0
-    pa_decode_mxfp4_kernel[(num_seqs, 1, splits)](
-        exp_sums,
-        max_logits,
-        out_k,
-        q_view,
-        kv_cache,
-        kv_cache.view(torch.int32),
-        block_tables,
-        context_lengths,
-        softmax_scale,
-        ml_seq,
-        ml_part,
-        so_seq,
-        so_part,
-        so_group,
-        q_view.stride(0),
-        q_view.stride(1),
-        kv_cache.stride(0),
-        block_tables.stride(0),
-        group,
-        NUM_KV_HEADS=H,
-        CDNA_VERSION=get_cdna_version(),
-        ONE_SHOT=one_shot,
-        NUM_WARPS=num_warps,
-        num_warps=num_warps,
-    )
-    if not one_shot:
-        out5 = out_view.view(num_seqs, 1, 1, group, head)
-        _paged_attention_decode_v2_reduce_kernel_wrapper(
-            (num_seqs, 1, 1),
-            out5,
-            exp_sums,
-            max_logits,
-            temporary_output,
-            context_lengths,
-            None,
-            out5.stride(0),
-            out5.stride(1),
-            out5.stride(2),
-            out5.stride(3),
-            exp_sums.stride(0),
-            exp_sums.stride(1),
-            exp_sums.stride(2),
-            temporary_output.stride(0),
-            temporary_output.stride(1),
-            temporary_output.stride(2),
-            temporary_output.stride(3),
-            query_seq_len=1,
-            query_group_size=group,
-            head_size=head,
-            CONTEXT_PARTITION_SIZE=256,
-            PS=True,
-            context_partition_num=splits,
+    else:
+        max_logits, exp_sums, out_k = _partials(
+            query.device, num_seqs, splits, group, head, query.dtype
         )
+        so_seq, so_part, so_group = out_k.stride(0), out_k.stride(1), out_k.stride(2)
+        ml_seq, ml_part = exp_sums.stride(0), exp_sums.stride(1)
+    launches = [
+        _resolve_launch(
+            pa_decode_mxfp4_kernel,
+            (num_seqs, 1, splits),
+            (
+                exp_sums, max_logits, out_k, q_view, kv_cache,
+                kv_cache.view(torch.int32), block_tables, context_lengths,
+                float(softmax_scale), ml_seq, ml_part, so_seq, so_part, so_group,
+                q_view.stride(0), q_view.stride(1), kv_cache.stride(0),
+                block_tables.stride(0), group,
+            ),
+            dict(
+                NUM_KV_HEADS=H, CDNA_VERSION=get_cdna_version(), ONE_SHOT=one_shot,
+                NUM_WARPS=num_warps, num_warps=num_warps,
+            ),
+            stream,
+        )
+    ]
+    if not one_shot:
+        launches.append(
+            _resolve_launch(
+                _pa_decode_mxfp4_reduce_kernel,
+                (num_seqs, group),
+                (out_view, max_logits, exp_sums, out_k, out_view.stride(0), out_view.stride(1)),
+                dict(
+                    NSPLIT=splits, NSPLIT_POW2=triton.next_power_of_2(splits),
+                    G=group, D=head, num_warps=1,
+                ),
+                stream,
+            )
+        )
+    if len(_LAUNCHES) >= _MAX_LAUNCHES:
+        _LAUNCHES.clear()
+    _LAUNCHES[key] = tuple(launches)
     return output
