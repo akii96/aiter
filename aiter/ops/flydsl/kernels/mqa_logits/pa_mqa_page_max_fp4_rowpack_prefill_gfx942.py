@@ -19,6 +19,13 @@ Layouts (G groups of 16 rows, S = 16 G slots):
              end of each slot.
   out:       [rows, >= ceil(max_seq_len / 64)] fp32, caller-filled with -inf;
              pages no CTA reaches keep that fill.
+
+With ``q_fp8=True`` the A operand is FP8 instead of MXFP4 (gfx950's indexer
+keeps Q in e4m3 and only K in fp4; on gfx942 K is decoded to e4m3fnuz in
+registers anyway, so an e4m3fnuz Q costs the same MFMA, skips the Q decode and
+removes the dominant quantization error):
+  q_fp4:     [G, 16, D] e4m3fnuz bytes — slot s of group g is row 16 g + s.
+  q_scale:   [G, 16] fp32 — per-slot dequantization scale.
 """
 
 from __future__ import annotations
@@ -61,6 +68,7 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
     kv_scale_page_stride=None,
     kv_scale_offset=0,
     groups_per_cta=1,
+    q_fp8=False,
 ):
     # groups_per_cta > 1: cta_info's group id names a run of groups_per_cta
     # consecutive 16-row groups (same sequence); each decoded K tile then
@@ -136,6 +144,7 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         bt_bt = _i32_buffer(kv_indices_ptr, width=1)
         q_bt = _i32_buffer(q_ptr, width=1)
         qs_bt = _i32_buffer(q_scale_ptr, width=1)
+        qs4_bt = _i32_buffer(q_scale_ptr, width=4) if q_fp8 else None
 
         # This lane's four MFMA output rows are slots 4 * (lane / 16) + t of
         # each of the CTA's GPC groups.
@@ -182,7 +191,34 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         # ---- A-fragments: slot lane_mod_16 of each group, 4 K-steps per k_tile.
         q_a_ops_g = []
         sa_f32_tab_g = []
-        for gi in range_constexpr(GPC):
+        # q_fp8: lane l's A-fragment of K-step kk is bytes kk*32 + 8*(l/16) ..
+        # +8 of slot l%16, loaded as-is; the per-slot scale of this lane's four
+        # output rows (times weight_scale) is applied once in the epilogue.
+        row_scale_g = []
+        for gi in range_constexpr(GPC if q_fp8 else 0):
+            q_row_base = (
+                group_ids[gi] * fx.Int32(heads * head_dim)
+                + lane_mod_16 * fx.Int32(head_dim)
+                + lane_div_16 * fx.Int32(8)
+            )
+            q_a_ops = []
+            for k_tile in range_constexpr(k_tiles):
+                frags = []
+                for kk in range_constexpr(KK_PER_KTILE):
+                    dw = (q_row_base + fx.Int32(k_tile * 128 + kk * 32)) // fx.Int32(4)
+                    lo = fx.Int32(q_bt[dw])
+                    hi = fx.Int32(q_bt[dw + fx.Int32(1)])
+                    frags.append(_frag_i64_from_pp(lo, hi))
+                q_a_ops.append(frags)
+            q_a_ops_g.append(q_a_ops)
+            qs_v = fx.Vector(
+                _load_vec4_i32(
+                    qs4_bt,
+                    group_ids[gi] * fx.Int32(ROWS_PER_GROUP) + lane_div_16 * fx.Int32(4),
+                )
+            ).bitcast(fx.Float32)
+            row_scale_g.append([qs_v[t] * weight_scale for t in range(4)])
+        for gi in range_constexpr(0 if q_fp8 else GPC):
             q_base = group_ids[gi] * fx.Int32(heads * (head_dim // 2))
             q_row_base = q_base + lane_mod_16 * fx.Int32(head_dim // 2)
             q_a_ops = []
@@ -308,11 +344,14 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                         )
                         partial = c_frag.load()
                         for t in range_constexpr(4):
-                            accs[gi][t] = fx.fma(
-                                partial[t],
-                                sa_f32_tab_g[gi][k_tile][kk][t] * sb_f32,
-                                accs[gi][t],
-                            )
+                            if q_fp8:
+                                accs[gi][t] = fx.fma(partial[t], sb_f32, accs[gi][t])
+                            else:
+                                accs[gi][t] = fx.fma(
+                                    partial[t],
+                                    sa_f32_tab_g[gi][k_tile][kk][t] * sb_f32,
+                                    accs[gi][t],
+                                )
             return accs
 
         def _masked_scaled(acc, nt, c_i32_arg, gi):
@@ -326,7 +365,8 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
             )
             vals = []
             for t in range_constexpr(4):
-                bits = (acc[t] * weight_scale).bitcast(fx.Int32)
+                scale_t = row_scale_g[gi][t] if q_fp8 else weight_scale
+                bits = (acc[t] * scale_t).bitcast(fx.Int32)
                 bits = (token < ends_v[t]).select(bits, NEG_INF)
                 bits = (token < starts_v[t]).select(NEG_INF, bits)
                 vals.append(bits.bitcast(fx.Float32))
@@ -423,6 +463,7 @@ def compile_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     kv_scale_page_stride: int | None = None,
     kv_scale_offset: int = 0,
     groups_per_cta: int = 1,
+    q_fp8: bool = False,
 ):
     kfn, block_threads = build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         block_k=block_k,
@@ -434,6 +475,7 @@ def compile_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
         kv_scale_page_stride=kv_scale_page_stride,
         kv_scale_offset=kv_scale_offset,
         groups_per_cta=groups_per_cta,
+        q_fp8=q_fp8,
     )
 
     @flyc.jit
@@ -570,6 +612,7 @@ def flydsl_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     cta_info: torch.Tensor | None = None,
     total_ctas: int | None = None,
     stream: torch.cuda.Stream | None = None,
+    q_fp8: bool = False,
 ) -> torch.Tensor:
     """Signed per-64-token-page maxima of row-packed prefill index scores.
 
@@ -584,11 +627,20 @@ def flydsl_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     and a CUDA-graph caller keeps it at a stable address. Every page of every
     group's ``[start, end)`` window is then written, so a caller that reads only
     those pages may skip the ``-inf`` fill.
+
+    ``q_fp8=True``: ``q_fp4`` holds ``[groups, 16, D]`` e4m3fnuz bytes (uint8
+    or float8_e4m3fnuz) and ``q_scale`` ``[groups, 16]`` fp32 per-slot scales.
     """
     groups = q_fp4.shape[0]
     if tuple(q_fp4.shape[1:]) != (ROWS_PER_GROUP, q_fp4.shape[2]):
         raise ValueError(f"q_fp4 must be [groups, 16, D/2], got {tuple(q_fp4.shape)}")
-    head_dim = q_fp4.shape[2] * 2
+    head_dim = q_fp4.shape[2] * (1 if q_fp8 else 2)
+    if q_fp8 and (q_fp4.element_size() != 1 or not q_fp4.is_contiguous()):
+        raise ValueError("fp8 q must be a contiguous 1-byte [groups, 16, D] tensor")
+    if q_fp8 and (
+        q_scale.dtype != torch.float32 or q_scale.numel() < groups * ROWS_PER_GROUP
+    ):
+        raise ValueError(f"fp8 q_scale must be fp32 [{groups}, 16]")
     slots = groups * ROWS_PER_GROUP
     if slot_meta.dtype != torch.int32 or tuple(slot_meta.shape) != (3, slots):
         raise ValueError(f"slot_meta must be int32 [3, {slots}]")
@@ -635,6 +687,7 @@ def flydsl_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
         kv_page_stride=kv_page_stride,
         kv_scale_page_stride=kv_scale_page_stride,
         kv_scale_offset=kv_scale_offset,
+        q_fp8=q_fp8,
     )
     if stream is None:
         stream = torch.cuda.current_stream()
