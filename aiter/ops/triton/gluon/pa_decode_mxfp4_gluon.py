@@ -2,22 +2,23 @@
 # Copyright (C) 2024-2026, Advanced Micro Devices, Inc. All rights reserved.
 """Sparse paged-attention decode over an MXFP4 K/V cache (gfx942 gluon).
 
-Derived from ``pa_decode_gluon`` (the ``ps=True`` sliding-window head-1 kernel,
-specialized to head_dim 128, page 16, partition 256, fp8 compute, per-token KV
-scales). Only the K/V load stage differs: each token's 64 packed e2m1 bytes and
-four e8m0 chunk scales are read from the MXFP4 page and decoded in registers to
-e4m3fnuz with the chunk scale folded in relative to the token's largest chunk
-exponent (``v_perm_b32`` LUT). The token's 2^(emax-127) then rides the existing
-per-token KV-scale path, so the MFMA / softmax stages are unchanged.
+Modelled on ``pa_decode_gluon`` (the ``ps=True`` path): fp8 (e4m3fnuz) QK / PV
+MFMAs, online softmax per 128/256-token partition, split partials merged by a
+small reduce. Specialized to head_dim 128, GQA group 16, page-16 sparse tables.
+
+Each token's packed e2m1 dwords and its four e8m0 chunk scales are loaded
+straight into the MFMA operand layouts and decoded in registers to e4m3fnuz
+with the chunk scale folded in relative to the token's largest chunk exponent
+(``v_perm_b32`` lookup; per-chunk table words from ``v_cvt_pk_fp8_f32``). The
+token's 2^(emax-127) then rides the per-token KV-scale path (K: into the
+softmax scale; V: the fp8 P rescale), as KV_QUANT_MODE == 1 does for fp8 KV.
+Decoded values are exact while representable in e4m3fnuz (chunk exponents
+within 6 binades of the token max; RNE into the fp8 subnormals below that).
 
 Cache layout ``kv_cache``: uint8 ``[num_blocks, 2H, 128, 68]``; per (block, head
 slot) an 8704-byte page ``[128 tok x 64 B e2m1][128 tok x 4 B e8m0]``; K heads in
 slots ``[0, H)``, V heads in ``[H, 2H)``. ``block_tables`` row ``r*H + h`` lists
 page-16 entries ``(block*8 + j)*H + h`` (sub-page j = tokens 16j..16j+15).
-
-Decode is exact while a token's chunk exponents are within 6 binades of its max
-(normal fp8) and exact up to fp8 subnormal rounding to 13 binades; beyond that
-the chunk flushes to zero.
 """
 
 import torch
@@ -122,32 +123,6 @@ def _e2m1_lut(k):
     lo = _cvt_pk4(sc * 0.0, sc * 0.5, sc, sc * 1.5)
     hi = _cvt_pk4(sc * 2.0, sc * 3.0, sc * 4.0, sc * 6.0)
     return lo, hi
-
-
-@gluon.jit
-def _decode_tile(raw, w, split_idx, NB: gl.constexpr, LAYOUT16: gl.constexpr):
-    """raw int32 [NB, 8, 16, 2] packed e2m1 dwords (split s = elements
-    16s..16s+15), w int32 [NB, 1, 16, 1] the token's four e8m0 bytes.
-    Returns (fp8 [NB, 8, 16, 16], per-token scale fp32 [NB, 1, 16, 1])."""
-    e0 = w & 255
-    e1 = (w >> 8) & 255
-    e2 = (w >> 16) & 255
-    e3 = (w >> 24) & 255
-    emax = gl.maximum(gl.maximum(e0, e1), gl.maximum(e2, e3))
-    emax = gl.minimum(emax, 254)
-    shift = (split_idx[None, :, None, None] // 2) * 8
-    ec = (w >> shift) & 255
-    lo, hi = _e2m1_lut(gl.maximum(emax - ec, 0))
-    o0, o1 = _dec_dword(raw, lo, hi)
-    d = gl.reshape(gl.join(o0, o1), [NB, 8, 16, 4])  # dwords of elements 0..15
-    b0 = d.to(gl.uint8)
-    b1 = (d >> 8).to(gl.uint8)
-    b2 = (d >> 16).to(gl.uint8)
-    b3 = (d >> 24).to(gl.uint8)
-    x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [NB, 8, 16, 16])
-    x = gl.convert_layout(x, LAYOUT16)
-    scale = (emax << 23).to(gl.float32, bitcast=True)
-    return x.to(gl.float8e4b8, bitcast=True), scale
 
 
 @gluon.jit
@@ -261,18 +236,6 @@ def pa_decode_mxfp4_kernel(
         warps_per_cta=[NUM_WARPS // 4, 4],
         order=[1, 0],
     )
-    kv8: gl.constexpr = gl.BlockedLayout(
-        size_per_thread=[1, 1, 1, 2],
-        threads_per_warp=[1, 4, 16, 1],
-        warps_per_cta=[NUM_WARPS, 1, 1, 1],
-        order=[3, 2, 1, 0],
-    )
-    kv16: gl.constexpr = gl.BlockedLayout(
-        size_per_thread=[1, 1, 1, 16],
-        threads_per_warp=[1, 4, 16, 1],
-        warps_per_cta=[NUM_WARPS, 1, 1, 1],
-        order=[3, 2, 1, 0],
-    )
     mfma_layout: gl.constexpr = gl.amd.AMDMFMALayout(
         version=CDNA_VERSION,
         instr_shape=[16, 16, 32],
@@ -363,16 +326,6 @@ def pa_decode_mxfp4_kernel(
     col_layout: gl.constexpr = gl.SliceLayout(0, qk_linear_layout)
     row_layout: gl.constexpr = gl.SliceLayout(1, qk_linear_layout)
 
-    # Index vectors (kv8 for byte loads, kv16 for decode-side tensors).
-    b8 = gl.arange(0, NB, layout=gl.SliceLayout(1, gl.SliceLayout(2, gl.SliceLayout(3, kv8))))
-    s8 = gl.arange(0, SPLITS, layout=gl.SliceLayout(0, gl.SliceLayout(2, gl.SliceLayout(3, kv8))))
-    t8 = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(3, kv8))))
-    c8 = gl.arange(0, 2, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(2, kv8))))
-    # dword offsets of a token's packed data within its 16-token sub-page
-    in_page8 = (
-        t8[None, None, :, None] * 16 + s8[None, :, None, None] * 2 + c8[None, None, None, :]
-    )
-
     vw_idx = gl.arange(0, NW, layout=gl.SliceLayout(1, gl.SliceLayout(2, gl.SliceLayout(3, vload_layout))))
     vsp_idx = gl.arange(0, SPW, layout=gl.SliceLayout(0, gl.SliceLayout(2, gl.SliceLayout(3, vload_layout))))
     vt_idx = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(3, vload_layout))))
@@ -450,10 +403,6 @@ def pa_decode_mxfp4_kernel(
 
     for p in range(part_start, part_end):
         nvalid = max_nb - p * NB
-        base, row = _page_bases(
-            block_tables_ptr, bt_off + p * NB, nvalid, b8, stride_kv_block, NUM_KV_HEADS
-        )
-        dw0 = base // 4
         kbase, krow = _page_bases(
             block_tables_ptr, bt_off + p * NB, nvalid, kn_idx // 16, stride_kv_block, NUM_KV_HEADS
         )
@@ -468,7 +417,6 @@ def pa_decode_mxfp4_kernel(
         v_w = gl.load(
             kv_i32_ptr + ((v_dw - vrow * 15 + 2048)[:, :, None, None] + vt_idx[None, None, :, None])
         )
-        sc_off = (dw0 + 2048 + row)[:, None, None, None] + t8[None, None, :, None]
 
         # ---- K: decode, QK^T ----
         k_op = _decode_k(k_raw, k_w, k_shift)
@@ -480,8 +428,6 @@ def pa_decode_mxfp4_kernel(
         v_op = _decode_v(v_raw, v_w, v_shift, NW, SPW)
         v_op = gl.convert_layout(v_op.to(COMPUTE_TYPE, bitcast=True), v3_layout)
 
-        # Per-token scales straight in the score-column layout (reshaping the
-        # replicated [NB, 1, 16, 1] decode-side tensor is not layout-safe).
         k_scale = gl.convert_layout(_token_scale(gl.reshape(k_w, [PART])), col_layout)
         v_scale = gl.convert_layout(
             _token_scale(gl.reshape(gl.max(v_w, axis=3), [PART])), col_layout
