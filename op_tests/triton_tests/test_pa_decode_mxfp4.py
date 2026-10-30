@@ -16,12 +16,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _KERNEL = os.path.join(
     _HERE, "..", "..", "aiter", "ops", "triton", "gluon", "pa_decode_mxfp4_gluon.py"
 )
-try:
-    from aiter.ops.triton.gluon import pa_decode_mxfp4_gluon as mod
-except ImportError:  # run from a worktree without installing it
+if os.path.exists(_KERNEL):  # prefer this checkout over an installed aiter
     spec = importlib.util.spec_from_file_location("pa_decode_mxfp4_gluon", _KERNEL)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+else:
+    from aiter.ops.triton.gluon import pa_decode_mxfp4_gluon as mod
 
 D = 128
 BLOCK = 128
