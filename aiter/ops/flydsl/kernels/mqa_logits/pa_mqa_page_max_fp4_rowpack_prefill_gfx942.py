@@ -60,7 +60,13 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
     kv_page_stride=None,
     kv_scale_page_stride=None,
     kv_scale_offset=0,
+    groups_per_cta=1,
 ):
+    # groups_per_cta > 1: cta_info's group id names a run of groups_per_cta
+    # consecutive 16-row groups (same sequence); each decoded K tile then
+    # feeds groups_per_cta MFMAs instead of one, amortizing the e2m1 decode
+    # (the VALU bottleneck on gfx942) over 16 * groups_per_cta query rows.
+    GPC = groups_per_cta
     heads = ROWS_PER_GROUP
     block_threads_k = num_warps * WARP_SIZE
     k_tiles = head_dim // 128
@@ -120,7 +126,7 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
             fx.make_view(cta_it, fx.make_layout((1 << 28, 4), (4, 1)))
         )
         cta_info_vec = fx.Vector(_load_vec4_i32(cta_info_bt, fx.Int32(0)))
-        group_id = cta_info_vec[0]
+        super_id = cta_info_vec[0]
         batch_id = cta_info_vec[1]
         chunk_start = cta_info_vec[2]
         chunk_count = cta_info_vec[3]
@@ -131,12 +137,18 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         q_bt = _i32_buffer(q_ptr, width=1)
         qs_bt = _i32_buffer(q_scale_ptr, width=1)
 
-        # This lane's four MFMA output rows are slots 4 * (lane / 16) + t.
+        # This lane's four MFMA output rows are slots 4 * (lane / 16) + t of
+        # each of the CTA's GPC groups.
         meta_bt = _i32_buffer(slot_meta_ptr, width=4)
-        slot0 = group_id * fx.Int32(ROWS_PER_GROUP) + lane_div_16 * fx.Int32(4)
-        rows_v = fx.Vector(_load_vec4_i32(meta_bt, slot0))
-        starts_v = fx.Vector(_load_vec4_i32(meta_bt, slot_plane + slot0))
-        ends_v = fx.Vector(_load_vec4_i32(meta_bt, slot_plane * fx.Int32(2) + slot0))
+        group_ids = [super_id * fx.Int32(GPC) + fx.Int32(gi) for gi in range(GPC)]
+        rows_vs, starts_vs, ends_vs = [], [], []
+        for gi in range_constexpr(GPC):
+            slot0 = group_ids[gi] * fx.Int32(ROWS_PER_GROUP) + lane_div_16 * fx.Int32(4)
+            rows_vs.append(fx.Vector(_load_vec4_i32(meta_bt, slot0)))
+            starts_vs.append(fx.Vector(_load_vec4_i32(meta_bt, slot_plane + slot0)))
+            ends_vs.append(
+                fx.Vector(_load_vec4_i32(meta_bt, slot_plane * fx.Int32(2) + slot0))
+            )
 
         # Dropped stores use offset out_elems, discarded by the range check.
         out_buf = fx.rocdl.make_buffer_tensor(
@@ -167,42 +179,47 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
             ).bitcast(fx.Float32)
             return v[0]
 
-        # ---- A-fragments: slot lane_mod_16 of this group, 4 K-steps per k_tile.
-        q_base = group_id * fx.Int32(heads * (head_dim // 2))
-        q_row_base = q_base + lane_mod_16 * fx.Int32(head_dim // 2)
-        q_a_ops = []
-        for k_tile in range_constexpr(k_tiles):
-            frags = []
-            for kk in range_constexpr(KK_PER_KTILE):
-                off = (
-                    q_row_base
-                    + fx.Int32(k_tile * 64 + kk * 16)
-                    + lane_div_16 * fx.Int32(4)
-                )
-                d = fx.Int32(q_bt[off // fx.Int32(4)])
-                p01, p23 = _decode_fp4_dword(d)
-                frags.append(_frag_i64_from_pp(p01, p23))
-            q_a_ops.append(frags)
-
-        # ---- A-scales of this lane's four output rows (slots 4*(l/16)+t). ----
-        qs_base = group_id * fx.Int32(k_tiles * 64 * qs_pad)
-        sa_f32_tab = []
-        for k_tile in range_constexpr(k_tiles):
-            sa_kt = []
-            for kk in range_constexpr(KK_PER_KTILE):
-                sa_kk = []
-                for t in range_constexpr(4):
-                    row = lane_div_16 * fx.Int32(4) + fx.Int32(t)
+        # ---- A-fragments: slot lane_mod_16 of each group, 4 K-steps per k_tile.
+        q_a_ops_g = []
+        sa_f32_tab_g = []
+        for gi in range_constexpr(GPC):
+            q_base = group_ids[gi] * fx.Int32(heads * (head_dim // 2))
+            q_row_base = q_base + lane_mod_16 * fx.Int32(head_dim // 2)
+            q_a_ops = []
+            for k_tile in range_constexpr(k_tiles):
+                frags = []
+                for kk in range_constexpr(KK_PER_KTILE):
                     off = (
-                        qs_base
-                        + fx.Int32(k_tile * 64 * qs_pad)
-                        + fx.Int32(kk * 16 * qs_pad)
-                        + row * fx.Int32(qs_pad)
+                        q_row_base
+                        + fx.Int32(k_tile * 64 + kk * 16)
+                        + lane_div_16 * fx.Int32(4)
                     )
-                    dw = fx.Int32(qs_bt[off // fx.Int32(4)])
-                    sa_kk.append(_e8m0_to_f32(dw & fx.Int32(0xFF)))
-                sa_kt.append(sa_kk)
-            sa_f32_tab.append(sa_kt)
+                    d = fx.Int32(q_bt[off // fx.Int32(4)])
+                    p01, p23 = _decode_fp4_dword(d)
+                    frags.append(_frag_i64_from_pp(p01, p23))
+                q_a_ops.append(frags)
+            q_a_ops_g.append(q_a_ops)
+
+            # A-scales of this lane's four output rows (slots 4*(l/16)+t).
+            qs_base = group_ids[gi] * fx.Int32(k_tiles * 64 * qs_pad)
+            sa_f32_tab = []
+            for k_tile in range_constexpr(k_tiles):
+                sa_kt = []
+                for kk in range_constexpr(KK_PER_KTILE):
+                    sa_kk = []
+                    for t in range_constexpr(4):
+                        row = lane_div_16 * fx.Int32(4) + fx.Int32(t)
+                        off = (
+                            qs_base
+                            + fx.Int32(k_tile * 64 * qs_pad)
+                            + fx.Int32(kk * 16 * qs_pad)
+                            + row * fx.Int32(qs_pad)
+                        )
+                        dw = fx.Int32(qs_bt[off // fx.Int32(4)])
+                        sa_kk.append(_e8m0_to_f32(dw & fx.Int32(0xFF)))
+                    sa_kt.append(sa_kk)
+                sa_f32_tab.append(sa_kt)
+            sa_f32_tab_g.append(sa_f32_tab)
 
         def _load_phys(c_i32_arg):
             token_local_base = (
@@ -272,7 +289,8 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
             return frags
 
         def _issue_nt_mfmas_frags(frags_in, kvs_list_in, nt):
-            acc = [ZERO_F for _ in range(4)]
+            """One decoded K tile -> GPC groups' accumulators."""
+            accs = [[ZERO_F for _ in range(4)] for _ in range(GPC)]
             for k_tile in range_constexpr(k_tiles):
                 for kk in range_constexpr(KK_PER_KTILE):
                     b_frag = _frag_from_i64(
@@ -282,17 +300,24 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                     sb_f32 = _e8m0_to_f32(
                         (sb_packed >> fx.Int32(8 * nt)) & fx.Int32(0xFF)
                     )
-                    c_frag = fx.make_rmem_tensor(4, fx.Float32)
-                    c_frag.store(fx.Vector.filled(4, 0.0, fx.Float32))
-                    fx.gemm(mfma_atom, c_frag, q_a_ops[k_tile][kk], b_frag, c_frag)
-                    partial = c_frag.load()
-                    for t in range_constexpr(4):
-                        acc[t] = fx.fma(
-                            partial[t], sa_f32_tab[k_tile][kk][t] * sb_f32, acc[t]
+                    for gi in range_constexpr(GPC):
+                        c_frag = fx.make_rmem_tensor(4, fx.Float32)
+                        c_frag.store(fx.Vector.filled(4, 0.0, fx.Float32))
+                        fx.gemm(
+                            mfma_atom, c_frag, q_a_ops_g[gi][k_tile][kk], b_frag, c_frag
                         )
-            return acc
+                        partial = c_frag.load()
+                        for t in range_constexpr(4):
+                            accs[gi][t] = fx.fma(
+                                partial[t],
+                                sa_f32_tab_g[gi][k_tile][kk][t] * sb_f32,
+                                accs[gi][t],
+                            )
+            return accs
 
-        def _masked_scaled(acc, nt, c_i32_arg):
+        def _masked_scaled(acc, nt, c_i32_arg, gi):
+            starts_v = starts_vs[gi]
+            ends_v = ends_vs[gi]
             token = (
                 (chunk_start + c_i32_arg) * fx.Int32(block_k)
                 + (warp_id * fx.Int32(N_TILES_PER_WARP) + fx.Int32(nt))
@@ -319,7 +344,8 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                 peers.append(peer.bitcast(fx.Float32))
             return vec.maximumf(fx.Vector.from_elements(peers, dtype=fx.Float32))
 
-        def _store_page_max(page_max, c_i32_arg):
+        def _store_page_max(page_max, c_i32_arg, gi):
+            rows_v = rows_vs[gi]
             page = (chunk_start + c_i32_arg) * fx.Int32(pages_per_chunk) + warp_id
             # Pages past the last column would land in the next row.
             writer = (lane_mod_16 < fx.Int32(1)) & (page < out_pages)
@@ -338,16 +364,22 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
             # Issue each tile's MFMAs before the previous tile's epilogue.
             acc0 = _issue_nt_mfmas_frags(frags_in, kvs_list_in, 0)
             acc1 = _issue_nt_mfmas_frags(frags_in, kvs_list_in, 1)
-            page_max = _masked_scaled(acc0, 0, c_i32_arg)
+            pm = [_masked_scaled(acc0[gi], 0, c_i32_arg, gi) for gi in range(GPC)]
             acc2 = _issue_nt_mfmas_frags(frags_in, kvs_list_in, 2)
-            page_max = page_max.maximumf(_masked_scaled(acc1, 1, c_i32_arg))
+            pm = [
+                pm[gi].maximumf(_masked_scaled(acc1[gi], 1, c_i32_arg, gi))
+                for gi in range(GPC)
+            ]
             acc3 = _issue_nt_mfmas_frags(frags_in, kvs_list_in, 3)
-            page_max = page_max.maximumf(_masked_scaled(acc2, 2, c_i32_arg))
-            page_max = page_max.maximumf(_masked_scaled(acc3, 3, c_i32_arg))
-            # Reduce over the 16 lanes holding one row's tokens of a tile.
-            for sh in [1, 2, 4, 8]:
-                page_max = _xor_max(page_max, sh)
-            _store_page_max(page_max, c_i32_arg)
+            for gi in range_constexpr(GPC):
+                page_max = pm[gi].maximumf(_masked_scaled(acc2[gi], 2, c_i32_arg, gi))
+                page_max = page_max.maximumf(
+                    _masked_scaled(acc3[gi], 3, c_i32_arg, gi)
+                )
+                # Reduce over the 16 lanes holding one row's tokens of a tile.
+                for sh in [1, 2, 4, 8]:
+                    page_max = _xor_max(page_max, sh)
+                _store_page_max(page_max, c_i32_arg, gi)
 
         last_c_i32 = chunk_count - fx.Int32(1)
         phys_pre = _load_phys(c0_i32)
@@ -390,6 +422,7 @@ def compile_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
     kv_page_stride: int | None = None,
     kv_scale_page_stride: int | None = None,
     kv_scale_offset: int = 0,
+    groups_per_cta: int = 1,
 ):
     kfn, block_threads = build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         block_k=block_k,
@@ -400,6 +433,7 @@ def compile_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
         kv_page_stride=kv_page_stride,
         kv_scale_page_stride=kv_scale_page_stride,
         kv_scale_offset=kv_scale_offset,
+        groups_per_cta=groups_per_cta,
     )
 
     @flyc.jit
