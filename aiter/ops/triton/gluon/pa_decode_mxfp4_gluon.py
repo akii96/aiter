@@ -482,12 +482,10 @@ def pa_decode_mxfp4_kernel(
 
         # Per-token scales straight in the score-column layout (reshaping the
         # replicated [NB, 1, 16, 1] decode-side tensor is not layout-safe).
-        cbase, crow = _page_bases(
-            block_tables_ptr, bt_off + p * NB, nvalid, col_idx // 16, stride_kv_block, NUM_KV_HEADS
+        k_scale = gl.convert_layout(_token_scale(gl.reshape(k_w, [PART])), col_layout)
+        v_scale = gl.convert_layout(
+            _token_scale(gl.reshape(gl.max(v_w, axis=3), [PART])), col_layout
         )
-        c_off = cbase // 4 + 2048 + crow + col_idx % 16
-        k_scale = _token_scale(gl.load(kv_i32_ptr + c_off))
-        v_scale = _token_scale(gl.load(kv_i32_ptr + (c_off + V_OFF // 4)))
 
         cols = p * PART + col_idx
         mask = row_mask[:, None] & ((cols >= seq_start) & (cols < seq_end))[None, :]
