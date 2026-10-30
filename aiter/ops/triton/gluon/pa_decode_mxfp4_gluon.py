@@ -465,27 +465,42 @@ def pa_decode_mxfp4_kernel(
         max_logits = new_max
 
     safe = gl.where(exp_sums > 0, exp_sums, 1.0)
-    accf = gl.sum(acc3, axis=0)
-    inv = gl.convert_layout(1.0 / safe, gl.SliceLayout(1, acc_layout))
-    accf = accf * inv[:, None]
-    # column n = 16 e + g holds head dim 8 g + e: undo it in registers, then store
-    # row-contiguous.
-    accf = gl.reshape(gl.permute(gl.reshape(accf.to(gl.bfloat16), [GROUP, 8, 16]), [0, 2, 1]), [GROUP, HEAD])
-    accf = gl.convert_layout(accf, blocked_query_layout)
-    a_g = gl.arange(0, GROUP, layout=gl.SliceLayout(1, blocked_query_layout))
-    a_d = gl.arange(0, HEAD, layout=gl.SliceLayout(0, blocked_query_layout))
+    # Sum the per-warp partial accumulators: one shared store, one load with the
+    # warp dim in registers. Column n = 16 e + g holds head dim 8 g + e; the
+    # shared view is read back as [w, g_row, e, g] so a thread sums 4 warps for
+    # 8 consecutive head dims and stores them contiguously.
+    red_layout: gl.constexpr = gl.BlockedLayout(
+        size_per_thread=[NW, 1, 1, 8],
+        threads_per_warp=[1, 4, 16, 1],
+        warps_per_cta=[1, NUM_WARPS, 1, 1],
+        order=[3, 2, 1, 0],
+    )
+    acc_smem = gl.allocate_shared_memory(
+        gl.float32, [NW, GROUP, 8, 16], gl.SwizzledSharedLayout(1, 1, 1, order=[3, 2, 1, 0])
+    )
+    acc_smem.store(gl.reshape(acc3, [NW, GROUP, 8, 16]))
+    acc4 = acc_smem.permute([0, 1, 3, 2]).load(red_layout)  # [w, g_row, g, e]
+    accf = gl.sum(acc4, axis=0)  # [GROUP, 16 (g), 8 (e)]
+    out_l: gl.constexpr = gl.SliceLayout(0, red_layout)
+    inv = gl.convert_layout(1.0 / safe, gl.SliceLayout(1, gl.SliceLayout(2, out_l)))
+    accf = (accf * inv[:, None, None]).to(gl.bfloat16)
+    a_g3 = gl.arange(0, GROUP, layout=gl.SliceLayout(1, gl.SliceLayout(2, out_l)))
+    a_q = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(2, out_l)))
+    a_e = gl.arange(0, 8, layout=gl.SliceLayout(0, gl.SliceLayout(1, out_l)))
+    a_g = a_g3[:, None, None]
+    a_d = a_q[None, :, None] * 8 + a_e[None, None, :]
     if ONE_SHOT:
-        a_off = seq * stride_out_seq + a_g[:, None] * stride_out_group + a_d[None, :]
+        a_off = seq * stride_out_seq + a_g * stride_out_group + a_d
     else:
         a_off = (
             seq * stride_out_seq
             + split * stride_out_part
-            + a_g[:, None] * stride_out_group
-            + a_d[None, :]
+            + a_g * stride_out_group
+            + a_d
         )
         gl.store(max_logits_ptr + ml_offsets, max_logits, mask=row_mask)
         gl.store(exp_sums_ptr + ml_offsets, exp_sums, mask=row_mask)
-    a_mask = (a_g < query_group_size)[:, None]
+    a_mask = a_g < query_group_size
     gl.store(output_ptr + a_off, accf, mask=a_mask)
 
 
