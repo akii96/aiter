@@ -36,7 +36,7 @@ import flydsl.compiler as flyc
 import flydsl.expr as fx
 import torch
 from flydsl.expr import gpu, rocdl
-from flydsl.expr.primitive import range_constexpr
+from flydsl.expr.primitive import const_expr, range_constexpr
 from flydsl.expr.typing import Int32, T
 
 from .pa_mqa_logits_fp4_common import _i32_buffer, _load_vec4_i32
@@ -56,6 +56,9 @@ PAGE_TOKENS = 64
 DEFAULT_HEAD_DIM = 128
 # fp32 -inf as a signed i32, for the bit-level mask select.
 _NEG_INF_BITS = -8388608
+# Fused FP8-Q decode: max|q| of a row maps to this e4m3fnuz value (max 240),
+# as vLLM's pack_decode_rows_fp8_gfx942 does.
+FP8Q_ROW_MAX = 224.0
 
 
 def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
@@ -69,7 +72,31 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
     kv_scale_offset=0,
     groups_per_cta=1,
     q_fp8=False,
+    block_out=False,
+    init_blocks=0,
+    local_blocks=0,
+    fused_q_heads=0,
+    fused_q_len=1,
+    sentinel_init=1e30,
+    sentinel_local=1e29,
 ):
+    # block_out: the epilogue maxes each 128-token block's two page maxima
+    # across the wave pair that owns it (through LDS), applies the init /
+    # local pinning, and writes pinned block scores into ``out`` viewed as
+    # [rows, width] (``out_pages`` = width) instead of page maxima.
+    #
+    # fused_q_heads > 0 (decode, needs q_fp8 and groups_per_cta == 1): ``q_ptr``
+    # is the bf16 [rows, H, D] index query (strides q_stride_row/head in
+    # elements), group g is request g, and slot h * fused_q_len + r is head h
+    # of its row r. The prologue computes each slot's max|q| -> 224 e4m3fnuz
+    # bytes and fp32 scale in registers, and the slot metadata from
+    # ``seq_lens_ptr``; ``q_scale_ptr`` and ``slot_meta_ptr`` are unused.
+    FUSED_Q = fused_q_heads > 0
+    if FUSED_Q:
+        assert q_fp8 and groups_per_cta == 1
+        assert fused_q_heads * fused_q_len <= ROWS_PER_GROUP
+    if block_out:
+        assert num_warps % 2 == 0 and block_k % 128 == 0
     # groups_per_cta > 1: cta_info's group id names a run of groups_per_cta
     # consecutive 16-row groups (same sequence); each decoded K tile then
     # feeds groups_per_cta MFMAs instead of one, amortizing the e2m1 decode
@@ -101,6 +128,17 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
     qs_pad = 4
     N_KV = k_tiles * N_TILES_PER_WARP * KK_PER_KTILE
     N_KVS = k_tiles * KK_PER_KTILE
+    # LDS page-max exchange: [2 (chunk parity), GPC, num_warps, 16 slots].
+    XCHG_WORDS = 2 * GPC * num_warps * ROWS_PER_GROUP
+
+    # Built with explicit annotations: this module defers annotations.
+    BlockOutShared = fx.struct(
+        type(
+            "RowpackBlockOutShared",
+            (),
+            {"__annotations__": {"xchg": fx.Array[fx.Int32, XCHG_WORDS, 16]}},
+        )
+    )
 
     @flyc.kernel
     def pa_mqa_page_max_fp4_rowpack_prefill_gfx942_kernel(
@@ -117,6 +155,10 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         slot_plane: Int32,
         out_elems: Int32,
         weight_scale: fx.Float32,
+        seq_lens_ptr: fx.Tensor,
+        q_stride_row: Int32,
+        q_stride_head: Int32,
+        q_rows: Int32,
     ):
         tid = gpu.thread_idx.x
         pid = gpu.block_idx.x
@@ -138,6 +180,15 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         batch_id = cta_info_vec[1]
         chunk_start = cta_info_vec[2]
         chunk_count = cta_info_vec[3]
+        # chunk_count >= 1 always (unused slots get 1), so the page-max
+        # variant always runs.
+        cta_live = chunk_count
+        if const_expr(block_out):
+            cta_live = fx.Int32(
+                _i32_buffer(cta_info_ptr, width=1)[
+                    pid * fx.Int32(CTA_INFO_WIDTH) + fx.Int32(5)
+                ]
+            )
 
         kv_bt = _i32_buffer(kv_cache_ptr, width=1)
         kvs_bt = _i32_buffer(kv_scale_ptr, width=1)
@@ -151,7 +202,7 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         meta_bt = _i32_buffer(slot_meta_ptr, width=4)
         group_ids = [super_id * fx.Int32(GPC) + fx.Int32(gi) for gi in range(GPC)]
         rows_vs, starts_vs, ends_vs = [], [], []
-        for gi in range_constexpr(GPC):
+        for gi in range_constexpr(0 if FUSED_Q else GPC):
             slot0 = group_ids[gi] * fx.Int32(ROWS_PER_GROUP) + lane_div_16 * fx.Int32(4)
             rows_vs.append(fx.Vector(_load_vec4_i32(meta_bt, slot0)))
             starts_vs.append(fx.Vector(_load_vec4_i32(meta_bt, slot_plane + slot0)))
@@ -195,7 +246,104 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
         # +8 of slot l%16, loaded as-is; the per-slot scale of this lane's four
         # output rows (times weight_scale) is applied once in the epilogue.
         row_scale_g = []
-        for gi in range_constexpr(GPC if q_fp8 else 0):
+        lane_i32 = fx.Int32(lane_id)
+
+        def _bperm_f32(src_lane, v):
+            return fx.Int32(
+                rocdl.ds_bpermute(T.i32, src_lane * fx.Int32(4), v.bitcast(fx.Int32))
+            ).bitcast(fx.Float32)
+
+        if const_expr(FUSED_Q):
+            # Slot s = lane % 16 of request b = group id: head s // QL, row
+            # b * QL + s % QL. Lane l holds bytes kk*32 + 8*(l/16) .. +8 of the
+            # slot's row, so the 4 lanes l/16 = 0..3 of a slot cover all of it.
+            QL = fused_q_len
+            HQ = fused_q_heads * QL
+            b = group_ids[0]
+            s = lane_mod_16
+            s_live = s < fx.Int32(HQ)
+            q_head = s // fx.Int32(QL)
+            q_r = s % fx.Int32(QL)
+            q_row = b * fx.Int32(QL) + q_r
+            # Dead slots read row 0 / head 0 and are zeroed below.
+            elem0 = s_live.select(
+                q_row * q_stride_row + q_head * q_stride_head, fx.Int32(0)
+            ) + lane_div_16 * fx.Int32(8)
+            xs = []  # [kk][8] fp32
+            amax = ZERO_F
+            for kk in range_constexpr(KK_PER_KTILE * k_tiles):
+                xk = []
+                for j in range_constexpr(4):
+                    dw = fx.Int32(q_bt[(elem0 + fx.Int32(kk * 32 + 2 * j)) // fx.Int32(2)])
+                    dw = s_live.select(dw, fx.Int32(0))
+                    lo = dw << fx.Int32(16)
+                    hi = dw & fx.Int32(-65536)
+                    xk += [lo.bitcast(fx.Float32), hi.bitcast(fx.Float32)]
+                    for v in (lo, hi):
+                        amax = amax.maximumf(
+                            (v & fx.Int32(0x7FFFFFFF)).bitcast(fx.Float32)
+                        )
+                xs.append(xk)
+            for sh in [16, 32]:
+                amax = amax.maximumf(_bperm_f32(lane_i32 ^ fx.Int32(sh), amax))
+            # Correctly rounded divides, as the Triton pack kernel (div_rn).
+            pos = amax > ZERO_F
+            safe = pos.select(amax, fx.Float32(1.0))
+            inv = pos.select(fx.Float32(FP8Q_ROW_MAX) / safe, ZERO_F)
+            slot_scale = amax / fx.Float32(FP8Q_ROW_MAX)
+            def _q8_in(v):
+                # e4m3fnuz has no -0 (0x80 is NaN): anything rounding to zero,
+                # |v| <= 2^-11 (half the smallest subnormal, ties to even), is +0.
+                sv = v * inv
+                tiny = (sv.bitcast(fx.Int32) & fx.Int32(0x7FFFFFFF)) <= fx.Int32(
+                    0x3A000000
+                )
+                return tiny.select(ZERO_F, sv).ir_value()
+
+            frags = []
+            for kk in range_constexpr(KK_PER_KTILE * k_tiles):
+                words = []
+                for half in range_constexpr(2):
+                    pk = fx.Int32(0).ir_value()
+                    for sel in range_constexpr(2):
+                        e = half * 4 + sel * 2
+                        pk = rocdl.cvt_pk_fp8_f32(
+                            T.i32,
+                            _q8_in(xs[kk][e]),
+                            _q8_in(xs[kk][e + 1]),
+                            pk,
+                            sel,
+                        )
+                    words.append(fx.Int32(pk))
+                frags.append(_frag_i64_from_pp(words[0], words[1]))
+            q_a_ops_g.append(
+                [frags[kt * KK_PER_KTILE : (kt + 1) * KK_PER_KTILE] for kt in range(k_tiles)]
+            )
+            # This lane's four output rows are slots 4 * (l / 16) + t, whose
+            # scale lives on lane 4 * (l / 16) + t.
+            row_scale_g.append(
+                [
+                    _bperm_f32(lane_div_16 * fx.Int32(4) + fx.Int32(t), slot_scale)
+                    * weight_scale
+                    for t in range(4)
+                ]
+            )
+            # Slot metadata, as pack_decode_rows_fp8_gfx942 writes it.
+            seq_len = fx.Int32(_i32_buffer(seq_lens_ptr, width=1)[b])
+            rows_l, starts_l, ends_l = [], [], []
+            for t in range_constexpr(4):
+                st = lane_div_16 * fx.Int32(4) + fx.Int32(t)
+                live_t = st < fx.Int32(HQ)
+                r_t = st % fx.Int32(QL)
+                row_t = (st // fx.Int32(QL)) * q_rows + b * fx.Int32(QL) + r_t
+                end_t = fx.max(seq_len - fx.Int32(QL) + r_t + fx.Int32(1), fx.Int32(0))
+                rows_l.append(live_t.select(row_t, fx.Int32(-1)))
+                starts_l.append(fx.Int32(0))
+                ends_l.append(live_t.select(end_t, fx.Int32(0)))
+            rows_vs.append(rows_l)
+            starts_vs.append(starts_l)
+            ends_vs.append(ends_l)
+        for gi in range_constexpr(GPC if (q_fp8 and not FUSED_Q) else 0):
             q_row_base = (
                 group_ids[gi] * fx.Int32(heads * head_dim)
                 + lane_mod_16 * fx.Int32(head_dim)
@@ -400,6 +548,70 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                 )
                 fx.copy(out_atom, r_out, fx.slice(out_buf, (off, None)))
 
+        if const_expr(block_out):
+            xchg_ptr = fx.SharedAllocator().allocate(BlockOutShared).peek().xchg.ptr
+            blocks_per_chunk = block_k // 128
+            # valid blocks of this lane's four output rows, per group
+            valid_g = [
+                [
+                    (ends_vs[gi][t] + fx.Int32(127)) // fx.Int32(128)
+                    for t in range(4)
+                ]
+                for gi in range(GPC)
+            ]
+
+        def _store_block_scores(page_maxes, c_i32_arg):
+            """Pair each even wave's page maxima with the next wave's (the
+            other half of its 128-token block), pin and store block scores."""
+            parity = c_i32_arg & fx.Int32(1)
+            for gi in range_constexpr(GPC):
+                base = (
+                    (parity * fx.Int32(GPC) + fx.Int32(gi)) * fx.Int32(num_warps)
+                    + warp_id
+                ) * fx.Int32(ROWS_PER_GROUP) + lane_div_16 * fx.Int32(4)
+                for t in range_constexpr(4):
+                    fx.ptr_store(
+                        page_maxes[gi][t].bitcast(fx.Int32),
+                        xchg_ptr + fx.Int64(base + fx.Int32(t)),
+                    )
+            gpu.barrier()
+            wid = fx.Int32(warp_id)
+            is_even = (wid & fx.Int32(1)) == fx.Int32(0)
+            writer = (lane_mod_16 < fx.Int32(1)) & is_even
+            blk = (chunk_start + c_i32_arg) * fx.Int32(blocks_per_chunk) + (
+                warp_id >> fx.Int32(1)
+            )
+            for gi in range_constexpr(GPC):
+                # Partner wave warp_id ^ 1 (odd readers fetch their own pair
+                # but never store).
+                pbase = (
+                    (parity * fx.Int32(GPC) + fx.Int32(gi)) * fx.Int32(num_warps)
+                    + (wid ^ fx.Int32(1))
+                ) * fx.Int32(ROWS_PER_GROUP) + lane_div_16 * fx.Int32(4)
+                for t in range_constexpr(4):
+                    other = fx.Int32(
+                        fx.ptr_load(xchg_ptr + fx.Int64(pbase + fx.Int32(t)))
+                    ).bitcast(fx.Float32)
+                    score = page_maxes[gi][t].maximumf(other)
+                    valid = valid_g[gi][t]
+                    if const_expr(init_blocks > 0):
+                        score = (blk < fx.Int32(init_blocks)).select(
+                            fx.Float32(sentinel_init), score
+                        )
+                    if const_expr(local_blocks > 0):
+                        score = (
+                            blk >= fx.max(valid - fx.Int32(local_blocks), fx.Int32(0))
+                        ).select(fx.Float32(sentinel_local), score)
+                    row = rows_vs[gi][t]
+                    off = row * stride_out_row + blk
+                    ok = writer & (blk < valid) & (blk < out_pages) & (row >= fx.Int32(0))
+                    off = ok.select(off, out_elems)
+                    r_out = fx.memref_alloca(out_reg_ty, out_reg_lay)
+                    fx.memref_store_vec(
+                        fx.Vector.from_elements([score], dtype=fx.Float32), r_out
+                    )
+                    fx.copy(out_atom, r_out, fx.slice(out_buf, (off, None)))
+
         def _compute_chunk_frags(frags_in, kvs_list_in, c_i32_arg):
             # Issue each tile's MFMAs before the previous tile's epilogue.
             acc0 = _issue_nt_mfmas_frags(frags_in, kvs_list_in, 0)
@@ -411,6 +623,7 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                 for gi in range(GPC)
             ]
             acc3 = _issue_nt_mfmas_frags(frags_in, kvs_list_in, 3)
+            page_maxes = []
             for gi in range_constexpr(GPC):
                 page_max = pm[gi].maximumf(_masked_scaled(acc2[gi], 2, c_i32_arg, gi))
                 page_max = page_max.maximumf(
@@ -419,34 +632,47 @@ def build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
                 # Reduce over the 16 lanes holding one row's tokens of a tile.
                 for sh in [1, 2, 4, 8]:
                     page_max = _xor_max(page_max, sh)
-                _store_page_max(page_max, c_i32_arg, gi)
+                if const_expr(block_out):
+                    page_maxes.append([page_max[t] for t in range(4)])
+                else:
+                    _store_page_max(page_max, c_i32_arg, gi)
+            if const_expr(block_out):
+                _store_block_scores(page_maxes, c_i32_arg)
 
-        last_c_i32 = chunk_count - fx.Int32(1)
-        phys_pre = _load_phys(c0_i32)
-        kv_pre, kvs_pre = _prefetch_chunk(c0_i32, phys_pre)
-        frags_pre = _decode_frags(kv_pre)
-        phys_next_pre = _load_phys(fx.min(fx.Int32(1), last_c_i32))
+        # Unused schedule slots (cta_info end == 0) would recompute chunk 0 of
+        # group 0 and rewrite identical values; the block-score decode variant
+        # skips them, so a grid sized for the largest batch stays cheap at short
+        # context. (The page-max variant keeps its unconditional loop.)
+        if cta_live > fx.Int32(0):
+            last_c_i32 = chunk_count - fx.Int32(1)
+            phys_pre = _load_phys(c0_i32)
+            kv_pre, kvs_pre = _prefetch_chunk(c0_i32, phys_pre)
+            frags_pre = _decode_frags(kv_pre)
+            phys_next_pre = _load_phys(fx.min(fx.Int32(1), last_c_i32))
 
-        chunk_count_minus_1_idx = fx.Int64(chunk_count - fx.Int32(1))
-        init_args = list(frags_pre) + list(kvs_pre) + list(phys_next_pre)
-        for c_idx, state in range(0, chunk_count_minus_1_idx, 1, init=init_args):
-            frags_cur = [state[i] for i in range(N_KV)]
-            kvs_cur_list = [state[N_KV + i] for i in range(N_KVS)]
-            phys_next_list = [state[N_KV + N_KVS + i] for i in range(N_TILES_PER_WARP)]
-            c_idx_i32 = fx.Int32(c_idx)
-            c_next_i32 = c_idx_i32 + 1
-            c_next_next_i32 = fx.min(c_next_i32 + 1, last_c_i32)
-            kv_next, kvs_next = _prefetch_chunk(c_next_i32, phys_next_list)
-            phys_next_next_list = _load_phys(c_next_next_i32)
-            _compute_chunk_frags(frags_cur, kvs_cur_list, c_idx_i32)
-            frags_next = _decode_frags(kv_next)
-            results = yield (
-                list(frags_next) + list(kvs_next) + list(phys_next_next_list)
-            )
+            chunk_count_minus_1_idx = fx.Int64(chunk_count - fx.Int32(1))
+            init_args = list(frags_pre) + list(kvs_pre) + list(phys_next_pre)
+            for c_idx, state in range(0, chunk_count_minus_1_idx, 1, init=init_args):
+                frags_cur = [state[i] for i in range(N_KV)]
+                kvs_cur_list = [state[N_KV + i] for i in range(N_KVS)]
+                phys_next_list = [
+                    state[N_KV + N_KVS + i] for i in range(N_TILES_PER_WARP)
+                ]
+                c_idx_i32 = fx.Int32(c_idx)
+                c_next_i32 = c_idx_i32 + 1
+                c_next_next_i32 = fx.min(c_next_i32 + 1, last_c_i32)
+                kv_next, kvs_next = _prefetch_chunk(c_next_i32, phys_next_list)
+                phys_next_next_list = _load_phys(c_next_next_i32)
+                _compute_chunk_frags(frags_cur, kvs_cur_list, c_idx_i32)
+                frags_next = _decode_frags(kv_next)
+                results = yield (
+                    list(frags_next) + list(kvs_next) + list(phys_next_next_list)
+                )
 
-        frags_last = [results[i] for i in range(N_KV)]
-        kvs_last_list = [results[N_KV + i] for i in range(N_KVS)]
-        _compute_chunk_frags(frags_last, kvs_last_list, last_c_i32)
+            frags_last = [results[i] for i in range(N_KV)]
+            kvs_last_list = [results[N_KV + i] for i in range(N_KVS)]
+            _compute_chunk_frags(frags_last, kvs_last_list, last_c_i32)
+
 
     return pa_mqa_page_max_fp4_rowpack_prefill_gfx942_kernel, block_threads_k
 
@@ -510,9 +736,102 @@ def compile_pa_mqa_page_max_fp4_rowpack_prefill_gfx942(
             slot_plane,
             out_elems,
             weight_scale,
+            meta,
+            fx.Int32(0),
+            fx.Int32(0),
+            fx.Int32(0),
         ).launch(grid=(fx.Int64(gx),), block=(block_threads, 1, 1), stream=stream)
 
     return launch_pa_mqa_page_max_fp4_rowpack_prefill_gfx942, block_threads
+
+
+@lru_cache(maxsize=32)
+def compile_pa_mqa_block_score_fp4_rowpack_decode_gfx942(
+    *,
+    block_k: int = 256,
+    max_blocks_per_seq: int = 256,
+    head_dim: int = DEFAULT_HEAD_DIM,
+    kv_page_stride: int | None = None,
+    kv_scale_page_stride: int | None = None,
+    kv_scale_offset: int = 0,
+    init_blocks: int = 0,
+    local_blocks: int = 0,
+    sentinel_init: float = 1e30,
+    sentinel_local: float = 1e29,
+    fused_q_heads: int = 0,
+    fused_q_len: int = 1,
+):
+    """Decode variant of the FP8-Q row-packed scorer that writes pinned
+    128-token block scores (``block_out``) and, with ``fused_q_heads``, packs
+    the bf16 index Q and slot metadata in its prologue.
+
+    Launcher arguments: ``(out [rows_total, width] fp32 view, q, qs, kv, kvs,
+    page64_table, slot_meta, cta_info, stride_out_row, width, slot_plane,
+    out_elems, weight_scale, seq_lens, q_stride_row, q_stride_head, q_rows,
+    num_ctas, stream)``. With ``fused_q_heads`` ``q`` is the bf16 ``[rows, H,
+    D]`` query and ``qs`` / ``slot_meta`` are ignored (pass any buffers)."""
+    kfn, block_threads = build_pa_mqa_page_max_fp4_rowpack_prefill_gfx942_module(
+        block_k=block_k,
+        kv_block_size=64,
+        max_blocks_per_seq=max_blocks_per_seq,
+        num_warps=block_k // PAGE_TOKENS,
+        head_dim=head_dim,
+        kv_page_stride=kv_page_stride,
+        kv_scale_page_stride=kv_scale_page_stride,
+        kv_scale_offset=kv_scale_offset,
+        q_fp8=True,
+        block_out=True,
+        init_blocks=init_blocks,
+        local_blocks=local_blocks,
+        sentinel_init=sentinel_init,
+        sentinel_local=sentinel_local,
+        fused_q_heads=fused_q_heads,
+        fused_q_len=fused_q_len,
+    )
+
+    @flyc.jit
+    def launch_pa_mqa_block_score_fp4_rowpack_decode_gfx942(
+        out,
+        q,
+        qs,
+        kv,
+        kvs,
+        bt,
+        meta,
+        cta_info_,
+        stride_out: fx.Int32,
+        out_width: fx.Int32,
+        slot_plane: fx.Int32,
+        out_elems: fx.Int32,
+        weight_scale: fx.Float32,
+        seq_lens,
+        q_stride_row: fx.Int32,
+        q_stride_head: fx.Int32,
+        q_rows: fx.Int32,
+        gx: fx.Int32,
+        stream: fx.Stream,
+    ):
+        kfn(
+            out,
+            q,
+            qs,
+            kv,
+            kvs,
+            bt,
+            meta,
+            cta_info_,
+            stride_out,
+            out_width,
+            slot_plane,
+            out_elems,
+            weight_scale,
+            seq_lens,
+            q_stride_row,
+            q_stride_head,
+            q_rows,
+        ).launch(grid=(fx.Int64(gx),), block=(block_threads, 1, 1), stream=stream)
+
+    return launch_pa_mqa_block_score_fp4_rowpack_decode_gfx942, block_threads
 
 
 def rowpack_prefill_inputs_gfx942(
