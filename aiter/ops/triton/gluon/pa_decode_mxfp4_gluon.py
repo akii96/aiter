@@ -33,7 +33,6 @@ from aiter.ops.triton.gluon.pa_decode_gluon import (
     _paged_attention_decode_v2_reduce_kernel_wrapper,
     define_layout,
     get_cdna_version,
-    get_recommended_splits,
 )
 
 PAGE_TOKENS = 128
@@ -676,18 +675,23 @@ def _resolve_launch(kernel, grid, args, kwargs, stream):
 
 
 def _recommended_config(device, num_seqs):
-    """(splits, partition_size). Sparse rows hold <= 16 x 128 tokens, so one
-    program usually owns one partition and its latency is the kernel time:
-    while the grid is small (< 128 rows ~ 1 program / CU), halve the partition
-    and double the splits."""
+    """(splits, partition_size) for num_seqs = rows * kv heads; sparse rows hold
+    <= 16 x 128 tokens. Small grids are latency bound: one 128-token partition
+    per program. Larger grids take fewer splits, so a program streams several
+    partitions (split s owns s, s + S, ...) with the next one's table entries
+    in flight, and the split reduce shrinks. Measured on MI300X (graph replay,
+    2048-token rows): B1 q1 16x128; B4 q4 8x128; B8/B16 q4 4x256; B32 q4 2x256."""
     key = (device, num_seqs)
     c = _SPLITS.get(key)
     if c is None:
-        splits = get_recommended_splits(num_seqs, 1)
-        if num_seqs * splits < 512:
-            c = (splits * 2, 128)
+        if num_seqs <= 16:
+            c = (16, 128)
+        elif num_seqs <= 32:
+            c = (8, 128)
+        elif num_seqs <= 128:
+            c = (4, 256)
         else:
-            c = (splits, 256)
+            c = (2, 256)
         _SPLITS[key] = c
     return c
 
