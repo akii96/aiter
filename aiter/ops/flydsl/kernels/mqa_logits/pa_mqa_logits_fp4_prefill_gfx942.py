@@ -196,8 +196,14 @@ def _row_plan(le, block_k, P, s_max) -> _RowPlan:
         P,
         block_k,
         s_max,
+        # Decode plans have a handful of rows: a 4096-lane single program
+        # costs ~60 us there, a 64-lane one a few us.
         BLOCK_T=(
-            _ROW_PLAN_BLOCK_FLOOR if T <= _ROW_PLAN_BLOCK_FLOOR else _ROW_PLAN_MAX_ROWS
+            64
+            if T <= 64
+            else _ROW_PLAN_BLOCK_FLOOR
+            if T <= _ROW_PLAN_BLOCK_FLOOR
+            else _ROW_PLAN_MAX_ROWS
         ),
         SEARCH_STEPS=max(1, (s_max - 1).bit_length() + 1),
     )
