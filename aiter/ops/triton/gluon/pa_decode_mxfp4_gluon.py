@@ -126,16 +126,31 @@ def _e2m1_lut(k):
 
 
 @gluon.jit
-def _decode_v(raw, w, shift, NW: gl.constexpr, SPW: gl.constexpr):
-    """raw int32 [4, 4, 16, 16] packed e2m1 (dword g = head dims 8g..8g+7) of
-    [warp, sub-page, token, g]; w int32 [4, 4, 16, 1] token scale words ->
-    uint8 [4, 64, 128] e4m3fnuz, column n = 16 * e + g holding dim 8g + e."""
+def _lut_words(w, shift):
+    """Token scale words w, chunk shift -> per-(token, chunk) LUT words
+    (relative to the token's largest chunk exponent)."""
     emax = gl.maximum(
         gl.maximum(w & 255, (w >> 8) & 255), gl.maximum((w >> 16) & 255, (w >> 24) & 255)
     )
     emax = gl.minimum(emax, 254)
     ec = (w >> shift) & 255
-    lo, hi = _e2m1_lut(gl.maximum(emax - ec, 0))
+    return _e2m1_lut(gl.maximum(emax - ec, 0))
+
+
+@gluon.jit
+def _spread4(x, layout: gl.constexpr):
+    """[NW, SPW, 16, 4 (chunk)] -> [NW, SPW, 16, 16 (dword g = 4 * chunk + j)]:
+    LUT words computed once per (token, chunk), then replicated to the four
+    dwords of the chunk by a register/lane shuffle."""
+    x = gl.join(gl.join(x, x), gl.join(x, x))
+    return gl.convert_layout(gl.reshape(x, [x.shape[0], x.shape[1], 16, 16]), layout)
+
+
+@gluon.jit
+def _decode_v(raw, lo, hi, NW: gl.constexpr, SPW: gl.constexpr):
+    """raw int32 [NW, SPW, 16, 16] packed e2m1 (dword g = head dims 8g..8g+7) of
+    [warp, sub-page, token, g] with its LUT words lo / hi -> uint8
+    [NW, SPW * 16, 128] e4m3fnuz, column n = 16 * e + g holding dim 8g + e."""
     o0, o1 = _dec_dword(raw, lo, hi)
     d = gl.join(o0, o1)  # [4, 4, 16, 16, 2]
     b0 = d.to(gl.uint8)
@@ -179,10 +194,16 @@ def _token_scale(w):
 
 
 @gluon.jit
-def _page_bases(
-    bt_ptr, bt_off, nvalid, idx, stride_kv_block, NUM_KV_HEADS: gl.constexpr
-):
-    e = gl.load(bt_ptr + bt_off + idx, mask=idx < nvalid, other=0)
+def _page_entries(bt_ptr, bt_off, start, idx, max_nb):
+    """Page-16 table entries start + idx of a row, clamped into the row's valid
+    range: no masks / branches, so the loads issue together (a clamped entry
+    duplicates a valid page; its tokens are masked out of the softmax)."""
+    return gl.load(bt_ptr + bt_off + gl.minimum(start + idx, max_nb - 1))
+
+
+@gluon.jit
+def _entry_bases(e, stride_kv_block, NUM_KV_HEADS: gl.constexpr):
+    """Page-16 entry -> (byte offset of its (block, head) page, first token row)."""
     e = e.to(gl.uint32)  # entries are >= 0; unsigned div/mod by constants is shifts
     h = (e % NUM_KV_HEADS).to(gl.int32)
     j = ((e // NUM_KV_HEADS) % 8).to(gl.int32)
@@ -323,6 +344,29 @@ def pa_decode_mxfp4_kernel(
             shape=[16, 256],
         )
     shared_p3_layout: gl.constexpr = gl.SwizzledSharedLayout(8, 1, 8, order=[2, 1, 0])
+    # compact [warp, sub-page, token, chunk]: one LUT per (token, chunk)
+    if PART == 256:
+        vlut_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0], [0, 2, 0, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 2, 0], [0, 0, 4, 0], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
+            block_bases=[],
+            shape=[NW, SPW, 16, 4],
+        )
+    else:
+        vlut_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 2, 0], [0, 0, 4, 0], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[[1, 0, 0, 0], [2, 0, 0, 0]],
+            block_bases=[],
+            shape=[NW, SPW, 16, 4],
+        )
+    lw_idx = gl.arange(0, NW, layout=gl.SliceLayout(1, gl.SliceLayout(2, gl.SliceLayout(3, vlut_layout))))
+    lsp_idx = gl.arange(0, SPW, layout=gl.SliceLayout(0, gl.SliceLayout(2, gl.SliceLayout(3, vlut_layout))))
+    lt_idx = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(3, vlut_layout))))
+    lc_idx = gl.arange(0, 4, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(2, vlut_layout))))
+    l_sub = lw_idx[:, None] * SPW + lsp_idx[None, :]
+    l_shift = (lc_idx * 8)[None, None, None, :]
     acc_layout: gl.constexpr = gl.SliceLayout(0, pv3_layout)
     # kload: [dword q of the token (head dims 8q..8q+7), token n] matching
     # rhs_layout (k_width 16): a lane holds dwords 2c, 2c+1 of a token.
@@ -335,7 +379,6 @@ def pa_decode_mxfp4_kernel(
     vg_idx = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(1, gl.SliceLayout(2, vload_layout))))
     v_sub = vw_idx[:, None] * SPW + vsp_idx[None, :]  # sub-page within the partition
     v_tok_dw = vt_idx[None, None, :, None] * 16 + vg_idx[None, None, None, :]
-    v_shift = ((vg_idx // 4) * 8)[None, None, None, :]  # chunk of head dims 8g..8g+7
 
     kqp_idx = gl.arange(0, 8, layout=gl.SliceLayout(1, gl.SliceLayout(2, kload_layout)))
     kn_idx = gl.arange(0, PART, layout=gl.SliceLayout(0, gl.SliceLayout(2, kload_layout)))
@@ -344,6 +387,13 @@ def pa_decode_mxfp4_kernel(
     k_shift = ((kqp_idx // 2) * 8)[:, None, None]
 
     context_length = gl.load(context_lengths_ptr + seq)
+    qg = gl.arange(0, GROUP, layout=gl.SliceLayout(1, lhs_layout))
+    qd = gl.arange(0, HEAD, layout=gl.SliceLayout(0, lhs_layout))
+    q = gl.load(
+        query_ptr + seq * stride_q_seq + qg[:, None] * stride_q_group + qd[None, :],
+        mask=(qg < query_group_size)[:, None],
+        other=0.0,
+    )
     num_splits = gl.num_programs(2)
     page_size = gl.cdiv(context_length, num_splits)
     seq_start = page_size * split
@@ -393,13 +443,9 @@ def pa_decode_mxfp4_kernel(
 
     # Q straight into the QK lhs operand layout (16 contiguous head dims per
     # lane: two 16-byte loads), no shared-memory staging.
-    qg = gl.arange(0, GROUP, layout=gl.SliceLayout(1, lhs_layout))
-    qd = gl.arange(0, HEAD, layout=gl.SliceLayout(0, lhs_layout))
-    q = gl.load(
-        query_ptr + seq * stride_q_seq + qg[:, None] * stride_q_group + qd[None, :],
-        mask=(qg < query_group_size)[:, None],
-        other=0.0,
-    )
+    k_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, kn_idx // 16, max_nb)
+    v_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, v_sub, max_nb)
+    l_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, l_sub, max_nb)
     query_op = q.to(COMPUTE_TYPE)
     probs_shared = gl.allocate_shared_memory(
         COMPUTE_TYPE, [NW, GROUP, TPW], shared_p3_layout
@@ -407,22 +453,21 @@ def pa_decode_mxfp4_kernel(
     col_idx = gl.arange(0, PART, layout=col_layout)
 
     for p in range(part_start, part_end):
-        nvalid = max_nb - p * NB
-        kbase, krow = _page_bases(
-            block_tables_ptr, bt_off + p * NB, nvalid, kn_idx // 16, stride_kv_block, NUM_KV_HEADS
-        )
+        kbase, krow = _entry_bases(k_ent, stride_kv_block, NUM_KV_HEADS)
         k_tok = kbase // 4 + krow * 16 + (kn_idx % 16) * 16  # token's first dword
         k_raw = gl.load(kv_i32_ptr + (k_tok[None, :, None] + k_dw))
         k_w = gl.load(kv_i32_ptr + (kbase // 4 + 2048 + krow + kn_idx % 16))[None, :, None]
-        vbase, vrow = _page_bases(
-            block_tables_ptr, bt_off + p * NB, nvalid, v_sub, stride_kv_block, NUM_KV_HEADS
-        )
+        vbase, vrow = _entry_bases(v_ent, stride_kv_block, NUM_KV_HEADS)
         v_dw = vbase // 4 + V_OFF // 4 + vrow * 16
         v_raw = gl.load(kv_i32_ptr + (v_dw[:, :, None, None] + v_tok_dw))
-        v_w = gl.load(
-            kv_i32_ptr + ((v_dw - vrow * 15 + 2048)[:, :, None, None] + vt_idx[None, None, :, None])
-        )
 
+        k_ent = _page_entries(block_tables_ptr, bt_off, (p + 1) * NB, kn_idx // 16, max_nb)
+        lbase, lrow = _entry_bases(l_ent, stride_kv_block, NUM_KV_HEADS)
+        l_w = gl.load(
+            kv_i32_ptr + ((lbase // 4 + V_OFF // 4 + 2048 + lrow)[:, :, None, None] + lt_idx[None, None, :, None])
+        )
+        v_ent = _page_entries(block_tables_ptr, bt_off, (p + 1) * NB, v_sub, max_nb)
+        l_ent = _page_entries(block_tables_ptr, bt_off, (p + 1) * NB, l_sub, max_nb)
         # ---- K: decode, QK^T ----
         k_op = _decode_k(k_raw, k_w, k_shift)
         k_op = gl.convert_layout(k_op.to(COMPUTE_TYPE, bitcast=True), rhs_layout)
@@ -430,12 +475,13 @@ def pa_decode_mxfp4_kernel(
             query_op, k_op, gl.zeros((GROUP, PART), dtype=gl.float32, layout=mfma_layout)
         )
         # ---- V: decode (token-major) ----
-        v_op = _decode_v(v_raw, v_w, v_shift, NW, SPW)
+        v_lo, v_hi = _lut_words(l_w, l_shift)
+        v_op = _decode_v(v_raw, _spread4(v_lo, vload_layout), _spread4(v_hi, vload_layout), NW, SPW)
         v_op = gl.convert_layout(v_op.to(COMPUTE_TYPE, bitcast=True), v3_layout)
 
         k_scale = gl.convert_layout(_token_scale(gl.reshape(k_w, [PART])), col_layout)
         v_scale = gl.convert_layout(
-            _token_scale(gl.reshape(gl.max(v_w, axis=3), [PART])), col_layout
+            _token_scale(gl.reshape(gl.max(l_w, axis=3), [PART])), col_layout
         )
 
         cols = p * PART + col_idx
