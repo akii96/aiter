@@ -232,6 +232,7 @@ def pa_decode_mxfp4_kernel(
     stride_kv_block,  # bytes per cache block (2H * 8704)
     stride_bt_seq,
     query_group_size,
+    bt_cols,  # entries per block-table row
     NUM_KV_HEADS: gl.constexpr,
     CDNA_VERSION: gl.constexpr,
     ONE_SHOT: gl.constexpr,
@@ -386,6 +387,15 @@ def pa_decode_mxfp4_kernel(
     k_shift = ((kqp_idx // 2) * 8)[:, None, None]
 
     context_length = gl.load(context_lengths_ptr + seq)
+    num_splits = gl.num_programs(2)
+    bt_off = seq * stride_bt_seq
+    # Split s owns partitions s, s + S, ...: its first table entries do not
+    # depend on the context length, so they load alongside it (clamped into the
+    # row; entries past the valid ones are replaced by entry 0 below).
+    k_ent0 = gl.load(block_tables_ptr + bt_off + gl.minimum(split * NB + kn_idx // 16, bt_cols - 1))
+    v_ent0 = gl.load(block_tables_ptr + bt_off + gl.minimum(split * NB + v_sub, bt_cols - 1))
+    l_ent0 = gl.load(block_tables_ptr + bt_off + gl.minimum(split * NB + l_sub, bt_cols - 1))
+    ent_first = gl.load(block_tables_ptr + bt_off)
     qg = gl.arange(0, GROUP, layout=gl.SliceLayout(1, lhs_layout))
     qd = gl.arange(0, HEAD, layout=gl.SliceLayout(0, lhs_layout))
     q = gl.load(
@@ -393,14 +403,8 @@ def pa_decode_mxfp4_kernel(
         mask=(qg < query_group_size)[:, None],
         other=0.0,
     )
-    num_splits = gl.num_programs(2)
-    page_size = gl.cdiv(context_length, num_splits)
-    seq_start = page_size * split
-    seq_end = gl.minimum(context_length, page_size + seq_start)
-    part_start = seq_start // PART
-    part_end = gl.cdiv(seq_end, PART)
+    num_parts = gl.cdiv(context_length, PART)
     max_nb = gl.cdiv(context_length, 16)
-    bt_off = seq * stride_bt_seq
 
     g_offs = gl.arange(0, GROUP, layout=gl.SliceLayout(1, blocked_query_layout))
     d_offs = gl.arange(0, HEAD, layout=gl.SliceLayout(0, blocked_query_layout))
@@ -429,7 +433,7 @@ def pa_decode_mxfp4_kernel(
             0, GROUP, layout=row_layout
         )
 
-    if (seq_start >= context_length) | (part_start >= part_end):
+    if split >= num_parts:
         if not ONE_SHOT:
             gl.store(max_logits_ptr + ml_offsets, max_logits, mask=row_mask)
             gl.store(exp_sums_ptr + ml_offsets, exp_sums, mask=row_mask)
@@ -442,9 +446,9 @@ def pa_decode_mxfp4_kernel(
 
     # Q straight into the QK lhs operand layout (16 contiguous head dims per
     # lane: two 16-byte loads), no shared-memory staging.
-    k_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, kn_idx // 16, max_nb)
-    v_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, v_sub, max_nb)
-    l_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, l_sub, max_nb)
+    k_ent = gl.where(split * NB + kn_idx // 16 < max_nb, k_ent0, ent_first)
+    v_ent = gl.where(split * NB + v_sub < max_nb, v_ent0, ent_first)
+    l_ent = gl.where(split * NB + l_sub < max_nb, l_ent0, ent_first)
     # head dims 8g + (0, 2, 4, 6, 1, 3, 5, 7): the K decode's byte order (QK is
     # invariant to a common permutation of the head dim); register-local.
     q = gl.reshape(gl.permute(gl.reshape(q, [GROUP, 16, 4, 2]), [0, 1, 3, 2]), [GROUP, HEAD])
@@ -454,7 +458,7 @@ def pa_decode_mxfp4_kernel(
     )
     col_idx = gl.arange(0, PART, layout=col_layout)
 
-    for p in range(part_start, part_end):
+    for p in range(split, num_parts, num_splits):
         kbase, krow = _entry_bases(k_ent, stride_kv_block, NUM_KV_HEADS)
         k_tok = kbase // 4 + krow * 16 + (kn_idx % 16) * 16  # token's first dword
         k_raw = gl.load(kv_i32_ptr + (k_tok[None, :, None] + k_dw))
@@ -463,13 +467,13 @@ def pa_decode_mxfp4_kernel(
         v_dw = vbase // 4 + V_OFF // 4 + vrow * 16
         v_raw = gl.load(kv_i32_ptr + (v_dw[:, :, None, None] + v_tok_dw))
 
-        k_ent = _page_entries(block_tables_ptr, bt_off, (p + 1) * NB, kn_idx // 16, max_nb)
+        k_ent = _page_entries(block_tables_ptr, bt_off, (p + num_splits) * NB, kn_idx // 16, max_nb)
         lbase, lrow = _entry_bases(l_ent, stride_kv_block, NUM_KV_HEADS)
         l_w = gl.load(
             kv_i32_ptr + ((lbase // 4 + V_OFF // 4 + 2048 + lrow)[:, :, None, None] + lt_idx[None, None, :, None])
         )
-        v_ent = _page_entries(block_tables_ptr, bt_off, (p + 1) * NB, v_sub, max_nb)
-        l_ent = _page_entries(block_tables_ptr, bt_off, (p + 1) * NB, l_sub, max_nb)
+        v_ent = _page_entries(block_tables_ptr, bt_off, (p + num_splits) * NB, v_sub, max_nb)
+        l_ent = _page_entries(block_tables_ptr, bt_off, (p + num_splits) * NB, l_sub, max_nb)
         # ---- K: decode, QK^T ----
         k_op = _decode_k(k_raw, k_w, k_shift)
         k_op = gl.convert_layout(k_op.to(COMPUTE_TYPE, bitcast=True), rhs_layout)
@@ -489,9 +493,9 @@ def pa_decode_mxfp4_kernel(
         scores = gl.convert_layout(scores, layout=qk_linear_layout)
         # log2 units: exp2 below needs no per-element multiply
         scores = ((softmax_scale * LOG2_E) * k_scale[None, :]) * scores
-        if (p * PART < seq_start) | (p * PART + PART > seq_end) | (query_group_size < GROUP):
+        if (p * PART + PART > context_length) | (query_group_size < GROUP):
             cols = p * PART + col_idx
-            mask = row_mask[:, None] & ((cols >= seq_start) & (cols < seq_end))[None, :]
+            mask = row_mask[:, None] & (cols < context_length)[None, :]
             scores = gl.where(mask, scores, -3.4e38)
             v_scale = gl.where(cols < context_length, v_scale, 0.0)
 
@@ -711,6 +715,7 @@ def pa_decode_mxfp4_gluon(
         output.data_ptr(), query.data_ptr(), query.shape[0], query.shape[1],
         kv_cache.data_ptr(), kv_cache.shape[0], kv_cache.stride(0),
         context_lengths.data_ptr(), block_tables.data_ptr(), block_tables.stride(0),
+        block_tables.shape[1],
         float(softmax_scale), num_kv_heads, max_context_partition_num, num_warps,
         partition_size, stream,
     )
@@ -766,7 +771,7 @@ def pa_decode_mxfp4_gluon(
                 kv_cache.view(torch.int32), block_tables, context_lengths,
                 float(softmax_scale), ml_seq, ml_part, so_seq, so_part, so_group,
                 q_view.stride(0), q_view.stride(1), kv_cache.stride(0),
-                block_tables.stride(0), group,
+                block_tables.stride(0), group, block_tables.shape[1],
             ),
             dict(
                 NUM_KV_HEADS=H, CDNA_VERSION=get_cdna_version(), ONE_SHOT=one_shot,
