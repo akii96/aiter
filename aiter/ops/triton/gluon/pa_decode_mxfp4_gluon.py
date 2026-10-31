@@ -486,21 +486,23 @@ def pa_decode_mxfp4_kernel(
             _token_scale(gl.reshape(gl.max(l_w, axis=3), [PART])), col_layout
         )
 
-        cols = p * PART + col_idx
-        mask = row_mask[:, None] & ((cols >= seq_start) & (cols < seq_end))[None, :]
         scores = gl.convert_layout(scores, layout=qk_linear_layout)
-        scores = (softmax_scale * k_scale[None, :]) * scores
-        scores = gl.where(mask, scores, -3.4e38)
+        # log2 units: exp2 below needs no per-element multiply
+        scores = ((softmax_scale * LOG2_E) * k_scale[None, :]) * scores
+        if (p * PART < seq_start) | (p * PART + PART > seq_end) | (query_group_size < GROUP):
+            cols = p * PART + col_idx
+            mask = row_mask[:, None] & ((cols >= seq_start) & (cols < seq_end))[None, :]
+            scores = gl.where(mask, scores, -3.4e38)
+            v_scale = gl.where(cols < context_length, v_scale, 0.0)
 
-        v_scale = gl.where(cols < context_length, v_scale, 0.0)
         v_scale_b = tl.broadcast_to(v_scale[None, :], scores.shape)
         cur_max, v_scale_max_2d = gl.reduce(
             (scores, v_scale_b), axis=1, combine_fn=_fused_max_combine
         )
         v_scale_max = gl.max(v_scale_max_2d, axis=0)
         new_max = gl.maximum(max_logits, cur_max)
-        alpha = tl.math.exp2((max_logits - new_max) * LOG2_E)
-        probs = tl.math.exp2((scores - new_max[:, None]) * LOG2_E)
+        alpha = tl.math.exp2(max_logits - new_max)
+        probs = tl.math.exp2(scores - new_max[:, None])
         exp_sums = alpha * exp_sums + gl.sum(probs, axis=1)
 
         inv_vmax = hip_libdevice.fast_dividef(1.0, v_scale_max + 1e-30)
@@ -586,7 +588,7 @@ def _pa_decode_mxfp4_reduce_kernel(
     e = tl.load(exp_sums_ptr + ml_off, mask=valid, other=0.0)
     m_all = tl.max(m, axis=0)
     m_all = tl.where(m_all == float("-inf"), 0.0, m_all)
-    w = e * tl.exp(m - m_all)
+    w = e * tl.exp2(m - m_all)  # maxima in log2 units
     w_sum = tl.sum(w, axis=0)
     w = w / tl.where(w_sum > 0, w_sum, 1.0)
     o = tl.load(tmp_ptr + ml_off[:, None] * D + d[None, :], mask=valid[:, None], other=0.0)
