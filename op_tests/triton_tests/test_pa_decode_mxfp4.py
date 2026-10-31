@@ -111,6 +111,31 @@ def test_pa_decode_mxfp4(ctx, qlen, seed, splits):
     assert rel < 8e-2, rel
 
 
+@pytest.mark.parametrize("ctx", [17, 31, 32, 33, 255, 1000, 8192, 32768])
+@pytest.mark.parametrize("qlen", [1, 4])
+@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("cfg", [None, (64, 32, 1), (32, 64, 2), (5, 32, 1), (3, 64, 2)])
+def test_pa_decode_mxfp4_small_grid(ctx, qlen, seed, cfg):
+    """Small-grid configs: 1 warp x 32-token / 2 warps x 64-token partitions
+    (cfg = splits, partition_size, num_warps; None = the default heuristic at
+    batch 1, which picks them for rows * H <= 8)."""
+    H, batch = 2, 1
+    cache, sel, ctx_lens, q, bt16 = make_case(batch, qlen, ctx, H, seed, spread=8)
+    scale = D**-0.5
+    out = torch.full_like(q, float("nan"))
+    kw = {}
+    if cfg is not None:
+        kw = dict(max_context_partition_num=cfg[0], partition_size=cfg[1], num_warps=cfg[2])
+    mod.pa_decode_mxfp4_gluon(
+        out, q, cache.view(-1, 2 * H, BLOCK, 68), ctx_lens.view(-1), bt16, scale, H, **kw
+    )
+    ref = reference(q, cache, sel, ctx_lens, H, scale)
+    o = out.float()
+    assert not o.isnan().any()
+    rel = ((o - ref).norm() / ref.norm()).item()
+    assert rel < 8e-2, rel
+
+
 if __name__ == "__main__":
     for ctx in (255, 256, 257, 1000, 8192, 32768, 131072):
         for qlen in (1, 4):

@@ -255,7 +255,7 @@ def pa_decode_mxfp4_kernel(
     blocked_query_layout: gl.constexpr = gl.BlockedLayout(
         size_per_thread=[1, 8],
         threads_per_warp=[4, 16],
-        warps_per_cta=[NUM_WARPS // 4, 4],
+        warps_per_cta=[max(NUM_WARPS // 4, 1), min(NUM_WARPS, 4)],
         order=[1, 0],
     )
     mfma_layout: gl.constexpr = gl.amd.AMDMFMALayout(
@@ -293,7 +293,39 @@ def pa_decode_mxfp4_kernel(
         operand_index=1, parent=pv3_layout, k_width=8
     )
     # [warp, sub-page in warp, token in sub-page, dword] matching v3_layout
-    if NW == 4:
+    gl.static_assert((NW != 1) or (PART == 32), "1 warp: 32-token partitions")
+    gl.static_assert((NW != 2) or (PART == 64), "2 warps: 64-token partitions")
+    if NW == 1:
+        vload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[],
+            block_bases=[],
+            shape=[NW, SPW, 16, 16],
+        )
+        kload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1], [4, 0, 0], [0, 16, 0]],
+            lane_bases=[[0, 1, 0], [0, 2, 0], [0, 4, 0], [0, 8, 0], [1, 0, 0], [2, 0, 0]],
+            warp_bases=[],
+            block_bases=[],
+            shape=[8, 32, 2],
+        )
+    elif NW == 2:
+        vload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 4], [0, 0, 0, 8], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[[1, 0, 0, 0]],
+            block_bases=[],
+            shape=[NW, SPW, 16, 16],
+        )
+        kload_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1], [4, 0, 0], [0, 32, 0]],
+            lane_bases=[[0, 1, 0], [0, 2, 0], [0, 4, 0], [0, 8, 0], [1, 0, 0], [2, 0, 0]],
+            warp_bases=[[0, 16, 0]],
+            block_bases=[],
+            shape=[8, 64, 2],
+        )
+    elif NW == 4:
         if PART == 256:
             vload_layout: gl.constexpr = gl.DistributedLinearLayout(
                 reg_bases=[[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 4, 0], [0, 2, 0, 0]],
@@ -344,7 +376,23 @@ def pa_decode_mxfp4_kernel(
         )
     shared_p3_layout: gl.constexpr = gl.SwizzledSharedLayout(8, 1, 8, order=[2, 1, 0])
     # compact [warp, sub-page, token, chunk]: one LUT per (token, chunk)
-    if PART == 256:
+    if NW == 1:
+        vlut_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 2, 0], [0, 0, 4, 0], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[],
+            block_bases=[],
+            shape=[NW, SPW, 16, 4],
+        )
+    elif NW == 2:
+        vlut_layout: gl.constexpr = gl.DistributedLinearLayout(
+            reg_bases=[[0, 0, 1, 0]],
+            lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 2, 0], [0, 0, 4, 0], [0, 0, 8, 0], [0, 1, 0, 0]],
+            warp_bases=[[1, 0, 0, 0]],
+            block_bases=[],
+            shape=[NW, SPW, 16, 4],
+        )
+    elif PART == 256:
         vlut_layout: gl.constexpr = gl.DistributedLinearLayout(
             reg_bases=[[0, 0, 1, 0], [0, 2, 0, 0]],
             lane_bases=[[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 2, 0], [0, 0, 4, 0], [0, 0, 8, 0], [0, 1, 0, 0]],
@@ -611,6 +659,8 @@ _PARTIALS: dict = {}
 _LAUNCHES: dict = {}
 _MAX_LAUNCHES = 4096
 _SPLITS: dict = {}
+SMALL1 = 2
+SMALL2 = 8
 
 
 def _partials(device, num_seqs, splits, group, head, dtype):
@@ -675,6 +725,7 @@ def _resolve_launch(kernel, grid, args, kwargs, stream):
 
 
 def _recommended_config(device, num_seqs):
+    """-> (splits, partition_size, num_warps)."""
     """(splits, partition_size) for num_seqs = rows * kv heads; sparse rows hold
     <= 16 x 128 tokens. Small grids are latency bound: one 128-token partition
     per program. Larger grids take fewer splits, so a program streams several
@@ -684,14 +735,18 @@ def _recommended_config(device, num_seqs):
     key = (device, num_seqs)
     c = _SPLITS.get(key)
     if c is None:
-        if num_seqs <= 16:
-            c = (16, 128)
+        if num_seqs <= SMALL1:
+            c = (64, 32, 1)
+        elif num_seqs <= SMALL2:
+            c = (32, 64, 2)
+        elif num_seqs <= 16:
+            c = (16, 128, 4)
         elif num_seqs <= 32:
-            c = (8, 128)
+            c = (8, 128, 4)
         elif num_seqs <= 128:
-            c = (4, 256)
+            c = (4, 256, 4)
         else:
-            c = (2, 256)
+            c = (2, 256, 4)
         _SPLITS[key] = c
     return c
 
@@ -705,7 +760,7 @@ def pa_decode_mxfp4_gluon(
     softmax_scale: float,
     num_kv_heads: int,
     max_context_partition_num: int | None = None,
-    num_warps: int = 4,
+    num_warps: int | None = None,
     partition_size: int | None = None,
 ) -> torch.Tensor:
     """Sparse MXFP4 paged-attention decode; row ``r*H + h`` of ``block_tables``
@@ -752,9 +807,13 @@ def pa_decode_mxfp4_gluon(
     if max_context_partition_num:
         splits = max_context_partition_num
         part = partition_size or 256
+        num_warps = num_warps or {32: 1, 64: 2}.get(part, 4)
     else:
-        splits, part = _recommended_config(query.device, num_seqs)
-        part = partition_size or part
+        splits, part, nw = _recommended_config(query.device, num_seqs)
+        if partition_size or num_warps:
+            part = partition_size or 128
+            nw = num_warps or {32: 1, 64: 2}.get(part, 4)
+        num_warps = nw
     one_shot = splits <= 1
     if one_shot:
         exp_sums = max_logits = out_k = out_view  # exp/max unused
