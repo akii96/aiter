@@ -92,17 +92,13 @@ def _perm_mfma(hi, lo, sel):
 
 @gluon.jit
 def _dec_dword(d, lo, hi):
-    """8 packed e2m1 nibbles -> (fp8 bytes of elements 0..3, 4..7) using the
-    per-chunk LUT words (lo: magnitudes 0..3, hi: 4..7). FNUZ -0 -> 0x00."""
+    """8 packed e2m1 nibbles (element 2i = low nibble of byte i) -> (fp8 bytes
+    of elements 0, 2, 4, 6; of elements 1, 3, 5, 7) using the per-chunk LUT
+    words (lo: magnitudes 0..3, hi: 4..7). The sign is OR-ed in unguarded: the
+    LUT's magnitude-0 byte is 0x01 (not 0x00), so FNUZ -0 never becomes 0x80."""
     me = _perm(hi, lo, d & 0x07070707)
     mo = _perm(hi, lo, (d >> 4) & 0x07070707)
-    se = ((d << 4) & ((me + 0x7F7F7F7F) & -0x7F7F7F80))
-    so = (d & ((mo + 0x7F7F7F7F) & -0x7F7F7F80))
-    e = me | se
-    o = mo | so
-    return _perm_mfma(o, e, gl.full(d.shape, 0x05010400, gl.int32, d.type.layout)), _perm_mfma(
-        o, e, gl.full(d.shape, 0x07030602, gl.int32, d.type.layout)
-    )
+    return me | ((d << 4) & -0x7F7F7F80), mo | (d & -0x7F7F7F80)
 
 
 @gluon.jit
@@ -118,9 +114,12 @@ def _cvt_pk4(a, b, c, d):
 def _e2m1_lut(k):
     """k = emax - e_chunk (>= 0) -> e4m3fnuz bytes of the e2m1 magnitudes
     [0, .5, 1, 1.5] and [2, 3, 4, 6] times 2^-k (exact while representable,
-    RNE into the fp8 subnormals, zero past them)."""
+    RNE into the fp8 subnormals, zero past them). Magnitude 0 maps to the
+    smallest subnormal 2^-10 (byte 0x01), i.e. 2^-10 / 6 of the token's
+    largest element: far below fp8 rounding, and it lets the decode OR the
+    sign in without a -0 -> NaN guard."""
     sc = ((127 - gl.minimum(k, 100)) << 23).to(gl.float32, bitcast=True)
-    lo = _cvt_pk4(sc * 0.0, sc * 0.5, sc, sc * 1.5)
+    lo = _cvt_pk4(gl.full(k.shape, 0.0009765625, gl.float32, k.type.layout), sc * 0.5, sc, sc * 1.5)
     hi = _cvt_pk4(sc * 2.0, sc * 3.0, sc * 4.0, sc * 6.0)
     return lo, hi
 
@@ -175,13 +174,13 @@ def _decode_k(raw, w, shift):
     ec = (w >> shift) & 255
     lo, hi = _e2m1_lut(gl.maximum(emax - ec, 0))
     o0, o1 = _dec_dword(raw, lo, hi)
-    d = gl.join(o0, o1)  # [8, PART, 2 (half), 2 (o0/o1)]
+    d = gl.join(o0, o1)  # [8, PART, 2 (half), 2 (even/odd elements)]
     b0 = d.to(gl.uint8)
     b1 = (d >> 8).to(gl.uint8)
     b2 = (d >> 16).to(gl.uint8)
     b3 = (d >> 24).to(gl.uint8)
     x = gl.reshape(gl.join(gl.join(b0, b2), gl.join(b1, b3)), [8, raw.shape[1], 16])
-    x = gl.permute(x, [0, 2, 1])  # [qp, half * 8 + e, token]
+    x = gl.permute(x, [0, 2, 1])  # [qp, half * 8 + e, token]; e' = 4 w + m holds element 2 m + w
     return gl.reshape(x, [128, raw.shape[1]])
 
 
@@ -446,7 +445,10 @@ def pa_decode_mxfp4_kernel(
     k_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, kn_idx // 16, max_nb)
     v_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, v_sub, max_nb)
     l_ent = _page_entries(block_tables_ptr, bt_off, part_start * NB, l_sub, max_nb)
-    query_op = q.to(COMPUTE_TYPE)
+    # head dims 8g + (0, 2, 4, 6, 1, 3, 5, 7): the K decode's byte order (QK is
+    # invariant to a common permutation of the head dim); register-local.
+    q = gl.reshape(gl.permute(gl.reshape(q, [GROUP, 16, 4, 2]), [0, 1, 3, 2]), [GROUP, HEAD])
+    query_op = gl.convert_layout(q.to(COMPUTE_TYPE), lhs_layout)
     probs_shared = gl.allocate_shared_memory(
         COMPUTE_TYPE, [NW, GROUP, TPW], shared_p3_layout
     )
@@ -535,6 +537,10 @@ def pa_decode_mxfp4_kernel(
     out_l: gl.constexpr = gl.SliceLayout(0, red_layout)
     inv = gl.convert_layout(1.0 / safe, gl.SliceLayout(1, gl.SliceLayout(2, out_l)))
     accf = (accf * inv[:, None, None]).to(gl.bfloat16)
+    # e' = (0, 2, 4, 6, 1, 3, 5, 7) order from the V decode -> natural head dims
+    accf = gl.convert_layout(
+        gl.reshape(gl.permute(gl.reshape(accf, [GROUP, 16, 2, 4]), [0, 1, 3, 2]), [GROUP, 16, 8]), out_l
+    )
     a_g3 = gl.arange(0, GROUP, layout=gl.SliceLayout(1, gl.SliceLayout(2, out_l)))
     a_q = gl.arange(0, 16, layout=gl.SliceLayout(0, gl.SliceLayout(2, out_l)))
     a_e = gl.arange(0, 8, layout=gl.SliceLayout(0, gl.SliceLayout(1, out_l)))
