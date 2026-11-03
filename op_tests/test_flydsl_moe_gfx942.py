@@ -48,7 +48,11 @@ QUANTS = {
     "per_tensor": QuantType.per_Tensor,
     "ptpc": QuantType.per_Token,
 }
-ACTIVATIONS = {"silu": ActivationType.Silu, "swiglu": ActivationType.Swiglu}
+ACTIVATIONS = {
+    "silu": ActivationType.Silu,
+    "swiglu": ActivationType.Swiglu,
+    "swiglustep": ActivationType.SwigluStep,
+}
 # MI300X then MI308X, the order in which a cached launcher meets a smaller device.
 CU_COUNTS = (304, 80)
 GUARD, CANARY = 64, -123
